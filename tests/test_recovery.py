@@ -1,10 +1,20 @@
 # ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
-"""Content recovery and RFC recovery tests."""
+"""Content recovery, RFC recovery, RFC-046 attribution and D4 corrective-retry tests.
+
+Consolidated 2026-09-22: absorbs `test_rfc046_attribution.py`,
+`test_d4_corrective_retry.py` and `test_zone3_ocr_recovery.py`. Tests are
+grouped by the production function they exercise, not by originating file.
+Many-row `@pytest.mark.parametrize` tables were collapsed into single
+table-driven tests that collect every failing row and report them together.
+"""
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import json
+import pathlib
+from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,7 +22,6 @@ import pytest
 import pageindex_mcp.converters as converters
 from pageindex_mcp.converters import (
     _inject_arabic_structural_headings,
-    chunked_docling_timeout_s,
     detect_ocr_langs,
     probe_conversion_route,
 )
@@ -20,10 +29,11 @@ from pageindex_mcp.helpers import (
     _OVERSIZED_ORDINAL_RE,
     _ReasonPolicy,
     _Unset,
-    _flatten_tree_text,
     _ordinal_value,
     _word_has_reversed_morphology,
+    arbitrate,
     BULK_PROFILE,
+    Candidate,
     ExtractionState,
     finalize_gate_and_route,
     GATES,
@@ -35,7 +45,7 @@ from pageindex_mcp.helpers import (
     TreeGateResult,
     validate_tree,
 )
-from pageindex_mcp.helpers.types import _defect_from_reason_str, _guard_bypass
+from pageindex_mcp.helpers.types import _defect_from_reason_str
 from pageindex_mcp.worker.constants import MAX_EFFECTIVE_TIMEOUT
 from pageindex_mcp.worker.timeouts import effective_child_timeout
 from pageindex_mcp.worker import (
@@ -45,7 +55,13 @@ from pageindex_mcp.worker import (
 from tests._garble_compat import check_garble
 
 
-# --- from test_recovery.py ---
+SRC_ROOT = pathlib.Path(__file__).resolve().parent.parent / "src" / "pageindex_mcp"
+
+
+def _src(rel: str) -> str:
+    """Read a production source file, for the source-shape guard tests."""
+    return (SRC_ROOT / rel).read_text(encoding="utf-8")
+
 
 _RETRY_POLICIES = frozenset({_ReasonPolicy.RETRY_OCR, _ReasonPolicy.RETRY_RTL})
 _GATES_BY_DEFECT: dict[TreeDefect, GateSpec] = {g.defect: g for g in GATES}
@@ -94,69 +110,118 @@ def _make_eligibility_state(defect: TreeDefect, ok: bool = False) -> ExtractionS
     )
 
 
+def _make_garble_state() -> ExtractionState:
+    return ExtractionState(
+        result={"structure": [{"node_id": "1", "title": "R", "text": "x" * 200, "nodes": []}]},
+        ok=False,
+        reason="garbled",
+        gate_result=TreeGateResult(
+            ok=False,
+            defect=TreeDefect.NODE_GARBLING,
+            all_defects=frozenset({TreeDefect.NODE_GARBLING}),
+        ),
+        first_defect=TreeDefect.NODE_GARBLING,
+        route=Route.REJECT,
+        md_content="# garbled content",
+        tmp_md_path=None,
+        pic_results=[],
+        used_converter="pymupdf4llm",
+        total_chars=200,
+        extraction_stages_captured=[],
+    )
+
+
+def _make_low_content_state(
+    all_defects: frozenset[TreeDefect] | None = None,
+) -> ExtractionState:
+    return ExtractionState(
+        result={"structure": [{"node_id": "1", "title": "R", "text": "x" * 10, "nodes": []}]},
+        ok=False,
+        reason="node_count<3",
+        gate_result=TreeGateResult(
+            ok=False,
+            defect=TreeDefect.NODE_COUNT_LOW,
+            all_defects=all_defects or frozenset({TreeDefect.NODE_COUNT_LOW}),
+        ),
+        first_defect=TreeDefect.NODE_COUNT_LOW,
+        route=Route.FLAT,
+        md_content="# low",
+        tmp_md_path=None,
+        pic_results=[],
+        used_converter="docling",
+        total_chars=10,
+        extraction_stages_captured=[],
+    )
+
+
 # ===========================================================================
-# GateSpec recovery wiring
+# GATES table: recovery wiring, policy, severity ordering, eligibility
 # ===========================================================================
 
 
-class TestGateSpecRecoveryWiring:
-    def test_retry_gates_have_recovery_wiring(self):
+class TestGateTable:
+    def test_gate_table_invariants(self):
+        """Table-driven: every structural invariant of the GATES table in one
+        pass, reporting every violating gate rather than the first."""
+        failures: list[str] = []
+
         for g in GATES:
-            if g.policy in _RETRY_POLICIES:
-                assert g.recovery_fns
-                assert g.recovery_eligible is not None
+            if g.policy in _RETRY_POLICIES and not g.recovery_fns:
+                failures.append(f"{g.defect.value}: retry policy with no recovery_fns")
+            if g.recovery_fns and g.recovery_eligible is None:
+                failures.append(f"{g.defect.value}: recovery_fns with no recovery_eligible")
+            if g.policy == _ReasonPolicy.PERSIST_FAIL and g.recovery_fns:
+                failures.append(f"{g.defect.value}: PERSIST_FAIL must never recover")
 
-    def test_reverse_recovery_fns_implies_eligible(self):
-        for g in GATES:
-            if g.recovery_fns:
-                assert g.recovery_eligible is not None
+        persist_fail = [g for g in GATES if g.policy == _ReasonPolicy.PERSIST_FAIL]
+        if len(persist_fail) < 3:
+            failures.append(f"expected >=3 PERSIST_FAIL gates, got {len(persist_fail)}")
 
-
-# ===========================================================================
-# Eligibility predicates
-# ===========================================================================
-
-
-class TestEligibility:
-    def test_garble_gate_accepts_garbling(self):
-        gate = _GATES_BY_DEFECT[TreeDefect.GARBLING]
-        state = _make_eligibility_state(TreeDefect.GARBLING, ok=False)
-        assert gate.recovery_eligible(state)
-
-    def test_garble_gate_rejects_unrelated(self):
-        gate = _GATES_BY_DEFECT[TreeDefect.GARBLING]
-        state = _make_eligibility_state(TreeDefect.RTL_REVERSAL, ok=False)
-        assert not gate.recovery_eligible(state)
-
-
-# ===========================================================================
-# Regression guards
-# ===========================================================================
-
-
-class TestRegressionGuards:
-    def test_persist_fail_no_recovery(self):
-        pf = [g for g in GATES if g.policy == _ReasonPolicy.PERSIST_FAIL]
-        assert len(pf) >= 3
-        for g in pf:
-            assert not g.recovery_fns
-
-    def test_rtl_reversal_fires_rtl_recovery(self):
         rtl = _GATES_BY_DEFECT[TreeDefect.RTL_REVERSAL]
-        assert rtl.policy == _ReasonPolicy.RETRY_RTL
-        assert "_recover_rtl_repair" in rtl.recovery_fns
+        if rtl.policy != _ReasonPolicy.RETRY_RTL:
+            failures.append(f"RTL_REVERSAL policy is {rtl.policy}, expected RETRY_RTL")
+        if "_recover_rtl_repair" not in rtl.recovery_fns:
+            failures.append("RTL_REVERSAL does not wire _recover_rtl_repair")
 
+        severities = [g.severity for g in GATES if g.gate_fn is not None]
+        if severities != sorted(severities):
+            failures.append(f"active gates not sorted by severity: {severities}")
 
-# ===========================================================================
-# Recovery severity ordering
-# ===========================================================================
+        # Each defect owns its own recovery chain; NODE_COUNT_LOW and
+        # DEPTH_LOW deliberately share _recover_image_dominant_ocr (the
+        # cross-tuple dedup case exercised below).
+        ncl = _GATES_BY_DEFECT[TreeDefect.NODE_COUNT_LOW]
+        depth = _GATES_BY_DEFECT[TreeDefect.DEPTH_LOW]
+        garble = _GATES_BY_DEFECT[TreeDefect.GARBLING]
+        for gate, fn in (
+            (ncl, "_recover_low_content_ocr"),
+            (ncl, "_recover_image_dominant_ocr"),
+            (depth, "_recover_image_dominant_ocr"),
+            (garble, "_recover_garble_ocr"),
+        ):
+            if fn not in gate.recovery_fns:
+                failures.append(f"{gate.defect.value} does not wire {fn}")
+        if set(ncl.recovery_fns) == set(garble.recovery_fns):
+            failures.append("NODE_COUNT_LOW and GARBLING must be independent chains")
 
+        assert not failures, "GATES table violations:\n  " + "\n  ".join(failures)
 
-class TestSeverityOrdering:
-    def test_gates_sorted_by_severity(self):
-        active = [g for g in GATES if g.gate_fn is not None]
-        severities = [g.severity for g in active]
-        assert severities == sorted(severities)
+    def test_eligibility_predicates_key_off_the_defect(self):
+        """A gate's recovery_eligible accepts its own defect and rejects an
+        unrelated one; a co-fired secondary defect also makes its gate
+        eligible, so a multi-defect document reaches both recovery chains."""
+        from pageindex_mcp.helpers.gates import _eligible_garble, _eligible_low_content
+
+        gate = _GATES_BY_DEFECT[TreeDefect.GARBLING]
+        assert gate.recovery_eligible(_make_eligibility_state(TreeDefect.GARBLING))
+        assert not gate.recovery_eligible(_make_eligibility_state(TreeDefect.RTL_REVERSAL))
+
+        # NODE_COUNT_LOW primary + GARBLING secondary: both chains eligible.
+        state = _make_low_content_state(
+            all_defects=frozenset({TreeDefect.NODE_COUNT_LOW, TreeDefect.GARBLING})
+        )
+        assert _eligible_low_content(state), "NODE_COUNT_LOW must make low-content eligible"
+        assert _eligible_garble(state), "GARBLING secondary must make garble eligible"
 
 
 # ===========================================================================
@@ -165,23 +230,28 @@ class TestSeverityOrdering:
 
 
 class TestRecoveryOutcome:
-    def test_frozen(self):
+    def test_frozen_and_defaults_to_unset(self):
         ro = RecoveryOutcome(ok=True)
         with pytest.raises(dataclasses.FrozenInstanceError):
             ro.ok = False
+        empty = RecoveryOutcome()
+        for f in dataclasses.fields(empty):
+            assert isinstance(getattr(empty, f.name), _Unset)
 
-    def test_defaults_to_unset(self):
-        ro = RecoveryOutcome()
-        for f in dataclasses.fields(ro):
-            assert isinstance(getattr(ro, f.name), _Unset)
+    def test_apply_semantics(self):
+        """`.apply()` writes only the fields that were set: an unset field is
+        left alone, an explicit None is written, and a full snapshot reverts
+        every field at once (the pre-retry revert path). It also bypasses the
+        D3 single-writer guard on the guarded fields."""
+        from pageindex_mcp.script import RtlDecision
 
-    def test_apply_single_field(self):
+        # Single field: only `ok` moves, `route` is untouched.
         state = _make_state(ok=False, route=Route.REJECT)
         RecoveryOutcome(ok=True).apply(state)
         assert state.ok is True
         assert state.route == Route.REJECT
 
-    def test_explicit_none_distinct_from_unset(self):
+        # Explicit None is distinct from unset.
         gate = TreeGateResult(ok=True, defect=TreeDefect.OK)
         state = _make_state(gate_result=gate)
         RecoveryOutcome().apply(state)
@@ -189,10 +259,12 @@ class TestRecoveryOutcome:
         RecoveryOutcome(gate_result=None).apply(state)
         assert state.gate_result is None
 
-    def test_full_snapshot_revert(self):
-        from pageindex_mcp.script import RtlDecision
+        # Guarded fields go through the bypass, not the guard.
+        state = _make_state()
+        RecoveryOutcome(ok=True, route=Route.FLAT).apply(state)
+        assert state.ok is True and state.route == Route.FLAT
 
-        gate = TreeGateResult(ok=True, defect=TreeDefect.OK)
+        # Full pre-retry snapshot revert.
         pre_retry = RecoveryOutcome(
             result={"structure": [{"node_id": "1", "title": "Pre", "text": "aaa", "nodes": []}]},
             ok=True,
@@ -214,24 +286,14 @@ class TestRecoveryOutcome:
         assert state.ok is True
         assert state.route == Route.TREE
         assert state.total_chars == 48000
+        assert state.md_content == "# pre"
+        assert state.used_converter == "docling"
+        assert state.tmp_md_path == "/tmp/pre.md"
+        assert state.bidi_renorm_applied is True
 
 
 # ===========================================================================
-# ExtractionState field contract
-# ===========================================================================
-
-
-class TestExtractionState:
-    def test_gate_result_retained(self):
-        fields = {f.name for f in dataclasses.fields(ExtractionState)}
-        assert "gate_result" in fields
-
-    def test_bidi_renorm_applied_defaults_false(self):
-        assert _make_state().bidi_renorm_applied is False
-
-
-# ===========================================================================
-# Dead-gate regression
+# validate_tree — dead-gate regression (Hard Rule 5 surface)
 # ===========================================================================
 
 
@@ -251,11 +313,9 @@ class TestDeadGateRegression:
         assert validate_tree(tree).defect != TreeDefect.ARABIC_LOW_CONTENT_RATIO
 
 
-# --- from test_rfc_recovery.py ---
-
-# ---------------------------------------------------------------------------
-# D0 fixtures: dynamic converter-subprocess timeout wiring
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# _run_converter_subprocess — dynamic child-timeout wiring
+# ===========================================================================
 
 
 class _RecordingTimeout:
@@ -389,19 +449,17 @@ class TestProbeConversionRoute:
     the startup handshake worker.py reads -- covering it here keeps the
     handshake's producer and consumer tested against the same contract."""
 
-    def test_non_pdf_input_reports_non_docling(self):
+    def test_non_docling_inputs_report_non_docling(self):
+        # A non-PDF input, and a PDF whose pymupdf probe blows up. The latter
+        # does a function-local `import fitz`, so `fitz.open` is the seam.
         assert probe_conversion_route("notes.txt") == (1, False, None, None)
-
-    def test_pymupdf_failure_reports_non_docling(self):
-        # `converters.probe_conversion_route` does a function-local
-        # `import fitz`, so `fitz.open` is the patch seam.
         with patch("fitz.open", side_effect=RuntimeError("bad pdf")):
             assert converters.probe_conversion_route("broken.pdf")[:2] == (1, False)
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # D1: Arabic structural heading injection
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 # Mirrors scanned-OCR output for a continuous Arabic legal document: no blank
 # lines separate consecutive مادة articles, and one article title runs past
@@ -415,23 +473,26 @@ class TestCharLimitRaisedTo100:
 
         monkeypatch.setattr(_h, "_AR_HEADING_MIN_CONTENT_CHARS", 0)
 
-    def test_75_char_marker_title_line_is_promoted(self):
-        title = "المادة (3) نطاق التطبيق والأحكام الاستثنائية الخاصة بهذا القانون كاملة"
-        assert 60 < len(title) <= 100
-        md = f"نص سابق.\n\n{title}\nنص لاحق.\n"
-        result = _inject_arabic_structural_headings(md)
-        assert any(line.startswith("#") and title in line for line in result.splitlines())
+    def test_marker_title_lines_up_to_100_chars_are_promoted(self):
+        titles = [
+            # 75 chars: past the OLD 60-char cutoff, inside the new 100 limit.
+            "المادة (3) نطاق التطبيق والأحكام الاستثنائية الخاصة بهذا القانون كاملة",
+            # Exactly on the OLD 60-char boundary.
+            "مادة " + ("ن" * 55),
+        ]
+        failures: list[str] = []
+        for title in titles:
+            assert 60 <= len(title) <= 100, f"fixture drifted out of range: {len(title)}"
+            md = f"نص سابق.\n\n{title}\nنص لاحق.\n"
+            result = _inject_arabic_structural_headings(md)
+            if not any(line.startswith("#") and title in line for line in result.splitlines()):
+                failures.append(f"{len(title)} chars: not promoted to a heading")
+        assert not failures, "Arabic heading promotion failures:\n  " + "\n  ".join(failures)
 
-    def test_60_char_boundary_still_promoted(self):
-        title = "مادة " + ("ن" * 55)  # just over the OLD 60-char cutoff
-        md = f"نص سابق.\n\n{title}\nنص لاحق.\n"
-        result = _inject_arabic_structural_headings(md)
-        assert any(line.startswith("#") and title in line for line in result.splitlines())
 
-
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # D2: Arabic Presentation-Forms garble detection
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 # Logical-order Arabic letters (U+0600-06FF) vs. Arabic Presentation-Forms
 # glyphs (U+FB50-FDFF / U+FE70-FEFF) -- both count as "Arabic-range" for the
@@ -462,132 +523,54 @@ def _blob(n_presentation: int, n_logical: int) -> str:
 
 
 class TestPresentationFormsGarbleDetection:
-    def test_93_percent_presentation_forms_is_garbled(self):
-        # Mirrors huquq-al-insan's 93.6% presentation-forms ratio.
-        assert check_garble(_blob(93, 7), expected_script=None, profile=BULK_PROFILE) is True
+    def test_presentation_forms_ratio_must_exceed_half(self):
+        """Table: 93% presentation forms (huquq-al-insan's observed ratio) is
+        garbled; exactly at the 0.50 threshold is NOT (RFC-028: must EXCEED)."""
+        cases = [(93, 7, True), (50, 50, False)]
+        failures: list[str] = []
+        for n_pres, n_logi, expected in cases:
+            got = check_garble(_blob(n_pres, n_logi), expected_script=None, profile=BULK_PROFILE)
+            if got is not expected:
+                failures.append(f"{n_pres}/{n_logi}: expected {expected}, got {got}")
+        assert not failures, "presentation-forms ratio failures:\n  " + "\n  ".join(failures)
 
-    def test_exactly_at_threshold_does_not_trigger(self):
-        # RFC-028: ratio must EXCEED 0.50, not merely reach it.
-        assert check_garble(_blob(50, 50), expected_script=None, profile=BULK_PROFILE) is False
 
-
-# ---------------------------------------------------------------------------
-# D3: RTL-reversal vocabulary + morphology detection
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# D3: RTL-reversal morphology detection
+# ===========================================================================
 
 # RFC-034 D7: presentation-form glyphs decompose to base Arabic under NFKC
 # before `_word_has_reversed_morphology` runs, so the morphological reversal
 # signal is now Joining_Type-based (see `_arabic_word_joins`) rather than a
 # presentation-form check. A character-reversed base-Arabic word (like a
 # genuine visual-order OCR/Docling artifact) is the fixture that exercises it.
-_REVERSED_WORD = "رارق"  # "قرار" (decision) reversed at the character level
 
 
 class TestMorphologicalReversalCheck:
-    def test_character_reversed_word_flagged_reversed(self):
-        assert _word_has_reversed_morphology(_REVERSED_WORD) is True
-
-    def test_plain_logical_word_not_flagged(self):
+    def test_reversed_word_flagged_logical_word_not(self):
+        # "قرار" (decision) reversed at the character level, vs. the original.
+        assert _word_has_reversed_morphology("رارق") is True
         assert _word_has_reversed_morphology("قرار") is False
 
 
-# ---------------------------------------------------------------------------
-# D4: OCR retry keep-best-content logic
-# ---------------------------------------------------------------------------
-
-# Mirrors al-qarar al-tanzimi: pre-retry text-layer extraction at 230 chars,
-# retry's force_full_page_ocr on the same underlying (PUA-encoded) defect
-# produces even less content (123 chars) -- the retry must not win.
-_GARBLED_TEXT = "" * 200  # U+E000 Private Use Area chars trip _is_garbled_blob
-# D10a (RFC-041) activates the Arabic garble-detection PF fallback path;
-# Arabic text now fires the presentation_forms prong, making it unsuitable
-# as a "clean" baseline.  Use Latin prose instead.
-_CLEAN_TEXT = "The quick brown fox jumps over the lazy dog near the river bank. " * 3
-
-
-def _structure(text: str) -> list:
-    return [{"title": "root", "text": text, "start_index": 0, "nodes": []}]
-
-
-def _keep_best(
-    pre_retry_structure: list,
-    post_retry_structure: list,
-    post_retry_ok: bool,
-    expected_script: str | None = None,
-) -> tuple[list, bool]:
-    """Mirrors client.py's RFC-028 D4 keep-best block (~lines 1049-1080):
-    compares post-retry char count against the pre-retry snapshot and decides
-    whether the retry result replaces the pre-retry result. Returns
-    ``(winning_structure, retry_won)``."""
-    pre_retry_chars = len(_flatten_tree_text(pre_retry_structure))
-    post_retry_chars = len(_flatten_tree_text(post_retry_structure))
-    if post_retry_chars < pre_retry_chars:
-        retry_wins = False
-    elif post_retry_chars == pre_retry_chars:
-        retry_wins = post_retry_ok or (
-            check_garble(
-                _flatten_tree_text(pre_retry_structure),
-                expected_script=expected_script,
-                profile=BULK_PROFILE,
-            )
-            and not check_garble(
-                _flatten_tree_text(post_retry_structure),
-                expected_script=expected_script,
-                profile=BULK_PROFILE,
-            )
-        )
-    else:
-        retry_wins = True
-    return (post_retry_structure if retry_wins else pre_retry_structure), retry_wins
-
-
-class TestNearTieGarbleTieBreak:
-    def test_equal_chars_pre_garbled_post_clean_retry_wins(self):
-        # Equal char count, still-not-ok retry, but pre-retry is garbled and
-        # post-retry is clean -- the non-garbled result should win the tie.
-        pre = _GARBLED_TEXT
-        post = _CLEAN_TEXT + "أ" * (len(_GARBLED_TEXT) - len(_CLEAN_TEXT))
-        assert len(pre) == len(post)
-        winner, retry_won = _keep_best(_structure(pre), _structure(post), post_retry_ok=False)
-        assert retry_won is True
-        assert winner == _structure(post)
-
-    def test_equal_chars_pre_clean_post_garbled_pre_retry_wins(self):
-        # Inverse: pre-retry clean, post-retry garbled at equal length --
-        # pre-retry must win, not the (unconditionally overwritten) retry.
-        pre = _CLEAN_TEXT + "أ" * (len(_GARBLED_TEXT) - len(_CLEAN_TEXT))
-        post = _GARBLED_TEXT
-        assert len(pre) == len(post)
-        winner, retry_won = _keep_best(_structure(pre), _structure(post), post_retry_ok=False)
-        assert retry_won is False
-        assert winner == _structure(pre)
-
-
-# ---------------------------------------------------------------------------
-# D5: picture-OCR language derivation + dedup splicing
-# ---------------------------------------------------------------------------
-
-# Ward-597's representative Docling markdown export: near-empty/all-digit, so
-# `detect_ocr_langs(md)` alone falls through to ['eng'] -- verified in the
-# RFC's own root-cause investigation.
-_WARD_597_MD_SAMPLE = "651001429 6 1 mo/2025/597 5/8/2025 51001429"
-
-# Arabic filename -- the escalation-site union pattern (client.py) detects
-# script from the filename even when the export carries no usable signal.
-_ARABIC_FILENAME = "قرار-597.pdf"
+# ===========================================================================
+# D5: picture-OCR language derivation
+# ===========================================================================
 
 
 class TestLanguageDetectionSourceIsFilenameUnionedWithMd:
-    def test_md_alone_falls_through_to_english(self):
-        assert detect_ocr_langs(_WARD_597_MD_SAMPLE) == ["eng"]
+    def test_md_falls_through_to_english_filename_detects_arabic(self):
+        """Ward-597's Docling markdown export is near-empty/all-digit, so the
+        export alone falls through to ['eng']; the escalation site unions in
+        the filename, which is where the Arabic signal actually lives."""
+        # Representative Docling markdown export for ward-597.
+        assert detect_ocr_langs("651001429 6 1 mo/2025/597 5/8/2025 51001429") == ["eng"]
+        assert "ara" in detect_ocr_langs("قرار-597.pdf")
 
-    def test_filename_alone_detects_arabic(self):
-        assert "ara" in detect_ocr_langs(_ARABIC_FILENAME)
 
-
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # D7: Roman-numeral oversized-leaf ordinal splitting
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 _WORDS = [
     "alpha",
@@ -647,41 +630,32 @@ def _roman(n: int) -> str:
 
 
 class TestRomanNumeralMatching:
-    def test_i_ii_iii_all_match(self):
+    def test_roman_markers_match_and_carry_their_ordinal_value(self):
         text = "I. went there.\nII. did that.\nIII. said so.\n"
         matches = list(_OVERSIZED_ORDINAL_RE.finditer(text))
         romans = [m.group("roman") for m in matches if m.group("roman") is not None]
         assert romans == ["I", "II", "III"]
-
-    def test_roman_marker_ordinal_value(self):
-        m1 = _OVERSIZED_ORDINAL_RE.search("I. ")
-        m2 = _OVERSIZED_ORDINAL_RE.search("II. ")
-        m3 = _OVERSIZED_ORDINAL_RE.search("III. ")
-        assert _ordinal_value(m1) == (1,)
-        assert _ordinal_value(m2) == (2,)
-        assert _ordinal_value(m3) == (3,)
+        values = [_ordinal_value(_OVERSIZED_ORDINAL_RE.search(f"{r}. ")) for r in romans]
+        assert values == [(1,), (2,), (3,)]
 
 
 class TestMinimumTwoMatchesGuard:
-    def test_single_incidental_roman_marker_is_dropped_no_split(self):
-        """A single 'I. went to the store' occurrence is prose, not a
-        heading sequence -- must not trigger a split."""
-        text = (
+    def test_one_marker_is_prose_two_markers_split(self):
+        """A single 'I. went to the store' occurrence is prose, not a heading
+        sequence, and must not trigger a split; >=2 matches clear the guard."""
+        lone = (
             f"I. went to the store and {_text_of_length(3000)}\n\n"
             f"{_text_of_length(3000)}\n\n"
             f"{_text_of_length(3000)}"
         )
-        tree = [{"node_id": "n1", "title": "root", "text": text, "nodes": []}]
+        tree = [{"node_id": "n1", "title": "root", "text": lone, "nodes": []}]
         split_oversized_leaf_nodes(
-            tree, max_chars=50000, min_segments=3, _tree_ratio=0.1, _tree_total=len(text) * 10
+            tree, max_chars=50000, min_segments=3, _tree_ratio=0.1, _tree_total=len(lone) * 10
         )
-        assert tree[0]["nodes"] == []
+        assert tree[0]["nodes"] == [], "a single incidental Roman marker must not split"
 
-    def test_two_roman_markers_are_sufficient_to_split(self):
-        """>=2 Roman-numeral matches in the same leaf clear the guard and
-        feed the split decision."""
-        text = f"I. {_text_of_length(3000)}\nII. {_text_of_length(3000)}"
-        tree = [{"node_id": "n1", "title": "root", "text": text, "nodes": []}]
+        pair = f"I. {_text_of_length(3000)}\nII. {_text_of_length(3000)}"
+        tree = [{"node_id": "n1", "title": "root", "text": pair, "nodes": []}]
         split_oversized_leaf_nodes(tree, max_chars=50000, min_segments=2)
         assert len(tree[0]["nodes"]) == 2
         assert tree[0]["nodes"][0]["text"].startswith("I.")
@@ -693,7 +667,8 @@ class TestHaftpflichtDeepFixture:
     Article node whose oversized leaf text is subdivided into 27
     Roman-numeral sub-clauses (I through XXVII), each itself long enough to
     need no further splitting. Asserts the tree gains a third level (depth
-    2 -> 3+) via the recursive `split_oversized_leaf_nodes` call."""
+    2 -> 3+) via the recursive `split_oversized_leaf_nodes` call, and that
+    the non-oversized root is left untouched (non-regression)."""
 
     def test_27_roman_subclauses_split_into_third_level(self):
         clause_text = _text_of_length(2000)
@@ -718,37 +693,16 @@ class TestHaftpflichtDeepFixture:
         # depth 3 (27 Roman sub-clause children).
         assert tree[0]["nodes"][0] is article_node
         assert len(article_node["nodes"]) == 27
-        assert article_node["nodes"][0]["text"].startswith("I.")
-        assert article_node["nodes"][26]["text"].startswith("XXVII.")
         for idx, child in enumerate(article_node["nodes"], start=1):
             assert child["text"].startswith(f"{_roman(idx)}.")
 
-    def test_root_still_at_depth_one_no_regression(self):
-        """Non-regression: the root node itself (with no oversized text)
-        is left untouched -- only the oversized leaf gains children."""
-        clause_text = _text_of_length(2000)
-        body = "\n".join(f"{_roman(i)}. {clause_text}" for i in range(1, 28))
-        article_node = {
-            "node_id": "article-9",
-            "title": "Article 9",
-            "text": body,
-            "nodes": [],
-        }
-        tree = [
-            {
-                "node_id": "root",
-                "title": "Haftpflicht-Besondere-Bedingungen",
-                "text": "",
-                "nodes": [article_node],
-            }
-        ]
-        split_oversized_leaf_nodes(tree, max_chars=50000, min_segments=3)
+        # The root itself has no oversized text and must be left alone.
         assert tree[0]["node_id"] == "root"
         assert tree[0]["text"] == ""
 
 
 # ===========================================================================
-# Zone: OCR Recovery Cascade and Kill-Switch Conflation
+# RecoveryMixin._recover_low_content_ocr — kill-switch deconflation
 # ===========================================================================
 
 
@@ -765,96 +719,53 @@ class TestKillSwitchDeconflation:
 
         reset_pipeline_config()
 
-    def _patch_config(self, monkeypatch, *, garble: bool, low_content: bool):
-        """Replace pipeline_config with one where the two flags are set independently."""
+    @pytest.mark.asyncio
+    async def test_low_content_flag_alone_decides_low_content_recovery(self, monkeypatch):
+        """Table over (garble, low_content) -> whether _execute_ocr_retry fires.
+        Only `ocr_escalation_low_content` may decide; `ocr_escalation_garble`
+        must be irrelevant here."""
         import dataclasses as dc
-        from pageindex_mcp.config import pipeline_config as _orig, reset_pipeline_config
+
         import pageindex_mcp.client.recovery as recovery_mod
-
-        new_cfg = dc.replace(
-            _orig, ocr_escalation_garble=garble, ocr_escalation_low_content=low_content
-        )
-        monkeypatch.setattr(recovery_mod, "pipeline_config", new_cfg)
-        return new_cfg
-
-    def _make_low_content_state(self) -> ExtractionState:
-        """State eligible for low-content OCR recovery (ok=False, NODE_COUNT_LOW, low chars)."""
-        return ExtractionState(
-            result={"structure": [{"node_id": "1", "title": "R", "text": "x" * 10, "nodes": []}]},
-            ok=False,
-            reason="node_count<3",
-            gate_result=TreeGateResult(
-                ok=False,
-                defect=TreeDefect.NODE_COUNT_LOW,
-                all_defects=frozenset({TreeDefect.NODE_COUNT_LOW}),
-            ),
-            first_defect=TreeDefect.NODE_COUNT_LOW,
-            route=Route.FLAT,
-            md_content="# low",
-            tmp_md_path=None,
-            pic_results=[],
-            used_converter="docling",
-            total_chars=10,
-            extraction_stages_captured=[],
-        )
-
-    @pytest.mark.asyncio
-    async def test_garble_true_low_content_false_skips_low_content_recovery(self, monkeypatch):
-        """When garble=True but low_content=False, _recover_low_content_ocr must skip."""
         from pageindex_mcp.client.recovery import RecoveryMixin
+        from pageindex_mcp.config import pipeline_config as _orig
 
-        self._patch_config(monkeypatch, garble=True, low_content=False)
-        state = self._make_low_content_state()
-        mixin = RecoveryMixin()
-        # _recover_low_content_ocr checks pipeline_config.ocr_escalation_low_content early
-        # and returns without calling _execute_ocr_retry
-        mixin._execute_ocr_retry = AsyncMock(side_effect=AssertionError("should not be called"))
-        await mixin._recover_low_content_ocr(state, "/f.pdf", "f.pdf", ".pdf", None)
-        # State unchanged -- no OCR retry attempted
-        assert state.total_chars == 10
+        cases = [
+            (True, False, 0),  # garble on, low-content off -> must skip
+            (False, True, 1),  # garble off, low-content on -> must fire
+            (True, True, 1),  # both on -> fires, independently of garble
+        ]
+        failures: list[str] = []
+        for garble, low_content, expected in cases:
+            monkeypatch.setattr(
+                recovery_mod,
+                "pipeline_config",
+                dc.replace(
+                    _orig, ocr_escalation_garble=garble, ocr_escalation_low_content=low_content
+                ),
+            )
+            state = _make_low_content_state()
+            mixin = RecoveryMixin()
+            calls: list[bool] = []
 
-    @pytest.mark.asyncio
-    async def test_garble_false_low_content_true_runs_low_content_recovery(self, monkeypatch):
-        """When garble=False but low_content=True, _recover_low_content_ocr must proceed."""
-        from pageindex_mcp.client.recovery import RecoveryMixin
+            async def fake_execute(*a, _sink=calls, **kw):
+                _sink.append(True)
+                return False
 
-        self._patch_config(monkeypatch, garble=False, low_content=True)
-        state = self._make_low_content_state()
-        mixin = RecoveryMixin()
-        called = []
+            mixin._execute_ocr_retry = fake_execute
+            await mixin._recover_low_content_ocr(state, "/f.pdf", "f.pdf", ".pdf", None)
+            if len(calls) != expected:
+                failures.append(
+                    f"garble={garble} low_content={low_content}: "
+                    f"expected {expected} OCR retries, got {len(calls)}"
+                )
+        assert not failures, "kill-switch deconflation failures:\n  " + "\n  ".join(failures)
 
-        async def fake_execute(*a, **kw):
-            called.append(True)
-            return False
-
-        mixin._execute_ocr_retry = fake_execute
-        await mixin._recover_low_content_ocr(state, "/f.pdf", "f.pdf", ".pdf", None)
-        assert len(called) == 1, "low-content recovery should have fired"
-
-    @pytest.mark.asyncio
-    async def test_both_true_runs_independently(self, monkeypatch):
-        """When both flags are True, _recover_low_content_ocr runs (independent of garble)."""
-        from pageindex_mcp.client.recovery import RecoveryMixin
-
-        self._patch_config(monkeypatch, garble=True, low_content=True)
-        state = self._make_low_content_state()
-        mixin = RecoveryMixin()
-        called = []
-
-        async def fake_execute(*a, **kw):
-            called.append(True)
-            return False
-
-        mixin._execute_ocr_retry = fake_execute
-        await mixin._recover_low_content_ocr(state, "/f.pdf", "f.pdf", ".pdf", None)
-        assert len(called) == 1
-
-    def test_regression_disable_garble_does_not_disable_low_content(self, monkeypatch):
-        """Regression guard: the old code gated low-content recovery on
-        ocr_escalation_garble.  The new code uses ocr_escalation_low_content.
-        Verify by inspecting the source that _recover_low_content_ocr does NOT
-        reference ocr_escalation_garble."""
+    def test_low_content_recovery_does_not_read_the_garble_flag(self):
+        """Source guard for the regression above: the old code gated
+        low-content recovery on ocr_escalation_garble."""
         import inspect
+
         from pageindex_mcp.client.recovery import RecoveryMixin
 
         source = inspect.getsource(RecoveryMixin._recover_low_content_ocr)
@@ -901,11 +812,14 @@ class TestZeroContentRecoveryFlow:
         )
 
     def test_eligible_low_content_true_for_zero_node_document(self, monkeypatch):
-        """_eligible_low_content(state) is True for a zero-content document
-        as long as one of the OCR-escalation flags is on."""
+        """_eligible_low_content(state) is True for a zero-content document as
+        long as one of the OCR-escalation flags is on, and the char-floor guard
+        (`total_chars >= low_content_ocr_char_floor`) is a *skip* guard that
+        zero-content documents pass through rather than get blocked by."""
         import dataclasses as dc
-        from pageindex_mcp.config import pipeline_config as _orig
+
         import pageindex_mcp.helpers.gates as gates_mod
+        from pageindex_mcp.config import pipeline_config as _orig
         from pageindex_mcp.helpers.gates import _eligible_low_content
 
         new_cfg = dc.replace(
@@ -915,6 +829,7 @@ class TestZeroContentRecoveryFlow:
         state = self._make_zero_content_state()
         assert state.total_chars == 0
         assert _eligible_low_content(state)
+        assert not (state.total_chars >= _orig.low_content_ocr_char_floor)
 
     @pytest.mark.asyncio
     async def test_recover_low_content_ocr_proceeds_with_zero_chars(self, monkeypatch):
@@ -922,9 +837,10 @@ class TestZeroContentRecoveryFlow:
         with total_chars=0 -- the char-floor guard (0 >= 300 = False) must
         not skip recovery."""
         import dataclasses as dc
-        from pageindex_mcp.config import pipeline_config as _orig
+
         import pageindex_mcp.client.recovery as recovery_mod
         from pageindex_mcp.client.recovery import RecoveryMixin
+        from pageindex_mcp.config import pipeline_config as _orig
 
         new_cfg = dc.replace(_orig, ocr_escalation_low_content=True)
         monkeypatch.setattr(recovery_mod, "pipeline_config", new_cfg)
@@ -940,62 +856,9 @@ class TestZeroContentRecoveryFlow:
         await mixin._recover_low_content_ocr(state, "/f.pdf", "f.pdf", ".pdf", None)
         assert len(called) == 1, "zero-content document must reach _execute_ocr_retry"
 
-    def test_char_floor_skip_guard_allows_zero_chars(self):
-        """The char-floor guard ``total_chars >= low_content_ocr_char_floor``
-        evaluates False for total_chars=0, i.e. it is a *skip* guard that
-        zero-content documents pass through rather than get blocked by."""
-        from pageindex_mcp.config import pipeline_config
-
-        state = self._make_zero_content_state()
-        assert not (state.total_chars >= pipeline_config.low_content_ocr_char_floor)
-
-
-class TestIntegrationRecoveryLoopMultiDefect:
-    """Integration: full recovery loop with NODE_COUNT_LOW as first_defect and
-    GARBLING as secondary defect fires both low-content and garble recovery."""
-
-    def test_both_recoveries_eligible_when_co_fired(self):
-        """When NODE_COUNT_LOW + GARBLING co-fire, both _eligible_low_content
-        and _eligible_garble return True."""
-        from pageindex_mcp.helpers.gates import _eligible_garble, _eligible_low_content
-
-        state = ExtractionState(
-            result={"structure": [{"node_id": "1", "title": "R", "text": "x" * 10, "nodes": []}]},
-            ok=False,
-            reason="node_count<3",
-            gate_result=TreeGateResult(
-                ok=False,
-                defect=TreeDefect.NODE_COUNT_LOW,
-                all_defects=frozenset({TreeDefect.NODE_COUNT_LOW, TreeDefect.GARBLING}),
-            ),
-            first_defect=TreeDefect.NODE_COUNT_LOW,
-            route=Route.FLAT,
-            md_content="# test",
-            tmp_md_path=None,
-            pic_results=[],
-            used_converter="docling",
-            total_chars=10,
-            extraction_stages_captured=[],
-        )
-        assert _eligible_low_content(state), "NODE_COUNT_LOW must make low-content eligible"
-        assert _eligible_garble(state), "GARBLING secondary must make garble eligible"
-
-    def test_gate_specs_cover_both_recovery_chains(self):
-        """NODE_COUNT_LOW gate has low-content + image-dominant recovery;
-        GARBLING gate has garble + VLM recovery.  When both co-fire, the
-        recovery loop visits both gate specs' recovery_fns."""
-        gates_by_defect = {g.defect: g for g in GATES}
-        ncl_gate = gates_by_defect[TreeDefect.NODE_COUNT_LOW]
-        garble_gate = gates_by_defect[TreeDefect.GARBLING]
-        # Each has its own recovery chain
-        assert "_recover_low_content_ocr" in ncl_gate.recovery_fns
-        assert "_recover_garble_ocr" in garble_gate.recovery_fns
-        # They are independent recovery chains
-        assert set(ncl_gate.recovery_fns) != set(garble_gate.recovery_fns)
-
 
 # ===========================================================================
-# D4: Recovery dispatch cross-tuple dedup (Property 4)
+# Recovery dispatch: cross-tuple dedup and re-entry guards
 # ===========================================================================
 
 
@@ -1012,11 +875,6 @@ class TestRecoveryDispatchCrossTupleDedup:
         The method must execute exactly once."""
         from pageindex_mcp.client.indexer import CustomPageIndexClient
         from pageindex_mcp.helpers.gates import GATES
-
-        ncl_gate = next(g for g in GATES if g.defect == TreeDefect.NODE_COUNT_LOW)
-        depth_gate = next(g for g in GATES if g.defect == TreeDefect.DEPTH_LOW)
-        assert "_recover_image_dominant_ocr" in ncl_gate.recovery_fns
-        assert "_recover_image_dominant_ocr" in depth_gate.recovery_fns
 
         state = ExtractionState(
             result={"structure": [{"node_id": "1", "title": "R", "text": "x" * 10, "nodes": []}]},
@@ -1063,9 +921,6 @@ class TestRecoveryDispatchCrossTupleDedup:
             "pageindex_mcp.helpers.gates._eligible_image_dominant",
             lambda s: True,
         )
-
-        from pageindex_mcp.helpers import _flatten_tree_text
-        from pageindex_mcp.script import ScriptContext
 
         _fired_methods: set[str] = set()
         for _gate in GATES:
@@ -1166,11 +1021,6 @@ class TestRecoveryDispatchCrossTupleDedup:
         vlm_called.assert_called_once()
 
 
-# ===========================================================================
-# D4: VLM fallback single tesseract block (Property 4)
-# ===========================================================================
-
-
 class TestVLMFallbackSingleTesseractBlock:
     """RFC-041 D4 — VLM fallback with tesseract raster recovery uses
     a single consolidated block instead of three identical copies."""
@@ -1235,273 +1085,41 @@ class TestVLMFallbackSingleTesseractBlock:
         assert state.route == Route.FLAT
 
 
-# ===========================================================================
-# D3: Single-writer invariant enforcement
-# ===========================================================================
-
-
-class TestD3GuardedFieldProtection:
-    @pytest.mark.parametrize("field", ["route", "ok", "reason", "first_defect", "gate_result"])
-    def test_direct_assignment_raises(self, field):
-        state = _make_state()
-        with pytest.raises(AttributeError, match="D3 single-writer"):
-            setattr(state, field, None)
-
-    def test_non_guarded_field_assignment_allowed(self):
-        state = _make_state()
-        state.md_content = "new content"
-        assert state.md_content == "new content"
-
-    def test_finalize_gate_and_route_bypasses_guard(self):
-        state = _make_state()
-        gate = TreeGateResult(
-            ok=True,
-            defect=TreeDefect.OK,
-        )
-        finalize_gate_and_route(state, gate)
-        assert state.ok is True
-        assert state.route == Route.TREE
-
-    def test_recovery_outcome_apply_bypasses_guard(self):
-        state = _make_state()
-        RecoveryOutcome(ok=True, route=Route.FLAT).apply(state)
-        assert state.ok is True
-        assert state.route == Route.FLAT
-
-
-class TestD3DefectFromReasonStrValueError:
-    def test_unrecognized_reason_raises(self):
-        with pytest.raises(ValueError, match="Unrecognized reason string"):
-            _defect_from_reason_str("totally_unknown_reason")
-
-    def test_empty_reason_returns_ok(self):
-        assert _defect_from_reason_str("") == TreeDefect.OK
-
-    def test_none_reason_returns_ok(self):
-        assert _defect_from_reason_str(None) == TreeDefect.OK
-
-    def test_known_reason_returns_defect(self):
-        assert _defect_from_reason_str("garbling") == TreeDefect.GARBLING
-
-    def test_prefixed_reason_returns_defect(self):
-        assert _defect_from_reason_str("garbling(ratio=0.5)") == TreeDefect.GARBLING
-
-
-class TestD3ForceRouteOverride:
-    def test_force_route_overrides_decide_route(self):
-        state = _make_state()
-        gate = TreeGateResult(
-            ok=True,
-            defect=TreeDefect.OK,
-        )
-        finalize_gate_and_route(state, gate, force_route=Route.FLAT)
-        assert state.route == Route.FLAT
-        assert state.ok is True
-
-    def test_force_ok_overrides_gate_ok(self):
-        state = _make_state()
-        gate = TreeGateResult(
-            ok=True,
-            defect=TreeDefect.OK,
-        )
-        finalize_gate_and_route(state, gate, force_ok=False)
-        assert state.ok is False
-        assert state.route == Route.TREE
-
-    def test_force_route_and_force_ok_together(self):
-        state = _make_state()
-        gate = TreeGateResult(
-            ok=True,
-            defect=TreeDefect.OK,
-        )
-        finalize_gate_and_route(state, gate, force_route=Route.FLAT, force_ok=False)
-        assert state.route == Route.FLAT
-        assert state.ok is False
-
-    def test_rtl_comparison_site_produces_flat(self):
-        state = _make_state(ok=False, route=Route.REJECT, first_defect=TreeDefect.RTL_REVERSAL)
-        gate = TreeGateResult(
-            ok=False,
-            defect=TreeDefect.RTL_REVERSAL,
-            detail="rtl_reversal",
-        )
-        finalize_gate_and_route(
-            state,
-            gate,
-            recovery_method="rtl_comparison",
-            recovery_succeeded=True,
-            force_route=Route.FLAT,
-        )
-        assert state.route == Route.FLAT
-        assert state.ok is False
-
-    def test_vlm_tesseract_site_produces_flat(self):
-        state = _make_state(ok=False, route=Route.REJECT, first_defect=TreeDefect.GARBLING)
-        gate = TreeGateResult(
-            ok=False,
-            defect=TreeDefect.GARBLING,
-            detail="garbling",
-        )
-        finalize_gate_and_route(
-            state,
-            gate,
-            recovery_method="vlm_tesseract_raster",
-            recovery_succeeded=True,
-            force_route=Route.FLAT,
-        )
-        assert state.route == Route.FLAT
-
-    def test_flat_prefer_density_site(self):
-        state = _make_state(ok=True, route=Route.TREE)
-        gate = TreeGateResult(
-            ok=True,
-            defect=TreeDefect.OK,
-        )
-        finalize_gate_and_route(
-            state,
-            gate,
-            recovery_method="flat_prefer_density",
-            recovery_succeeded=True,
-            force_route=Route.FLAT,
-            force_ok=False,
-        )
-        assert state.route == Route.FLAT
-        assert state.ok is False
-
-    def test_landscape_reroute_site(self):
-        state = _make_state(ok=True, route=Route.TREE)
-        gate = TreeGateResult(
-            ok=True,
-            defect=TreeDefect.OK,
-        )
-        finalize_gate_and_route(
-            state,
-            gate,
-            recovery_method="landscape_reroute",
-            recovery_succeeded=True,
-            force_route=Route.FLAT,
-            force_ok=False,
-        )
-        assert state.route == Route.FLAT
-        assert state.ok is False
-
-
-class TestD3DeprecationWarning:
-    def test_legacy_tuple_emits_deprecation(self):
-        state = _make_state()
-        with pytest.warns(DeprecationWarning, match="legacy.*tuple"):
-            finalize_gate_and_route(state, (True, ""))
-
-    def test_tree_gate_result_no_deprecation(self):
-        import warnings
-
-        state = _make_state()
-        gate = TreeGateResult(
-            ok=True,
-            defect=TreeDefect.OK,
-        )
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", DeprecationWarning)
-            finalize_gate_and_route(state, gate)
-
-
 class TestReEntryGuardEnforcement:
     """RFC-044 D1: _recover_garble_ocr and _recover_low_content_ocr must
     respect state.full_page_already_applied, matching the pre-existing
     guard in _recover_image_dominant_ocr, so a document that already
-    received full-page OCR does not trigger a redundant retry."""
+    received full-page OCR does not trigger a redundant retry.
 
-    def _make_garble_state(self) -> ExtractionState:
-        return ExtractionState(
-            result={"structure": [{"node_id": "1", "title": "R", "text": "x" * 200, "nodes": []}]},
-            ok=False,
-            reason="garbled",
-            gate_result=TreeGateResult(
-                ok=False,
-                defect=TreeDefect.NODE_GARBLING,
-                all_defects=frozenset({TreeDefect.NODE_GARBLING}),
-            ),
-            first_defect=TreeDefect.NODE_GARBLING,
-            route=Route.REJECT,
-            md_content="# garbled content",
-            tmp_md_path=None,
-            pic_results=[],
-            used_converter="pymupdf4llm",
-            total_chars=200,
-            extraction_stages_captured=[],
-        )
+    The corrective-retry loop is bounded by that single flag; an off-by-one
+    here is a cost and latency incident, so the cascade is asserted too."""
 
-    def _make_low_content_state(self) -> ExtractionState:
-        return ExtractionState(
-            result={"structure": [{"node_id": "1", "title": "R", "text": "x" * 10, "nodes": []}]},
-            ok=False,
-            reason="node_count<3",
-            gate_result=TreeGateResult(
-                ok=False,
-                defect=TreeDefect.NODE_COUNT_LOW,
-                all_defects=frozenset({TreeDefect.NODE_COUNT_LOW}),
-            ),
-            first_defect=TreeDefect.NODE_COUNT_LOW,
-            route=Route.FLAT,
-            md_content="# low",
-            tmp_md_path=None,
-            pic_results=[],
-            used_converter="docling",
-            total_chars=10,
-            extraction_stages_captured=[],
-        )
+    _METHODS = (
+        ("_recover_garble_ocr", _make_garble_state),
+        ("_recover_low_content_ocr", _make_low_content_state),
+    )
 
     @pytest.mark.asyncio
-    async def test_garble_recovery_blocked_when_full_page_already_applied(self):
-        """_recover_garble_ocr must not call _execute_ocr_retry when the
-        guard flag is already set."""
+    async def test_guard_blocks_retry_exactly_when_flag_is_set(self):
+        """Table over (method, flag) -> whether _execute_ocr_retry fires.
+        Flag True must block; flag False must still fire (no D1 regression)."""
         from pageindex_mcp.client.recovery import RecoveryMixin
 
-        state = self._make_garble_state()
-        state.full_page_already_applied = True
-        mixin = RecoveryMixin()
-        mixin._execute_ocr_retry = AsyncMock(side_effect=AssertionError("should not be called"))
-        await mixin._recover_garble_ocr(state, "/f.pdf", "f.pdf", ".pdf", None)
-        mixin._execute_ocr_retry.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_low_content_recovery_blocked_when_full_page_already_applied(self):
-        """_recover_low_content_ocr must not call _execute_ocr_retry when
-        the guard flag is already set."""
-        from pageindex_mcp.client.recovery import RecoveryMixin
-
-        state = self._make_low_content_state()
-        state.full_page_already_applied = True
-        mixin = RecoveryMixin()
-        mixin._execute_ocr_retry = AsyncMock(side_effect=AssertionError("should not be called"))
-        await mixin._recover_low_content_ocr(state, "/f.pdf", "f.pdf", ".pdf", None)
-        mixin._execute_ocr_retry.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_garble_recovery_runs_when_flag_false(self):
-        """Regression guard: _recover_garble_ocr still fires normally when
-        full_page_already_applied=False (no behavior change from D1)."""
-        from pageindex_mcp.client.recovery import RecoveryMixin
-
-        state = self._make_garble_state()
-        assert state.full_page_already_applied is False
-        mixin = RecoveryMixin()
-        mixin._execute_ocr_retry = AsyncMock(return_value=False)
-        await mixin._recover_garble_ocr(state, "/f.pdf", "f.pdf", ".pdf", None)
-        mixin._execute_ocr_retry.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_low_content_recovery_runs_when_flag_false(self):
-        """Regression guard: _recover_low_content_ocr still fires normally
-        when full_page_already_applied=False (no behavior change from D1)."""
-        from pageindex_mcp.client.recovery import RecoveryMixin
-
-        state = self._make_low_content_state()
-        assert state.full_page_already_applied is False
-        mixin = RecoveryMixin()
-        mixin._execute_ocr_retry = AsyncMock(return_value=False)
-        await mixin._recover_low_content_ocr(state, "/f.pdf", "f.pdf", ".pdf", None)
-        mixin._execute_ocr_retry.assert_called_once()
+        failures: list[str] = []
+        for method_name, make_state in self._METHODS:
+            for flag, expected_calls in ((True, 0), (False, 1)):
+                state = make_state()
+                state.full_page_already_applied = flag
+                mixin = RecoveryMixin()
+                mixin._execute_ocr_retry = AsyncMock(return_value=False)
+                await getattr(mixin, method_name)(state, "/f.pdf", "f.pdf", ".pdf", None)
+                got = mixin._execute_ocr_retry.call_count
+                if got != expected_calls:
+                    failures.append(
+                        f"{method_name} with full_page_already_applied={flag}: "
+                        f"expected {expected_calls} retries, got {got}"
+                    )
+        assert not failures, "re-entry guard failures:\n  " + "\n  ".join(failures)
 
     @pytest.mark.asyncio
     async def test_guard_cascades_to_prevent_triple_ocr(self):
@@ -1511,7 +1129,7 @@ class TestReEntryGuardEnforcement:
         third OCR pass."""
         from pageindex_mcp.client.recovery import RecoveryMixin
 
-        state = self._make_garble_state()
+        state = _make_garble_state()
         mixin = RecoveryMixin()
         mixin._execute_ocr_retry = AsyncMock(return_value=True)
 
@@ -1526,3 +1144,663 @@ class TestReEntryGuardEnforcement:
         assert mixin._execute_ocr_retry.call_count == 1, (
             "second recovery must not trigger a redundant (third) OCR pass"
         )
+
+
+# ===========================================================================
+# D3: single-writer invariant on ExtractionState
+# ===========================================================================
+
+
+class TestD3GuardedFieldProtection:
+    def test_guarded_fields_reject_direct_assignment(self):
+        """Table over every guarded field; non-guarded fields stay writable."""
+        failures: list[str] = []
+        for field in ("route", "ok", "reason", "first_defect", "gate_result"):
+            state = _make_state()
+            try:
+                setattr(state, field, None)
+            except AttributeError as exc:
+                if "D3 single-writer" not in str(exc):
+                    failures.append(f"{field}: wrong AttributeError message: {exc}")
+            else:
+                failures.append(f"{field}: direct assignment was allowed")
+        assert not failures, "D3 single-writer failures:\n  " + "\n  ".join(failures)
+
+        state = _make_state()
+        state.md_content = "new content"
+        assert state.md_content == "new content"
+
+    def test_finalize_gate_and_route_bypasses_guard(self):
+        state = _make_state()
+        finalize_gate_and_route(state, TreeGateResult(ok=True, defect=TreeDefect.OK))
+        assert state.ok is True
+        assert state.route == Route.TREE
+
+
+class TestD3DefectFromReasonStr:
+    def test_reason_string_to_defect_table(self):
+        cases = [
+            ("", TreeDefect.OK),
+            (None, TreeDefect.OK),
+            ("garbling", TreeDefect.GARBLING),
+            ("garbling(ratio=0.5)", TreeDefect.GARBLING),
+        ]
+        failures: list[str] = []
+        for reason, expected in cases:
+            got = _defect_from_reason_str(reason)
+            if got is not expected:
+                failures.append(f"{reason!r}: expected {expected}, got {got}")
+        assert not failures, "reason->defect failures:\n  " + "\n  ".join(failures)
+
+        with pytest.raises(ValueError, match="Unrecognized reason string"):
+            _defect_from_reason_str("totally_unknown_reason")
+
+
+class TestD3ForceRouteOverride:
+    def test_force_route_and_force_ok_at_every_recovery_site(self):
+        """Table over the force_route/force_ok call shapes plus each real
+        recovery call site, asserting the (route, ok) each one produces."""
+
+        def ok_gate():
+            return TreeGateResult(ok=True, defect=TreeDefect.OK)
+
+        cases = [
+            (
+                "force_route_only",
+                lambda: _make_state(),
+                ok_gate,
+                {"force_route": Route.FLAT},
+                Route.FLAT,
+                True,
+            ),
+            (
+                "force_ok_only",
+                lambda: _make_state(),
+                ok_gate,
+                {"force_ok": False},
+                Route.TREE,
+                False,
+            ),
+            (
+                "force_route_and_ok",
+                lambda: _make_state(),
+                ok_gate,
+                {"force_route": Route.FLAT, "force_ok": False},
+                Route.FLAT,
+                False,
+            ),
+            (
+                "rtl_comparison",
+                lambda: _make_state(
+                    ok=False, route=Route.REJECT, first_defect=TreeDefect.RTL_REVERSAL
+                ),
+                lambda: TreeGateResult(
+                    ok=False, defect=TreeDefect.RTL_REVERSAL, detail="rtl_reversal"
+                ),
+                {
+                    "recovery_method": "rtl_comparison",
+                    "recovery_succeeded": True,
+                    "force_route": Route.FLAT,
+                },
+                Route.FLAT,
+                False,
+            ),
+            (
+                "vlm_tesseract_raster",
+                lambda: _make_state(
+                    ok=False, route=Route.REJECT, first_defect=TreeDefect.GARBLING
+                ),
+                lambda: TreeGateResult(ok=False, defect=TreeDefect.GARBLING, detail="garbling"),
+                {
+                    "recovery_method": "vlm_tesseract_raster",
+                    "recovery_succeeded": True,
+                    "force_route": Route.FLAT,
+                },
+                Route.FLAT,
+                False,
+            ),
+            (
+                "flat_prefer_density",
+                lambda: _make_state(ok=True, route=Route.TREE),
+                ok_gate,
+                {
+                    "recovery_method": "flat_prefer_density",
+                    "recovery_succeeded": True,
+                    "force_route": Route.FLAT,
+                    "force_ok": False,
+                },
+                Route.FLAT,
+                False,
+            ),
+            (
+                "landscape_reroute",
+                lambda: _make_state(ok=True, route=Route.TREE),
+                ok_gate,
+                {
+                    "recovery_method": "landscape_reroute",
+                    "recovery_succeeded": True,
+                    "force_route": Route.FLAT,
+                    "force_ok": False,
+                },
+                Route.FLAT,
+                False,
+            ),
+        ]
+
+        failures: list[str] = []
+        for label, make_state, make_gate, kwargs, exp_route, exp_ok in cases:
+            state = make_state()
+            finalize_gate_and_route(state, make_gate(), **kwargs)
+            if state.route != exp_route or state.ok is not exp_ok:
+                failures.append(
+                    f"{label}: expected route={exp_route} ok={exp_ok}, "
+                    f"got route={state.route} ok={state.ok}"
+                )
+        assert not failures, "force_route/force_ok failures:\n  " + "\n  ".join(failures)
+
+
+class TestD3DeprecationWarning:
+    def test_legacy_tuple_warns_tree_gate_result_does_not(self):
+        import warnings
+
+        state = _make_state()
+        with pytest.warns(DeprecationWarning, match="legacy.*tuple"):
+            finalize_gate_and_route(state, (True, ""))
+
+        state = _make_state()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            finalize_gate_and_route(state, TreeGateResult(ok=True, defect=TreeDefect.OK))
+
+
+# ===========================================================================
+# client/recovery.py pure helpers: _repeating_token_density, _keep_best_wins
+# (absorbed from tests/test_zone3_ocr_recovery.py)
+# ===========================================================================
+
+
+def _tree(text: str) -> dict:
+    return {"structure": [{"node_id": "1", "title": "", "text": text, "nodes": []}]}
+
+
+class TestRepeatingTokenDensity:
+    def test_density_table(self):
+        """Table: below the 20-token floor the measure saturates at 1.0; an
+        all-identical corpus is 1.0; all-unique is near zero; a 50/50 mix
+        lands in between."""
+        from pageindex_mcp.client.recovery import _repeating_token_density
+
+        cases = [
+            ("short text", "hello world", 1.0, 1.0),
+            ("19 tokens (under the floor)", " ".join(f"word{i}" for i in range(19)), 1.0, 1.0),
+            ("40 identical tokens", " ".join(["xkjqz"] * 40), 1.0, 1.0),
+            ("40 unique tokens", " ".join(f"uniqueword{i}" for i in range(40)), 0.0, 0.1),
+            (
+                "50/50 mix",
+                " ".join(["repeat"] * 20 + [f"unique{i}" for i in range(20)]),
+                0.4,
+                0.6,
+            ),
+        ]
+        failures: list[str] = []
+        for label, text, lo, hi in cases:
+            got = _repeating_token_density(text)
+            if not (lo <= got <= hi):
+                failures.append(f"{label}: expected {lo}..{hi}, got {got}")
+        assert not failures, "repeating-token density failures:\n  " + "\n  ".join(failures)
+
+
+class TestKeepBestWins:
+    def test_char_count_cascade(self):
+        """Table over the char-count arm of the keep-best cascade: a zero-char
+        pre-retry always loses, a shorter post-retry always loses, and a longer
+        non-garbled post-retry wins."""
+        from pageindex_mcp.client.recovery import _keep_best_wins
+
+        clean_pre = "This is a perfectly ordinary section of legible English prose text."
+        clean_post = clean_pre + " And some more legible text added by OCR retry."
+        cases = [
+            ("zero-char pre, any post", "", 0, "hello world new content", True),
+            ("post regresses on chars", "a" * 500, 500, "b" * 100, False),
+            ("post adds clean chars", clean_pre, len(clean_pre), clean_post, True),
+        ]
+        failures: list[str] = []
+        for label, pre, pre_chars, post, expected in cases:
+            got = _keep_best_wins(
+                pre_result=_tree(pre),
+                pre_total_chars=pre_chars,
+                post_result=_tree(post),
+                post_ok=True,
+                expected_script=None,
+                script_context=None,
+                filename="test.pdf",
+            )
+            if got is not expected:
+                failures.append(f"{label}: expected {expected}, got {got}")
+        assert not failures, "keep-best cascade failures:\n  " + "\n  ".join(failures)
+
+    def test_rfc045_density_worse_but_post_not_garbled_keeps_retry(self):
+        """RFC-045: when pre-retry is garbled and post-retry has higher density
+        but is NOT garbled, the density increase is from legitimate content
+        repetition — keep the retry."""
+        from pageindex_mcp.client.recovery import _keep_best_wins
+        from pageindex_mcp.script import ScriptContext
+
+        garbled_latin = " ".join(f"xk{i}qz elas Sie Cys de ABUL Lem oJ oiS" for i in range(25))
+        clean_arabic = " ".join(["وزارة الصناعة والتكنولوجيا المتقدمة وزارة الموارد البشرية"] * 25)
+        ctx = ScriptContext(
+            dominant_script="Arab",
+            had_presentation_forms=False,
+            source="test",
+        )
+        result = _keep_best_wins(
+            pre_result=_tree(garbled_latin),
+            pre_total_chars=len(garbled_latin),
+            post_result=_tree(clean_arabic),
+            post_ok=True,
+            expected_script="Arab",
+            script_context=ctx,
+            filename="doc6_mohre.pdf",
+        )
+        assert result is True, (
+            "RFC-045: retry with clean Arabic should win over garbled Latin "
+            "even when repeating-token density is higher"
+        )
+
+
+# ===========================================================================
+# RFC-046 D2: OCR engine + prong attribution
+# (absorbed from tests/test_rfc046_attribution.py)
+# ===========================================================================
+
+
+class TestOcrEngineIdentity:
+    """D2 / Property 2: an engine identity exists and is threaded as data."""
+
+    def test_engine_enum_shape(self):
+        from pageindex_mcp.picture_plane import OcrEngine
+
+        assert {e.value for e in OcrEngine} == {"tesseract", "surya"}
+        assert OcrEngine.TESSERACT == "tesseract"
+        # Interpolating into a log line or a sidecar must not yield "OcrEngine.X".
+        assert f"{OcrEngine.TESSERACT}" == "tesseract"
+
+
+class TestOcrDecisionCarriesEngine:
+    """D2: OcrDecision gains `engine`, defaulted so existing callers are unaffected."""
+
+    def test_engine_field_default_settable_and_frozen(self):
+        from pageindex_mcp.picture_plane import OcrDecision, OcrEngine, OcrMode
+
+        assert OcrDecision(mode=OcrMode.NONE).engine is OcrEngine.TESSERACT
+        explicit = OcrDecision(mode=OcrMode.FULL_PAGE, engine=OcrEngine.TESSERACT)
+        assert explicit.engine is OcrEngine.TESSERACT
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            explicit.engine = OcrEngine.TESSERACT  # type: ignore[misc]
+
+    def test_every_decision_path_carries_an_engine(self):
+        """D2: no branch of decide_ocr_strategy may emit a decision without an
+        engine label — including the re-entry-guard short circuit."""
+        from pageindex_mcp.picture_plane import OcrEngine, OcrMode, decide_ocr_strategy
+
+        cases = [
+            ({"ocr_escalation_enabled": False, "has_image_markers": False}, OcrMode.NONE),
+            (
+                {
+                    "ocr_escalation_enabled": False,
+                    "has_image_markers": False,
+                    "force_full_page": True,
+                },
+                OcrMode.FULL_PAGE,
+            ),
+            ({"ocr_escalation_enabled": True, "has_image_markers": True}, OcrMode.PER_PICTURE),
+            (
+                {
+                    "ocr_escalation_enabled": True,
+                    "has_image_markers": True,
+                    "full_page_already_applied": True,
+                },
+                OcrMode.NONE,
+            ),
+        ]
+        failures: list[str] = []
+        for kwargs, expected_mode in cases:
+            decision = decide_ocr_strategy(**kwargs)
+            if decision.mode is not expected_mode:
+                failures.append(f"{kwargs}: expected mode {expected_mode}, got {decision.mode}")
+            if decision.engine is not OcrEngine.TESSERACT:
+                failures.append(f"{kwargs}: no engine attribution ({decision.engine})")
+        assert not failures, (
+            "decide_ocr_strategy attribution failures:\n  " + "\n  ".join(failures)
+        )
+
+    def test_forwarded_params_reach_the_decision(self):
+        """Zone-3: garble_status / document_type / ocr_langs are accepted AND
+        carried onto the emitted decision (this test used to assert only
+        `isinstance(result, OcrDecision)`, which cannot fail)."""
+        from pageindex_mcp.picture_plane import OcrEngine, OcrMode, decide_ocr_strategy
+
+        result = decide_ocr_strategy(
+            ocr_escalation_enabled=True,
+            has_image_markers=True,
+            garble_status=True,
+            document_type="pdf",
+            ocr_langs=["deu", "ara"],
+        )
+        assert result.mode is OcrMode.PER_PICTURE
+        assert result.garble_status is True
+        assert result.has_image_markers is True
+        assert result.ocr_langs == ["deu", "ara"]
+        assert result.engine is OcrEngine.TESSERACT
+
+
+class TestAttributionCarriers:
+    """D2 / R2.3: the carriers that move engine provenance to the sidecar."""
+
+    def test_picture_result_and_extraction_state_carry_an_engine(self):
+        from pageindex_mcp.converters.types import PictureResult
+
+        assert "ocr_engine" in PictureResult.__annotations__
+        names = {f.name for f in dataclasses.fields(ExtractionState)}
+        assert "ocr_engine" in names, "ExtractionState must carry document-level engine"
+
+
+class TestAllOcrSitesDeclareTheirEngine:
+    """D2 / R2.3 / Property 2 — the five OCR invocation sites.
+
+    Prior enumerations consistently found four and missed
+    ``_landscape_rasterize_rotate_reextract``, which consults no decision
+    function at all and is implicated in the Doc 17 failure. Enumerating them
+    by name here means a sixth site added later fails this test rather than
+    silently escaping attribution.
+    """
+
+    SITES: ClassVar[dict[str, str]] = {
+        "converters/pictures.py": "_tesseract_ocr_image",
+        "converters/formats.py": "tesseract_ocr_pdf_pages",
+        "converters/docling_conv.py": "TesseractCliOcrOptions",
+        "client/recovery.py": "_attempt_tesseract_raster_recovery",
+        "converters/pipeline.py": "_landscape_rasterize_rotate_reextract",
+    }
+
+    def test_every_ocr_site_file_declares_the_engine(self):
+        missing = []
+        for rel, symbol in self.SITES.items():
+            src = _src(rel)
+            assert symbol in src, f"{rel}: OCR site {symbol} vanished -- update this test"
+            if "OcrEngine" not in src:
+                missing.append(rel)
+        assert not missing, (
+            "these OCR invocation sites do not declare an OcrEngine, so a verdict "
+            f"produced through them cannot be attributed: {missing}"
+        )
+
+
+class TestConverterNameIsSourcedNotRestated:
+    """D2 / R2.4: ``state.used_converter`` must not be a bare hardcoded literal.
+
+    ``recovery.py`` assigned ``state.used_converter = "docling"`` directly while
+    ``pipeline.py`` independently named the same converter in four places. The
+    name is now defined once and imported, so the two cannot drift. The OCR
+    retry path forces full-page OCR, so it must also record an engine or its
+    verdict is unattributable (R2.3).
+    """
+
+    def test_recovery_sources_the_converter_name_and_records_the_engine(self):
+        from pageindex_mcp.converters.pipeline import DOCLING_CONVERTER_NAME
+
+        assert DOCLING_CONVERTER_NAME == "docling"
+        src = _src("client/recovery.py")
+        assert 'used_converter = "docling"' not in src, (
+            "recovery.py must source the converter name, not restate it (R2.4)"
+        )
+        assert "state.ocr_engine" in src, (
+            "the OCR retry path must record state.ocr_engine (R2.3)"
+        )
+
+
+class TestGarbleProngsSurviveToTheSidecar:
+    """D2 / R2.5: `fired_prongs` is computed on every garble evaluation and thrown away.
+
+    `detect_garble` returns a `GarbleReport` naming which of thirteen prongs
+    condemned a document, but `TreeSignals.from_tree` wrapped the call in
+    `bool(...)` and `_persist_tree_result` writes only `all_defects`. So no
+    stored artifact says *why* a document was called garbled.
+
+    That is why Doc 22 cannot be diagnosed from the store: `presentation_forms`
+    (a verdict defect, fixed by D5) and `single_letter_fragments` (genuine
+    Arabic shaping loss, out of scope) are indistinguishable after the fact,
+    and they have opposite fixes.
+    """
+
+    def test_tree_signals_carry_the_fired_prongs(self):
+        from pageindex_mcp.helpers.tree_validation import TreeSignals
+
+        assert "garble_prongs" in {f.name for f in dataclasses.fields(TreeSignals)}
+
+        clean = TreeSignals.from_tree(
+            [{"title": "Introduction", "text": "This is clean English prose. " * 20}]
+        )
+        assert clean.garbled is False
+        assert clean.garble_prongs == frozenset()
+
+        # PUA codepoints are an unambiguous, script-independent garble signal.
+        garbled = TreeSignals.from_tree([{"title": "X", "text": "" * 200}])
+        assert garbled.garbled is True
+        assert garbled.garble_prongs, "a garbled document must name at least one prong"
+        assert all(isinstance(p, str) for p in garbled.garble_prongs)
+
+
+class TestSidecarCarriesAttribution:
+    """D2 / R2.5-R2.7: both persistence paths must record engine and prongs.
+
+    `_persist_tree_result` and `_persist_flat_result` did not agree on what
+    they recorded. Wave 1 makes both carry the same attribution fields, so a
+    corpus diff is explainable regardless of which route a document took.
+    """
+
+    def test_both_persistence_paths_record_engine_and_prongs(self):
+        src = _src("client/indexer.py")
+        missing = [
+            key
+            for key in (
+                'meta["garble_prongs"]',
+                'meta["ocr_engine"]',
+                'flat_meta["garble_prongs"]',
+                'flat_meta["ocr_engine"]',
+            )
+            if key not in src
+        ]
+        assert not missing, f"indexer.py persistence paths drop attribution: {missing}"
+
+
+class TestImagePathRecordsItsEngine:
+    """D2 / R2.3 — gap found by the 2026-09-15 smoke test.
+
+    Doc 13 (pie chart) demonstrably ran OCR -- its stored blocks contain
+    Latin-transliteration output -- yet no ``ocr_engine`` reached the sidecar,
+    because only the *recovery* paths set ``state.ocr_engine``. "No engine in
+    the sidecar" therefore meant "no OCR retry ran", not "no OCR ran", which
+    would have made the Wave 1 baseline actively misleading.
+    """
+
+    def test_ocr_call_sites_attribute_the_engine_at_the_call_site(self):
+        # Must be set *at the OCR call site*, not merely mentioned by the
+        # persistence code -- otherwise the assertion passes vacuously.
+        indexer = _src("client/indexer.py")
+        # Find the *primary* _tesseract_ocr_image call (the fallback for the
+        # initial image OCR), not the D4 corrective-retry call added by
+        # task 6.2.  The primary site is the first non-import occurrence.
+        first = indexer.find("_tesseract_ocr_image")
+        assert first != -1, "standalone-image OCR call site vanished -- update this test"
+        idx = indexer.find("_tesseract_ocr_image", first + 1)
+        assert idx != -1, "standalone-image OCR call site vanished -- update this test"
+        window = indexer[max(0, idx - 1500) : idx + 500]
+        assert "state.ocr_engine" in window, (
+            "the standalone-image OCR path runs tesseract (indexer.py:915) and "
+            "must record the engine at the call site, or its verdict is unattributable"
+        )
+
+        # _attempt_tesseract_raster_recovery (images.py) has no `state`, so
+        # attribution is owned by its caller in recovery.py, which sets the
+        # engine before invoking it. Assert that, not something images.py
+        # cannot do.
+        recovery = _src("client/recovery.py")
+        r_idx = recovery.find("_attempt_tesseract_raster_recovery(")
+        assert r_idx != -1, "raster-recovery call site vanished -- update this test"
+        assert "state.ocr_engine" in recovery[max(0, r_idx - 600) : r_idx], (
+            "the caller of _attempt_tesseract_raster_recovery must attribute the engine"
+        )
+
+
+# ===========================================================================
+# RFC-046 D4: image recovery eligibility + bounded corrective retry
+# (absorbed from tests/test_d4_corrective_retry.py)
+# ===========================================================================
+
+
+def _recovery_method_source(method_name: str) -> str:
+    """Return the source of a single method from client/recovery.py."""
+    text = _src("client/recovery.py")
+    tree = ast.parse(text)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == method_name:
+            return ast.get_source_segment(text, node)
+    raise LookupError(f"{method_name} not found in recovery.py")
+
+
+class TestImageRecoveryEligibility:
+    """Task 6.1: recovery methods must accept _IMAGE_EXTS, not only .pdf."""
+
+    def test_every_recovery_method_guards_on_image_exts(self):
+        from pageindex_mcp.client.images import _IMAGE_EXTS
+
+        assert _IMAGE_EXTS, "the image-extension set must not be empty"
+        methods = [
+            "_recover_garble_ocr",
+            "_recover_low_content_ocr",
+            "_recover_image_dominant_ocr",
+            "_recover_rtl_repair",
+            "_recover_vlm_fallback",
+        ]
+        missing = [m for m in methods if "_IMAGE_EXTS" not in _recovery_method_source(m)]
+        assert not missing, (
+            f"these recovery methods do not reference _IMAGE_EXTS, so image inputs "
+            f"are silently skipped: {missing}"
+        )
+        assert "from .images import _IMAGE_EXTS" in _src("client/recovery.py")
+
+    def test_execute_ocr_retry_has_image_dispatch(self):
+        """_execute_ocr_retry must have an image-specific OCR dispatch path."""
+        src = _recovery_method_source("_execute_ocr_retry")
+        assert "image_to_markdown" in src, (
+            "_execute_ocr_retry lacks image_to_markdown dispatch — "
+            "image inputs will hit the PDF-only converter path"
+        )
+        assert "image_tesseract" in src, (
+            "_execute_ocr_retry lacks image_tesseract decision choice"
+        )
+
+
+class TestCorrectiveRetry:
+    """Task 6.2: bounded detect-correct-retry in the image path."""
+
+    def test_corrective_path_is_wired_through_arbitrate(self):
+        src = _src("client/indexer.py")
+        assert "d4_corrective_retry" in src, "the d4_corrective_retry decision event is gone"
+        assert "arbitrate(" in src, "the corrective path must use arbitrate(), not ad-hoc compare"
+
+    def test_arbitrate_prefers_clean_and_tie_breaks_to_the_original(self):
+        """Garbled original vs clean corrective -> corrective wins; both clean
+        -> the original (index 0) wins the tie-break, so the bounded retry
+        cannot churn the result for free."""
+        garbled = Candidate(
+            label="filename_derived",
+            text="junk " * 100,
+            char_count=500,
+            garbled=True,
+            engine="tesseract",
+        )
+        clean = Candidate(
+            label="corrective_retry",
+            text="مرحبا " * 100,
+            char_count=600,
+            garbled=False,
+            engine="tesseract",
+        )
+        assert arbitrate([garbled, clean]) == 1, "corrective should win when it is not garbled"
+
+        original = Candidate(
+            label="filename_derived",
+            text="hello " * 100,
+            char_count=600,
+            garbled=False,
+            engine="tesseract",
+        )
+        corrective = Candidate(
+            label="corrective_retry",
+            text="world " * 100,
+            char_count=600,
+            garbled=False,
+            engine="tesseract",
+        )
+        assert arbitrate([original, corrective]) == 0, "original should win when both are clean"
+
+
+class TestD4DecisionPoints:
+    """Task 6.3: decision points are registered with their choices."""
+
+    def test_corrective_retry_and_dispatch_points_registered(self):
+        from pageindex_mcp.obs.decision_points import point_for
+
+        pt = point_for("d4_corrective_retry")
+        assert pt is not None
+        assert "corrective_retry" in pt.choices
+        assert "skip_langs_match" in pt.choices
+        assert "image_tesseract" in point_for("ocr_retry_dispatch_route").choices
+
+
+class TestD4ArchitectureGuards:
+    """Verify that the widened recovery methods still satisfy the bounded-retry
+    architecture invariant: every caller of _execute_ocr_retry checks
+    state.full_page_already_applied before the call, so the retry loop cannot
+    run unbounded."""
+
+    def test_all_ocr_retry_callers_have_full_page_guard(self):
+        src = _src("client/recovery.py")
+        tree = ast.parse(src)
+        callers: set[str] = set()
+        failures: list[str] = []
+        for cls in ast.walk(tree):
+            if not isinstance(cls, ast.ClassDef) or cls.name != "RecoveryMixin":
+                continue
+            for method in cls.body:
+                if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                retry_line = None
+                for node in ast.walk(method):
+                    if isinstance(node, ast.Attribute) and node.attr == "_execute_ocr_retry":
+                        retry_line = node.lineno
+                if retry_line is None:
+                    continue
+                callers.add(method.name)
+                guard_line = None
+                for node in ast.walk(method):
+                    if isinstance(node, ast.If):
+                        if_src = ast.get_source_segment(src, node)
+                        if if_src and "full_page_already_applied" in if_src:
+                            guard_line = node.lineno
+                            break
+                if guard_line is None or guard_line >= retry_line:
+                    failures.append(
+                        f"{method.name}: full_page_already_applied guard missing or "
+                        f"after the _execute_ocr_retry call"
+                    )
+        assert not failures, "unbounded OCR retry paths:\n  " + "\n  ".join(failures)
+
+        expected = {
+            "_recover_garble_ocr",
+            "_recover_low_content_ocr",
+            "_recover_image_dominant_ocr",
+        }
+        assert expected <= callers, f"Missing expected callers: {expected - callers}"

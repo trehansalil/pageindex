@@ -1,11 +1,29 @@
 # ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
-"""Converter chain, OCR chain, picture gating, and content recovery tests."""
+"""Converter chain, OCR chain, picture gating, pipeline and CLI tests.
+
+Consolidated home for the converter cluster.  Absorbed (and deleted):
+``test_converters_pipeline.py``, ``test_converters_cli.py`` and
+``test_d10c_pre_nfkc_threading.py``.
+
+Tests are grouped by the production function they exercise, not by origin
+file.  Many former parametrize tables are now single table-driven tests that
+collect every mismatch and assert once, so a failure names every offending
+row instead of only the first.
+"""
 
 from __future__ import annotations
 
+import base64
+import copy
 import dataclasses
+import io
+import json
+import os
+import subprocess
 import sys
 import types
+import unicodedata
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -22,6 +40,7 @@ from pageindex_mcp.config import OCR_ESCALATION_GARBLE, pipeline_config, reset_p
 from pageindex_mcp.converters import (
     _AR_PART_RE,
     _bbox_to_fitz_rect,
+    _clip_text_contained,
     _containment_depths,
     _document_level_text_fallback,
     _fix_fi_hash_substitution,
@@ -29,7 +48,9 @@ from pageindex_mcp.converters import (
     _inject_english_article_headings,
     _inject_german_clause_headings,
     _is_numeric_extension,
+    _normalize_for_containment,
     _normalize_indented_headings,
+    _recover_picture_results,
     _recover_picture_text,
     _segment_label,
     _text_layer_has_content,
@@ -50,10 +71,24 @@ from pageindex_mcp.converters.pipeline import ConverterChainEntry
 from pageindex_mcp.helpers import (
     BULK_PROFILE,
     FLAT_MARKDOWN_PROFILE,
+    HARD_FAIL_DEFECTS,
+    _GATE_PRIORITY,
+    _OVERSIZED_ORDINAL_RE,
+    GateOutcome,
     TreeDefect,
+    TreeGateResult,
+    TreeSignals,
+    VerdictThresholds,
     _flat_block_primary_text,
     _flatten_tree_text,
+    _has_heading_markers,
+    _ordinal_value,
+    _segment_table_nodes,
+    apply_promotions,
     classify_verdict,
+    evaluate_gates,
+    prepare_tree,
+    split_oversized_leaf_nodes,
 )
 from pageindex_mcp.helpers.types import ExtractionState, Route
 from pageindex_mcp.metrics import IMAGE_DESCRIBE_FAILURES
@@ -62,1435 +97,66 @@ from pageindex_mcp.worker import _classify_llm_failure
 from tests._garble_compat import check_garble
 
 
-# --- from test_converters.py ---
-
 # ═════════════════════════════════════════════════════════════════════════
-# _segment_label / _containment_depths (RFC-033 D4)
+# Shared fixtures / helpers
 # ═════════════════════════════════════════════════════════════════════════
 
-
-@pytest.mark.parametrize(
-    ("title", "expected"),
-    [
-        ("Article (47) - Title", ["47"]),
-        ("Article 47 - Title", ["47"]),
-    ],
-)
-def test_segment_label_article_parenthesized_and_plain(title, expected):
-    """RFC-033 D4: parenthesized article numbering yields the same label as
-    the plain form, so both get an explicit containment depth."""
-    assert _segment_label(title) == expected
-
-
-def test_containment_depths_non_none_for_both_article_forms():
-    """RFC-033 D4 / Property 4: because both forms segment to the same label,
-    _containment_depths assigns an explicit (non-None) depth to each, so
-    _relevel_by_containment no longer no-ops on parenthesized Article headings."""
-    depths = _containment_depths(["Article (47) - Title", "Article 47 - Title"])
-    assert all(d is not None for d in depths)
-
-
-# ═════════════════════════════════════════════════════════════════════════
-# Arabic stem regex reversal (RFC-033 D8 / Property 8)
-# ═════════════════════════════════════════════════════════════════════════
-
-# Reversed Arabic stem regexes are equivalent to their forward form.
-# Tesseract's RTL-reversal bug mirrors the glyph order of scanned Arabic
-# headings ("المادة" -> "ةداملا"), so the forward-oriented _AR_PART_RE /
-# _AR_ARTICLE_RE / _AR_WORD_RE stems must also match the reversed variant for
-# numbering_depth() / _relevel_by_containment() to recover structure from
-# mirror-reversed OCR output.
-
-
-@pytest.mark.parametrize(
-    ("forward", "reversed_"),
-    [
-        ("الباب", "بابلا"),
-        ("الفصل", "لصفلا"),
-        ("فصل", "لصف"),
-        ("القسم", "مسقلا"),
-        ("الجزء", "ءزجلا"),
-    ],
-)
-def test_ar_part_re_matches_reversed_stem(forward, reversed_):
-    assert _AR_PART_RE.match(forward) is not None
-    assert _AR_PART_RE.match(reversed_) is not None
-
-
-def test_numbering_depth_matches_reversed_article_and_part():
-    """numbering_depth() assigns the same depth to a reversed stem as it does
-    to its forward form, so Tesseract-reversed headings recover the same
-    hierarchy as clean OCR output."""
-    assert numbering_depth("المادة") == numbering_depth("ةداملا") == 2
-    assert numbering_depth("الباب") == numbering_depth("بابلا") == 1
-
-
-# ═════════════════════════════════════════════════════════════════════════
-# reconstruct_bidi_order heading-branch double-reversal guard (RFC-033 D2 A)
-# ═════════════════════════════════════════════════════════════════════════
-
-# `reconstruct_bidi_order()` narrows RFC-023 D9's unconditional heading branch --
-# `get_display()` is now applied to a heading only when it is not already in
-# logical order, so already-correct Arabic headings are no longer reversed by
-# our own pipeline (Run-15: المحتويات / الخلاصة -> تايوتحملا / ةصالخلا).
-
-_LOGICAL_TOC_HEADING = "المحتويات"
-_LOGICAL_SUMMARY_HEADING = "الخلاصة"
-
-_LOGICAL_D9_HEADING = "الفصل الأول: تعريفات"
-_VISUAL_D9_HEADING = get_display(_LOGICAL_D9_HEADING)
-
-
-class TestHeadingGuardIdempotence:
-    """Property 10: reconstruct_bidi_order never reverses an already-logical heading."""
-
-    def test_visual_order_heading_still_corrected(self):
-        """(b) Genuinely visual-order headings are still corrected -- the
-        RFC-023 D9 bilingual case must not regress."""
-        body_en = "This is the English body text describing the agreement terms in detail. " * 5
-        doc = "## " + _VISUAL_D9_HEADING + "\n" + body_en
-        result, _ = reconstruct_bidi_order(doc)
-        lines = result.splitlines()
-        assert lines[0] == "## " + _LOGICAL_D9_HEADING
-        assert body_en in result
-
-    @pytest.mark.parametrize(
-        "heading",
-        [_LOGICAL_TOC_HEADING, _LOGICAL_SUMMARY_HEADING, _LOGICAL_D9_HEADING, _VISUAL_D9_HEADING],
-    )
-    def test_repair_path_is_idempotent(self, heading):
-        """(c) client.py:1255-1280's secondary repair path re-applies
-        reconstruct_bidi_order to node titles when validate_tree flags
-        'rtl_reversal'. A node entering that path once must not be reversed
-        again on a second pass -- reconstruct_bidi_order must be a fixed
-        point of itself once applied."""
-        doc = "# " + heading
-        once, _ = reconstruct_bidi_order(doc)
-        twice, _ = reconstruct_bidi_order(once)
-        assert twice == once
-
-
-# ═════════════════════════════════════════════════════════════════════════
-# Structural heading injection: line-start anchoring (RFC-033 D5 / Property 9)
-# ═════════════════════════════════════════════════════════════════════════
-
-
-class TestStructuralHeadingInjectionLineStartAnchored:
-    """Property 9: structural heading injection never promotes mid-sentence
-    references (RFC-033 D5)."""
-
-    def test_english_article_prose_line_promoted(self):
-        md = "Some intro text.\n\nArticle (3) Definitions\n\nMore body text follows."
-        result = _inject_english_article_headings(md)
-        assert "## Article (3) Definitions" in result.splitlines()
-
-    def test_english_article_mid_sentence_not_promoted(self):
-        md = "Some intro text.\n\nsee Article (1) above\n\nMore body text follows."
-        result = _inject_english_article_headings(md)
-        assert "## see Article (1) above" not in result
-        assert "see Article (1) above" in result
-
-    def test_german_clause_body_paragraph_not_promoted(self):
-        """A clause *body* that opens with its own number must not be swallowed
-        into a heading title -- line-start anchoring alone does not catch it."""
-        prose = "Ziffer 3 gilt entsprechend fuer die Anspruecke des Versicherungsnehmers, " + (
-            "soweit diese nach den vorstehenden Bestimmungen nicht ausgeschlossen sind. " * 3
-        )
-        result = _inject_german_clause_headings(prose)
-        assert result == prose
-
-    @pytest.mark.parametrize(
-        ("inject", "heading"),
-        [
-            (_inject_german_clause_headings, "Ziffer 1 Haftung"),
-            (_inject_english_article_headings, "Article (3) Definitions"),
-        ],
-    )
-    def test_injection_is_idempotent(self, inject, heading):
-        once = inject(f"Intro.\n\n{heading}\n\nBody.")
-        assert inject(once) == once
-
-
-# ═════════════════════════════════════════════════════════════════════════
-# Arabic mirror-reversal detection and repair (RFC-033 D8 / Property 11)
-# ═════════════════════════════════════════════════════════════════════════
-
-# Reversal detection is precise -- it correctly identifies mirror-reversed
-# Arabic OCR output and recovers the corrected heading structure, and it does
-# not fire on non-reversed Arabic (modeled on the مرسوم 13 / مرسوم 33 corpus
-# fixtures), avoiding false positives.
-
-_FORWARD_DOC = """مرسوم اتحادي رقم (13) لسنة 2016
-في شأن تنظيم القطاع الصحي
-
-الباب الأول
-أحكام تمهيدية
-
-المادة (1)
-تعريفات
-تسري على هذا المرسوم الاتحادي التعريفات التالية ما لم يقتض السياق خلاف ذلك.
-
-المادة (2)
-نطاق التطبيق
-تسري أحكام هذا المرسوم الاتحادي على جميع المنشآت الصحية في الدولة."""
-
-
-def _mirror_reverse(doc: str) -> str:
-    """Character-reverse each non-empty line, mirroring the Tesseract
-    RTL-reversal bug described in RFC-033 D8 (line content reversed, line
-    boundaries preserved)."""
-    return "\n".join(line[::-1] if line.strip() else line for line in doc.split("\n"))
-
-
-_REVERSED_DOC = _mirror_reverse(_FORWARD_DOC)
-
-
-class TestArabicReversalDetection:
-    def test_no_false_positive_on_forward_document(self):
-        """Negative test: a non-reversed Arabic document modeled on the
-        مرسوم 13 / مرسوم 33 corpus fixtures must not trigger the detector."""
-        assert decide_rtl(_FORWARD_DOC).reversed is False
-
-
-class TestArabicReversalRepairCorrectness:
-    @pytest.fixture(autouse=True)
-    def _disable_density_guard(self, monkeypatch):
-        import pageindex_mcp.converters.headings as _h
-
-        monkeypatch.setattr(_h, "_AR_HEADING_MIN_CONTENT_CHARS", 0)
-
-    def test_reversed_document_recovers_corrected_heading_structure(self):
-        """When reversal is detected, structural lines (الباب/المادة) are
-        promoted to the same heading levels a clean, forward-oriented OCR
-        pass would produce -- the corrected structure is recovered even
-        though the underlying OCR text is mirror-reversed."""
-        result = _inject_arabic_structural_headings(_REVERSED_DOC)
-        result_lines = result.split("\n")
-        reversed_part_line = "الباب الأول"[::-1]
-        reversed_article_line = "المادة (1)"[::-1]
-        assert f"# {reversed_part_line}" in result_lines
-        assert f"## {reversed_article_line}" in result_lines
-
-
-# ═════════════════════════════════════════════════════════════════════════
-# normalize_dashes (CONV-01-C2)
-# ═════════════════════════════════════════════════════════════════════════
-
-
-def test_normalize_dashes_maps_en_em_minus_to_ascii_hyphen():
-    """CONV-01-C2: U+2013 en-dash, U+2014 em-dash, U+2212 minus -> ASCII '-'."""
-    assert normalize_dashes("–") == "-"  # en-dash
-    assert normalize_dashes("—") == "-"  # em-dash
-    assert normalize_dashes("−") == "-"  # minus sign
-    # Mixed clause-code text "A – 1" normalizes to a matchable "A - 1"
-    assert normalize_dashes("§ 5 – 1") == "§ 5 - 1"
-    # ASCII hyphen and ordinary text are left untouched
-    assert normalize_dashes("plain-text 123") == "plain-text 123"
-
-
-# ═════════════════════════════════════════════════════════════════════════
-# Converter dispatch table (CONV-01-C1, CONV-01-C3, INDEX-01-C1..C3)
-# ═════════════════════════════════════════════════════════════════════════
-
-
-def test_each_supported_format_has_a_dedicated_converter():
-    """CONV-01-C1: .pdf->pdf_to_markdown, .docx->docx_to_markdown,
-    .pptx->pptx_to_markdown, .html->html_to_markdown_with_images. Each is a
-    distinct callable; the dispatch table below is the contract surface."""
-    dispatch = {
-        ".pdf": pdf_to_markdown,
-        ".docx": docx_to_markdown,
-        ".pptx": pptx_to_markdown,
-        ".html": html_to_markdown_with_images,
-    }
-    # Four distinct converters, one per supported extension.
-    assert len(set(dispatch.values())) == 4
-    for ext, fn in dispatch.items():
-        assert callable(fn), f"converter for {ext} must be callable"
-
-
-def _classify_extension(filename: str) -> str:
-    """Reference of the converter dispatch decision: returns the format token or
-    raises ValueError("unsupported_format"). Mirrors Converter.convert()'s guard
-    so CONV-01-C3 is asserted without booting LibreOffice or an LLM."""
-    supported = {".pdf", ".docx", ".pptx", ".html"}
-    import os
-
-    ext = os.path.splitext(filename)[1].lower()
-    if ext not in supported:
-        raise ValueError("unsupported_format")
-    return ext
-
-
-def test_unsupported_format_raises_unsupported_format():
-    """CONV-01-C3: a .xyz file is rejected with reason=unsupported_format and no
-    converter / LLM / subprocess is invoked."""
-    with pytest.raises(ValueError, match="unsupported_format"):
-        _classify_extension("mystery.xyz")
-    # Supported formats are NOT rejected.
-    for good in ("a.pdf", "b.docx", "c.pptx", "d.html"):
-        assert _classify_extension(good) in {".pdf", ".docx", ".pptx", ".html"}
-
-
-def test_index_01_c1_pdf_to_markdown_live():
-    """INDEX-01-C1 (live): pdf_to_markdown drives pymupdf4llm; skipped when the
-    AGPL extractor is not installed in the environment."""
-    pytest.importorskip("pymupdf4llm")
-    # Reference-level assertion: the primary route helper is importable and is a
-    # plain callable (not the PyPDF2 fallback path).
-    assert callable(pdf_to_markdown)
-    assert pdf_to_markdown.__module__ == "pageindex_mcp.converters"
-
-
-def test_index_01_c3_non_pdf_uses_own_converter_not_pdf_route():
-    """INDEX-01-C3: .docx and .html dispatch to their own converters; the
-    pdf_to_markdown route is reserved for .pdf only. Asserts the dispatch table
-    keeps the routes disjoint (pdf_to_markdown is never the .docx/.html target)."""
-    dispatch = {
-        ".pdf": pdf_to_markdown,
-        ".docx": docx_to_markdown,
-        ".html": html_to_markdown_with_images,
-    }
-    assert dispatch[".docx"] is not pdf_to_markdown
-    assert dispatch[".html"] is not pdf_to_markdown
-    assert dispatch[".docx"] is docx_to_markdown
-    assert dispatch[".html"] is html_to_markdown_with_images
-
-
-# ═════════════════════════════════════════════════════════════════════════
-# detect_ocr_langs / ensure_tessdata (Fix 5)
-# ═════════════════════════════════════════════════════════════════════════
-
-
-def test_ensure_tessdata_no_prefix_returns_input_unchanged(monkeypatch):
-    """Without TESSDATA_PREFIX, ensure_tessdata trusts system install for Latin
-    langs and verifies non-Latin via system check. Mock the system check to
-    succeed so the full list is returned."""
-    monkeypatch.delenv("TESSDATA_PREFIX", raising=False)
-    monkeypatch.delenv("TESSDATA_ALLOW_DOWNLOAD", raising=False)
-    # Zone-7: non-Latin langs now verified via subprocess; mock the cache
-    from pageindex_mcp.converters import ocr_langs
-
-    monkeypatch.setattr(ocr_langs, "_system_tessdata_cache", {"ara": True})
-    result = ensure_tessdata(["ara", "eng"])
-    assert result == ["ara", "eng"]
-
-
-def test_ensure_tessdata_prebaked_is_noop(monkeypatch, tmp_path):  # LANG-01-C3
-    """LANG-01-C3: when every requested <lang>.traineddata already exists
-    under TESSDATA_PREFIX (pre-baked), no download is attempted and the full
-    requested language list is returned unchanged."""
-    monkeypatch.setenv("TESSDATA_PREFIX", str(tmp_path))
-    monkeypatch.setenv("TESSDATA_ALLOW_DOWNLOAD", "0")
-    (tmp_path / "ara.traineddata").write_bytes(b"stub")
-    (tmp_path / "eng.traineddata").write_bytes(b"stub")
-
-    download_calls = []
-
-    monkeypatch.setattr(
-        converters_mod,
-        "_try_download_tessdata",
-        lambda lang, prefix: download_calls.append(lang) or True,
-    )
-
-    result = ensure_tessdata(["ara", "eng"])
-
-    assert result == ["ara", "eng"]
-    assert download_calls == []
-
-
-# ═════════════════════════════════════════════════════════════════════════
-# _try_download_tessdata hardening (RFC-009 D5, Property 5)
-# ═════════════════════════════════════════════════════════════════════════
-
-
-def test_tessdata_timeout(monkeypatch, tmp_path):
-    """Property 5: a socket timeout during download is handled (not raised),
-    returns False, and leaves no partial file behind."""
-
-    def fake_urlopen(url, timeout=None):
-        raise TimeoutError("timed out")
-
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-
-    result = _try_download_tessdata("eng", str(tmp_path))
-
-    assert result is False
-    assert not (tmp_path / "eng.traineddata").exists()
-
-
-# ═════════════════════════════════════════════════════════════════════════
-# xlsx_to_markdown (Fix 4)
-# ═════════════════════════════════════════════════════════════════════════
-
-
-def _build_arabic_workbook(path):
-    """Helper: creates an xlsx with one Arabic-header sheet."""
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "إحصاءات"
-    ws.append(["النشاط", "2019", "2020"])
-    ws.append(["الزراعة", 100, 110])
-    ws.append(["الصناعة", 200, 220])
-    wb.save(str(path))
-    wb.close()
-    return path
-
-
-def test_xlsx_to_markdown_arabic_table(tmp_path):
-    """Fix 4: xlsx_to_markdown produces a pipe-table with Arabic headers and numeric cells."""
-    path = _build_arabic_workbook(tmp_path / "test.xlsx")
-    md = xlsx_to_markdown(str(path))
-
-    assert "## إحصاءات" in md
-    # Header row present
-    assert "النشاط" in md
-    assert "2019" in md
-    assert "2020" in md
-    # Data rows present
-    assert "الزراعة" in md
-    assert "100" in md
-    assert "الصناعة" in md
-    assert "220" in md
-    # It is a proper pipe table
-    assert "|" in md
-    assert "---" in md
-
-
-def test_xlsx_to_markdown_empty_workbook_raises(tmp_path):
-    """Fix 4: an xlsx workbook with no data raises RuntimeError."""
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Empty"
-    # Write no rows
-    p = tmp_path / "empty.xlsx"
-    wb.save(str(p))
-    wb.close()
-    with pytest.raises(RuntimeError):
-        xlsx_to_markdown(str(p))
-
-
-# ═════════════════════════════════════════════════════════════════════════
-# Docling PDF pipeline memory footprint (CONV-02)
-# ═════════════════════════════════════════════════════════════════════════
-
-# The worker OOMKilled on a real PDF because Docling's CPU inference defaulted
-# to 4 intra-op threads, multiplying per-thread scratch arenas at peak.
-# Capping accelerator threads is the one code-level RSS reducer that costs NO
-# extraction fidelity (Docling propagates num_threads to torch.set_num_threads
-# / onnxruntime internally), unlike disabling TableFormer or using
-# TableFormerMode.FAST.
-
-
-# ═════════════════════════════════════════════════════════════════════════
-# html_to_markdown_with_images image-describe resilience (RFC-008 D2 / ISS-08)
-# ═════════════════════════════════════════════════════════════════════════
-
-# Covers the OpenAI vision call's error handling inside `_describe`:
-#   - RateLimitError / APIConnectionError -> retry once after backoff
-#   - retry exhausted -> ERROR log + IMAGE_DESCRIBE_FAILURES counter + "image" fallback
-#   - generic APIError -> ERROR log (no image bytes/URL leaked) + counter + "image"
-#   - non-OpenAI exceptions (TypeError etc.) propagate, are NOT swallowed to "image"
-#
-# No MinIO/Redis/network required: get_openai_client is monkeypatched to
-# return a fake client whose chat.completions.create raises/returns as
-# scripted per test.
-
-
-def _counter_value(error_type: str) -> float:
-    return IMAGE_DESCRIBE_FAILURES.labels(error_type=error_type)._value.get()
-
-
-def _fake_request() -> httpx.Request:
-    return httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
-
-
-def _fake_response(status_code: int = 429) -> httpx.Response:
-    return httpx.Response(status_code, request=_fake_request())
-
-
-def _make_client(create_mock: AsyncMock) -> SimpleNamespace:
-    """Build a fake openai client shaped like client.chat.completions.create."""
-    completions = SimpleNamespace(create=create_mock)
-    chat = SimpleNamespace(completions=completions)
-    return SimpleNamespace(chat=chat)
-
-
-def _success_response(text: str = "a picture") -> SimpleNamespace:
-    message = SimpleNamespace(content=text)
-    choice = SimpleNamespace(message=message)
-    return SimpleNamespace(choices=[choice])
-
-
-def _write_html(tmp_path, img_src: str = "https://example.com/pic.png") -> str:
-    html_path = tmp_path / "doc.html"
-    html_path.write_text(f'<html><body><img src="{img_src}"></body></html>', encoding="utf-8")
-    return str(html_path)
-
-
-async def test_rate_limit_error_retries_then_succeeds(tmp_path, monkeypatch):
-    """(a) RateLimitError -> retry once -> success; no fallback, no counter bump."""
-    rate_limit_exc = openai.RateLimitError("rate limited", response=_fake_response(429), body=None)
-    create_mock = AsyncMock(side_effect=[rate_limit_exc, _success_response("a cat photo")])
-    fake_client = _make_client(create_mock)
-    monkeypatch.setattr("pageindex_mcp.client.get_openai_client", lambda: fake_client)
-    sleep_mock = AsyncMock()
-    monkeypatch.setattr(converters_mod.formats.asyncio, "sleep", sleep_mock)
-
-    before = _counter_value("RateLimitError")
-    html_path = _write_html(tmp_path)
-    result = await converters_mod.html_to_markdown_with_images(html_path, model="gpt-4.1")
-
-    assert "a cat photo" in result
-    assert "[Image: image]" not in result
-    assert create_mock.await_count == 2
-    sleep_mock.assert_awaited_once_with(2)
-    assert _counter_value("RateLimitError") == before  # no failure counted on success
-
-
-async def test_api_connection_error_retries_then_succeeds(tmp_path, monkeypatch):
-    """APIConnectionError follows the same retry-once path as RateLimitError."""
-    conn_exc = openai.APIConnectionError(message="connection failed", request=_fake_request())
-    create_mock = AsyncMock(side_effect=[conn_exc, _success_response("a dog photo")])
-    fake_client = _make_client(create_mock)
-    monkeypatch.setattr("pageindex_mcp.client.get_openai_client", lambda: fake_client)
-    sleep_mock = AsyncMock()
-    monkeypatch.setattr(converters_mod.formats.asyncio, "sleep", sleep_mock)
-
-    html_path = _write_html(tmp_path)
-    result = await converters_mod.html_to_markdown_with_images(html_path, model="gpt-4.1")
-
-    assert "a dog photo" in result
-    assert create_mock.await_count == 2
-    sleep_mock.assert_awaited_once_with(2)
-
-
-async def test_non_openai_exception_propagates(tmp_path, monkeypatch):
-    """(d) A non-OpenAI exception (TypeError) is NOT caught / turned into 'image'."""
-    create_mock = AsyncMock(side_effect=TypeError("boom - code bug, not an API failure"))
-    fake_client = _make_client(create_mock)
-    monkeypatch.setattr("pageindex_mcp.client.get_openai_client", lambda: fake_client)
-
-    html_path = _write_html(tmp_path)
-    with pytest.raises(TypeError, match="boom"):
-        await converters_mod.html_to_markdown_with_images(html_path, model="gpt-4.1")
-
-
-# =========================================================================
-# ConverterChainEntry metadata: is_agpl + fallback_policy fields (Zone D5)
-# =========================================================================
-
-
-class TestConverterChainEntryMetadata:
-    """pdf_markdown_converters() returns ConverterChainEntry instances with
-    correct is_agpl metadata so the chain walker can block transient-failure
-    fallback to AGPL converters."""
-
-    def _get_chain(self, monkeypatch, primary="docling", agpl=True):
-        """Build a converter chain with controlled env vars."""
-        monkeypatch.setenv("PDF_CONVERTER", primary)
-        monkeypatch.setenv("ALLOW_AGPL_FALLBACK", "true" if agpl else "false")
-        reset_pipeline_config()
-        from pageindex_mcp.converters.pipeline import pdf_markdown_converters
-
-        return pdf_markdown_converters()
-
-    def test_entries_are_converter_chain_entry_instances(self, monkeypatch):
-        """Every chain element is a ConverterChainEntry, not a bare tuple."""
-        chain = self._get_chain(monkeypatch, primary="docling", agpl=True)
-        for entry in chain:
-            assert isinstance(entry, ConverterChainEntry), (
-                f"Expected ConverterChainEntry, got {type(entry).__name__}: {entry}"
-            )
-
-    def test_docling_entry_is_not_agpl(self, monkeypatch):
-        """Docling entry has is_agpl=False (MIT-licensed)."""
-        chain = self._get_chain(monkeypatch, primary="docling", agpl=True)
-        docling_entries = [e for e in chain if e.name == "docling"]
-        assert len(docling_entries) > 0, "docling entry should be in chain"
-        for entry in docling_entries:
-            assert entry.is_agpl is False, f"docling should have is_agpl=False, got {entry.is_agpl}"
-
-    def test_pymupdf4llm_entry_is_agpl(self, monkeypatch):
-        """pymupdf4llm entry has is_agpl=True (AGPL-3.0-licensed)."""
-        chain = self._get_chain(monkeypatch, primary="docling", agpl=True)
-        pymupdf_entries = [e for e in chain if e.name == "pymupdf4llm"]
-        assert len(pymupdf_entries) > 0, "pymupdf4llm entry should be in chain"
-        for entry in pymupdf_entries:
-            assert entry.is_agpl is True, (
-                f"pymupdf4llm should have is_agpl=True, got {entry.is_agpl}"
-            )
-
-    def test_every_entry_has_is_agpl_bool(self, monkeypatch):
-        """Every chain entry has is_agpl as a bool."""
-        chain = self._get_chain(monkeypatch, primary="docling", agpl=True)
-        for entry in chain:
-            assert isinstance(entry.is_agpl, bool), (
-                f"is_agpl should be bool, got {type(entry.is_agpl).__name__} for {entry.name}"
-            )
-
-    def test_backward_compat_3_tuple_unpack(self, monkeypatch):
-        """ConverterChainEntry supports (name, fn, ocr) 3-tuple unpacking
-        for backward compatibility with existing code."""
-        chain = self._get_chain(monkeypatch, primary="docling", agpl=True)
-        for entry in chain:
-            name, fn, supports_ocr = entry  # must not raise
-            assert name == entry.name
-            assert fn == entry.fn
-            assert supports_ocr == entry.supports_ocr
-
-    def test_chain_entry_len_is_3(self, monkeypatch):
-        """len(entry) == 3 for backward-compat tuple protocol."""
-        chain = self._get_chain(monkeypatch, primary="docling", agpl=True)
-        for entry in chain:
-            assert len(entry) == 3
-
-    def test_no_agpl_fallback_excludes_pymupdf(self, monkeypatch):
-        """When ALLOW_AGPL_FALLBACK=false, pymupdf4llm is not in the chain."""
-        chain = self._get_chain(monkeypatch, primary="docling", agpl=False)
-        pymupdf_names = [e.name for e in chain if e.name == "pymupdf4llm"]
-        assert len(pymupdf_names) == 0, (
-            "pymupdf4llm should not appear when ALLOW_AGPL_FALLBACK=false"
-        )
-
-
-# --- from test_rfc_converters.py ---
-
-
-def _tree_garble(nodes, expected_script=None):
-    """Test helper: replaces deleted _tree_is_garbled wrapper."""
-    if not nodes:
-        return False
-    return check_garble(
-        _flatten_tree_text(nodes),
-        expected_script=expected_script,
-        profile=BULK_PROFILE,
-    )
-
-
-def _flat_garble(md, expected_script=None, original_defect=None):
-    """Test helper: replaces deleted _flat_text_is_garbled wrapper."""
-    return check_garble(
-        md,
-        expected_script=expected_script,
-        profile=FLAT_MARKDOWN_PROFILE,
-        original_defect=original_defect,
-    )
-
-
-class TestNormalizeIndentedHeadings:
-    """D2 tests: _normalize_indented_headings() strips leading whitespace before markdown heading markers."""
-
-    def test_indented_heading_stripped(self):
-        """Heading with leading spaces is stripped."""
-        result = _normalize_indented_headings("    ### Article 10\n")
-        assert result == "### Article 10\n"
-
-    def test_indented_non_heading_unchanged(self):
-        """Indented line without heading marker is NOT modified."""
-        result = _normalize_indented_headings("    some code block\n")
-        assert result == "    some code block\n"
-
-
-class TestFixFiHashSubstitution:
-    """D5 tests: _fix_fi_hash_substitution() replaces inline # with في only in Arabic-dominant text."""
-
-    def test_arabic_inline_hash_replaced(self):
-        """Arabic-dominant text with inline # gets replacement."""
-        md = "المادة الأولى#المادة الثانية"
-        result = _fix_fi_hash_substitution(md)
-        assert "في" in result
-        assert "#" not in result
-
-    def test_non_arabic_hash_not_replaced(self):
-        """English text with inline # is NOT modified."""
-        md = "section1#section2 and more text here"
-        result = _fix_fi_hash_substitution(md)
-        assert result == md
-
-
-class TestReconstructBidiOrder:
-    """RFC-015 D7: reconstruct_bidi_order() reorders Arabic, gated + structure-safe."""
-
-    def test_non_arabic_unchanged(self):
-        md = "# English Heading\n\nJust some plain English prose here.\n"
-        result, _ = reconstruct_bidi_order(md)
-        assert result == md
-
-    def test_arabic_line_is_char_preserving_permutation(self):
-        # BiDi reordering permutes characters; it must not add/drop any.
-        md = "المادة الأولى في القانون العربي الطويل الكافي جدا"
-        result, _ = reconstruct_bidi_order(md)
-        assert sorted(result) == sorted(md)
-
-
-class TestLogicalOrderDetection:
-    """D7 fix: detect logical-vs-visual order to prevent double-reversal."""
-
-    def test_logical_order_arabic_detected(self):
-        logical = "قرار مجلس الوزراء رقم لسنة بشأن تنظيم علاقات العمل"
-        assert not decide_rtl(logical).reversed
-
-    def test_visual_order_arabic_not_detected_as_logical(self):
-        visual = "رارق سلجم ءارزولا مقر ةنسل نأشب ميظنت تاقالع لمعلا"
-        assert decide_rtl(visual).reversed
-
-
-class TestIsNumericExtension:
-    """RFC-015 D5d: _is_numeric_extension() accepts digit + optional letter-suffix subclauses."""
-
-    def test_letter_suffix_trailing_component(self):
-        # Blueprint's worked example: ('7','10','a') extends anchor ('7','10').
-        assert _is_numeric_extension(("7", "10", "a"), {("7", "10")}) is True
-
-    def test_bare_list_marker_not_promoted(self):
-        # No numeric anchor prefix (the k-loop requires a proper non-empty prefix).
-        assert _is_numeric_extension(("a",), set()) is False
-
-
-class TestSpliceFigureMarkers:
-    """RFC-015 D6 / audit findings 4+7+12: splice_figure_markers() replaces markers
-    with [Figure: fig-N] refs from a DENSE ordinal-keyed list, appends recovered
-    chart text as a blockquote, count-guards marker<->region alignment, and leaves
-    decorative (content-free) pictures neutral."""
-
-    @staticmethod
-    def _pr(ocr: str = "", **kw):
-        """Build a content-bearing PictureResult dict for testing."""
-        return {"ocr_text": ocr, "png_bytes": b"png", "page": 1, "bbox": {}, **kw}
-
-    @staticmethod
-    def _empty():
-        """A failed-crop / decorative placeholder (no png, no ocr, no desc)."""
-        return {}
-
-    def test_single_marker_spliced(self):
-        md = "Intro\n\n<!-- image -->\n\nOutro"
-        out = splice_figure_markers(md, [self._pr("Revenue 2024 42%")])
-        assert "[Figure: fig-0]" in out
-        assert "> [Chart text]: Revenue 2024 42%" in out
-        assert "<!-- image -->" not in out
-
-    def test_no_pics_returns_unchanged(self):
-        md = "<!-- image -->"
-        assert splice_figure_markers(md, []) == md
-
-
-class TestBboxToFitzRect:
-    """RFC-015 D6: _bbox_to_fitz_rect() converts Docling bboxes to top-left fitz.Rect."""
-
-    class _FakeRect:
-        def __init__(self, x0, y0, x1, y1):
-            self.x0, self.y0, self.x1, self.y1 = x0, y0, x1, y1
-
-    class _FakeFitz:
-        Rect = None  # set below
-
-    def _fitz(self):
-        f = self._FakeFitz()
-        f.Rect = self._FakeRect
-        return f
-
-    def test_topleft_origin_passthrough(self):
-        bbox = types.SimpleNamespace(l=10, t=20, r=110, b=120, coord_origin=None)
-        rect = _bbox_to_fitz_rect(bbox, 800.0, self._fitz())
-        assert (rect.x0, rect.y0, rect.x1, rect.y1) == (10, 20, 110, 120)
-
-    def test_bottomleft_origin_converted(self):
-        origin = types.SimpleNamespace(name="BOTTOMLEFT")
-        bbox = types.SimpleNamespace(l=10, t=700, r=110, b=600, coord_origin=origin)
-        rect = _bbox_to_fitz_rect(bbox, 800.0, self._fitz())
-        # top = 800-700=100, bottom = 800-600=200 -> sorted y (100,200)
-        assert (rect.y0, rect.y1) == (100, 200)
-
-
-class TestRecoverPictureResults:
-    """RFC-015 D6 / audit finding 6: _recover_picture_results() gates the
-    first-party AGPL ``fitz`` import (via _recover_picture_text) behind the
-    module-level _OCR_ESCALATION constant, and NEVER mutates the markdown --
-    the figure splice happens only in client.index()'s flat branch."""
-
-    def test_escalation_disabled_skips_recovery_entirely(self, monkeypatch):
-        # Zone-5 config layering: the gate now reads the pipeline_config
-        # singleton at call time, not the frozen module-level alias.
-        monkeypatch.setattr(
-            converters.pictures,
-            "pipeline_config",
-            dataclasses.replace(
-                converters.pictures.pipeline_config, ocr_escalation_per_picture=False
-            ),
-        )
-        md = "Intro\n\n<!-- image -->\n\nOutro"
-        bbox = types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)
-        pictures = [{"page": 1, "bbox": bbox}]
-        with (
-            mock.patch.object(
-                converters.pictures, "_collect_picture_regions", return_value=pictures
-            ) as mock_collect,
-            mock.patch.object(converters.pictures, "_recover_picture_text") as mock_recover,
-        ):
-            pics = converters._recover_picture_results(md, object(), "dummy.pdf")
-
-        mock_collect.assert_not_called()
-        mock_recover.assert_not_called()
-        assert pics == []
-
-    def test_escalation_enabled_invokes_recovery(self, monkeypatch):
-        monkeypatch.setattr(converters.pictures, "_OCR_ESCALATION_PER_PICTURE", True)
-        md = "Intro\n\n<!-- image -->\n\nOutro"
-        bbox = types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)
-        pictures = [{"page": 1, "bbox": bbox}]
-        pr = {
-            "ocr_text": "Revenue 2024 recovered chart text",
-            "png_bytes": b"fake",
-            "page": 1,
-            "bbox": {},
-        }
-        with (
-            mock.patch.object(
-                converters.pictures, "_collect_picture_regions", return_value=pictures
-            ),
-            mock.patch.object(converters.pictures, "detect_ocr_langs", return_value=["eng"]),
-            mock.patch.object(
-                converters.pictures, "ensure_tessdata", side_effect=lambda langs: langs
-            ),
-            mock.patch.object(
-                converters.pictures,
-                "_recover_picture_text",
-                return_value=({0: pr}, {}),
-            ) as mock_recover,
-        ):
-            pics = converters._recover_picture_results(md, object(), "dummy.pdf")
-
-        assert mock_recover.call_count >= 1
-        assert pics == [pr]
-
-
-# -- helpers.py: D3A tree-bulk garble detection (was _tree_is_garbled) ------
-
-
-class TestTreeGarbleDetection:
-    """D3A: tree-bulk garble detection (was _tree_is_garbled)."""
-
-    def test_pua_heavy_string_garbled(self):
-        """PUA-char ratio > 3% (font/CMap mojibake) must flag the tree as garbled."""
-        nodes = [
-            {
-                "title": "X",
-                "text": "" * 5 + "a" * 90,
-                "nodes": [
-                    {"title": "Y", "text": "" * 5 + "b" * 90, "nodes": []},
-                ],
-            }
-        ]
-        assert _tree_garble(nodes) is True
-
-    def test_digit_junk_garbled(self):
-        """Digit ratio > 60% on a blob > 500 chars flags numeric-junk garbling."""
-        digit_text = "1651001429 " * 80  # 880 chars, ~91% digits
-        nodes = [
-            {
-                "title": "A",
-                "text": digit_text,
-                "nodes": [
-                    {"title": "B", "text": "some text", "nodes": []},
-                ],
-            }
-        ]
-        assert _tree_garble(nodes) is True
-
-
-class TestFlatTextGarbleDetection:
-    """D3B: flat-markdown garble detection (was _flat_text_is_garbled)."""
-
-    def test_flat_text_pua_garbled(self):
-        """Flat-path mirror of the PUA-ratio heuristic on a raw markdown string."""
-        md = "" * 5 + "a" * 90 + "" * 5 + "b" * 90  # 10/200 = 5% PUA
-        assert _flat_garble(md) is True
-
-    def test_flat_text_digit_junk_garbled(self):
-        """Flat-path mirror of the digit-ratio heuristic on a raw markdown string."""
-        md = "1651001429 " * 80  # ~880 chars, >60% digits
-        assert _flat_garble(md) is True
-
-
-# ---------------------------------------------------------------------------
-# Zone-8: _tesseract_ocr_image exception handling contract
-# ---------------------------------------------------------------------------
-
-
-class TestTesseractOcrFailureContract:
-    """Zone-8: _tesseract_ocr_image increments TESSERACT_OCR_FAILURE_TOTAL
-    on specific exceptions and returns '' -- does NOT catch arbitrary
-    exceptions like KeyboardInterrupt."""
-
-    def test_timeout_expired_increments_metric_and_returns_empty(self, monkeypatch):
-        import subprocess
-        from pageindex_mcp.converters.pictures import _tesseract_ocr_image
-        from unittest.mock import patch
-
-        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/tesseract")
-        with (
-            patch(
-                "pageindex_mcp.converters.pictures.subprocess.run",
-                side_effect=subprocess.TimeoutExpired(cmd="tesseract", timeout=60),
-            ),
-            patch("pageindex_mcp.converters.pictures.TESSERACT_OCR_FAILURE_TOTAL") as metric,
-        ):
-            result = _tesseract_ocr_image("/fake.png", ["eng"])
-
-        assert result == ""
-        metric.labels.assert_called_once_with(reason="TimeoutExpired")
-        metric.labels.return_value.inc.assert_called_once()
-
-    def test_subprocess_error_increments_metric_and_returns_empty(self, monkeypatch):
-        import subprocess
-        from pageindex_mcp.converters.pictures import _tesseract_ocr_image
-        from unittest.mock import patch
-
-        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/tesseract")
-        with (
-            patch(
-                "pageindex_mcp.converters.pictures.subprocess.run",
-                side_effect=subprocess.SubprocessError("boom"),
-            ),
-            patch("pageindex_mcp.converters.pictures.TESSERACT_OCR_FAILURE_TOTAL") as metric,
-        ):
-            result = _tesseract_ocr_image("/fake.png", ["eng"])
-
-        assert result == ""
-        metric.labels.assert_called_once_with(reason="SubprocessError")
-        metric.labels.return_value.inc.assert_called_once()
-
-    def test_file_not_found_increments_metric_and_returns_empty(self, monkeypatch):
-        from pageindex_mcp.converters.pictures import _tesseract_ocr_image
-        from unittest.mock import patch
-
-        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/tesseract")
-        with (
-            patch(
-                "pageindex_mcp.converters.pictures.subprocess.run",
-                side_effect=FileNotFoundError("tesseract not found"),
-            ),
-            patch("pageindex_mcp.converters.pictures.TESSERACT_OCR_FAILURE_TOTAL") as metric,
-        ):
-            result = _tesseract_ocr_image("/fake.png", ["eng"])
-
-        assert result == ""
-        metric.labels.assert_called_once_with(reason="FileNotFoundError")
-        metric.labels.return_value.inc.assert_called_once()
-
-    def test_os_error_increments_metric_and_returns_empty(self, monkeypatch):
-        from pageindex_mcp.converters.pictures import _tesseract_ocr_image
-        from unittest.mock import patch
-
-        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/tesseract")
-        with (
-            patch(
-                "pageindex_mcp.converters.pictures.subprocess.run",
-                side_effect=OSError("disk error"),
-            ),
-            patch("pageindex_mcp.converters.pictures.TESSERACT_OCR_FAILURE_TOTAL") as metric,
-        ):
-            result = _tesseract_ocr_image("/fake.png", ["eng"])
-
-        assert result == ""
-        metric.labels.assert_called_once_with(reason="OSError")
-        metric.labels.return_value.inc.assert_called_once()
-
-    def test_keyboard_interrupt_not_caught(self, monkeypatch):
-        """KeyboardInterrupt must NOT be caught -- it must propagate."""
-        from pageindex_mcp.converters.pictures import _tesseract_ocr_image
-        from unittest.mock import patch
-        import pytest
-
-        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/tesseract")
-        with (
-            patch(
-                "pageindex_mcp.converters.pictures.subprocess.run", side_effect=KeyboardInterrupt
-            ),
-            pytest.raises(KeyboardInterrupt),
-        ):
-            _tesseract_ocr_image("/fake.png", ["eng"])
-
-
-# --- from test_converter_chain_ocr.py ---
-
-# ---------------------------------------------------------------------------
-# 5. Contract: pdf_markdown_converters() returns 3-tuples with correct
-#    supports_ocr values.
-# ---------------------------------------------------------------------------
-
-
-class TestConverterChainShape:
-    """pdf_markdown_converters returns (name, fn, supports_ocr) 3-tuples."""
-
-    def _get_chain(self, monkeypatch, primary="docling", agpl=True, docling_available=True):
-        """Build a converter chain with controlled env."""
-        monkeypatch.setenv("PDF_CONVERTER", primary)
-        monkeypatch.setenv("ALLOW_AGPL_FALLBACK", "true" if agpl else "false")
-        reset_pipeline_config()
-        # Mock docling availability
-        if not docling_available:
-            with patch("importlib.util.find_spec", return_value=None):
-                if not agpl:
-                    with pytest.raises(RuntimeError):
-                        from pageindex_mcp.converters.pipeline import pdf_markdown_converters
-
-                        pdf_markdown_converters()
-                    return None
-                from pageindex_mcp.converters.pipeline import pdf_markdown_converters
-
-                return pdf_markdown_converters()
-        from pageindex_mcp.converters.pipeline import pdf_markdown_converters
-
-        return pdf_markdown_converters()
-
-    def test_returns_3_tuples(self, monkeypatch):
-        """Every element in the chain is a 3-tuple (name, callable, bool)."""
-        chain = self._get_chain(monkeypatch)
-        if chain is None:
-            pytest.skip("converter chain unavailable")
-        assert len(chain) > 0
-        for entry in chain:
-            assert len(entry) == 3, f"Expected 3-tuple, got {len(entry)}-tuple: {entry[0]}"
-            name, fn, supports_ocr = entry
-            assert isinstance(name, str)
-            assert callable(fn)
-            assert isinstance(supports_ocr, bool)
-
-    def test_docling_supports_ocr_true(self, monkeypatch):
-        """Docling entries have supports_ocr=True."""
-        chain = self._get_chain(monkeypatch, primary="docling")
-        if chain is None:
-            pytest.skip("converter chain unavailable")
-        docling_entries = [(n, fn, ocr) for n, fn, ocr in chain if "docling" in n]
-        for name, _fn, supports_ocr in docling_entries:
-            assert supports_ocr is True, f"{name} should have supports_ocr=True"
-
-    def test_pymupdf_supports_ocr_false(self, monkeypatch):
-        """pymupdf4llm entries have supports_ocr=False."""
-        chain = self._get_chain(monkeypatch, primary="pymupdf4llm", agpl=True)
-        if chain is None:
-            pytest.skip("converter chain unavailable")
-        pymupdf_entries = [(n, fn, ocr) for n, fn, ocr in chain if "pymupdf" in n]
-        for name, _fn, supports_ocr in pymupdf_entries:
-            assert supports_ocr is False, f"{name} should have supports_ocr=False"
-
-    def test_docling_primary_is_first(self, monkeypatch):
-        """When PDF_CONVERTER=docling, docling is chain[0]."""
-        chain = self._get_chain(monkeypatch, primary="docling", agpl=True)
-        if chain is None:
-            pytest.skip("converter chain unavailable")
-        assert chain[0][0] == "docling"
-        assert chain[0][2] is True  # supports_ocr
-
-    def test_pymupdf_primary_ordering(self, monkeypatch):
-        """When PDF_CONVERTER=pymupdf4llm, pymupdf4llm is chain[0]."""
-        chain = self._get_chain(monkeypatch, primary="pymupdf4llm", agpl=True)
-        if chain is None:
-            pytest.skip("converter chain unavailable")
-        assert chain[0][0] == "pymupdf4llm"
-        assert chain[0][2] is False  # supports_ocr
-
-
-# ---------------------------------------------------------------------------
-# 6. Wiring: OCR escalation gates fire based on supports_ocr, not
-#    converter name string.
-# ---------------------------------------------------------------------------
-
-
-class TestOcrGatingWiring:
-    """Verify that indexer.py uses _conv_supports_ocr (from the 3-tuple)
-    instead of 'docling' in conv_name string matching."""
-
-    def test_indexer_unpacks_3_tuple(self):
-        """indexer.py's chain loop unpacks (conv_name, conv_fn, _conv_supports_ocr)."""
-        import inspect
-        from pageindex_mcp.client import indexer
-
-        source = inspect.getsource(indexer)
-        # The 3-tuple unpack pattern
-        assert "_conv_supports_ocr" in source, (
-            "indexer.py must unpack the third element as _conv_supports_ocr"
-        )
-
-    def test_no_docling_string_match_in_ocr_gates(self):
-        """indexer.py's _convert_to_tree must NOT use 'docling' in conv_name
-        for OCR gating decisions -- it should use _conv_supports_ocr instead."""
-        import inspect
-        from pageindex_mcp.client import indexer
-
-        source = inspect.getsource(indexer)
-        # The old pattern was: 'docling' in conv_name
-        # It should now be replaced by _conv_supports_ocr checks
-        assert '"docling" in conv_name' not in source, (
-            "indexer.py still uses '\"docling\" in conv_name' for OCR gating -- "
-            "should use _conv_supports_ocr capability flag instead"
-        )
-
-    def test_supports_ocr_field_on_extraction_state(self):
-        """ExtractionState has a supports_ocr field (threaded from chain loop)."""
-        import dataclasses
-
-        field_names = [f.name for f in dataclasses.fields(ExtractionState)]
-        assert "supports_ocr" in field_names
-
-    def test_supports_ocr_default_false(self):
-        """ExtractionState.supports_ocr defaults to False."""
-        state = ExtractionState(
-            result={},
-            ok=False,
-            reason="",
-            gate_result=None,
-            first_defect=TreeDefect.OK,
-            route=Route.TREE,
-            md_content=None,
-            tmp_md_path=None,
-            pic_results=[],
-            used_converter=None,
-            total_chars=0,
-            extraction_stages_captured=[],
-        )
-        assert state.supports_ocr is False
-
-    def test_indexer_sets_supports_ocr_on_state(self):
-        """indexer.py sets state.supports_ocr = _conv_supports_ocr inside the chain loop."""
-        import inspect
-        from pageindex_mcp.client import indexer
-
-        source = inspect.getsource(indexer)
-        assert "state.supports_ocr = _conv_supports_ocr" in source, (
-            "indexer.py must thread _conv_supports_ocr into state.supports_ocr"
-        )
-
-    def test_persist_uses_supports_ocr_not_string(self):
-        """_persist_tree_result uses state.supports_ocr for extraction_route,
-        not 'docling' in state.used_converter."""
-        import inspect
-        from pageindex_mcp.client import indexer
-
-        source = inspect.getsource(indexer)
-        # The old pattern was: "docling" in state.used_converter
-        assert '"docling" in state.used_converter' not in source, (
-            "indexer.py _persist_tree_result still uses '\"docling\" in state.used_converter' -- "
-            "should use state.supports_ocr"
-        )
-
-
-# ---------------------------------------------------------------------------
-# 7. Contract: TimeoutError from Docling does NOT fall through to pymupdf4llm
-#    -- chain walk aborts on transient failure when next is AGPL.
-# ---------------------------------------------------------------------------
-
-
-class TestTransientFailureChainBlock:
-    """Transient failures (TimeoutError, ConnectionError, HTTP 5xx) must NOT
-    silently fall through to an AGPL-licensed converter (HR4).  Only structural
-    failures (ValueError, RuntimeError, ImportError) justify the walk."""
-
-    def test_classify_transient_timeout(self):
-        """TimeoutError is classified as transient."""
-        from pageindex_mcp.client.indexer import _classify_transient_failure
-
-        assert _classify_transient_failure(TimeoutError("timed out")) is True
-
-    def test_classify_transient_connection_error(self):
-        """ConnectionError is classified as transient."""
-        from pageindex_mcp.client.indexer import _classify_transient_failure
-
-        assert _classify_transient_failure(ConnectionError("refused")) is True
-
-    def test_classify_transient_os_error(self):
-        """OSError is classified as transient."""
-        from pageindex_mcp.client.indexer import _classify_transient_failure
-
-        assert _classify_transient_failure(OSError("network unreachable")) is True
-
-    def test_classify_structural_value_error(self):
-        """ValueError (structural parse failure) is NOT transient."""
-        from pageindex_mcp.client.indexer import _classify_transient_failure
-
-        assert _classify_transient_failure(ValueError("bad format")) is False
-
-    def test_classify_structural_runtime_error(self):
-        """RuntimeError (structural) is NOT transient."""
-        from pageindex_mcp.client.indexer import _classify_transient_failure
-
-        assert _classify_transient_failure(RuntimeError("empty output")) is False
-
-    def test_classify_structural_import_error(self):
-        """ImportError (missing dep) is NOT transient."""
-        from pageindex_mcp.client.indexer import _classify_transient_failure
-
-        assert _classify_transient_failure(ImportError("no module")) is False
-
-    def test_classify_http_5xx_via_status_code(self):
-        """Exception with status_code=504 is classified as transient."""
-        from pageindex_mcp.client.indexer import _classify_transient_failure
-
-        exc = Exception("gateway timeout")
-        exc.status_code = 504  # type: ignore[attr-defined]
-        assert _classify_transient_failure(exc) is True
-
-    def test_classify_http_4xx_not_transient(self):
-        """Exception with status_code=400 is NOT transient."""
-        from pageindex_mcp.client.indexer import _classify_transient_failure
-
-        exc = Exception("bad request")
-        exc.status_code = 400  # type: ignore[attr-defined]
-        assert _classify_transient_failure(exc) is False
-
-    def test_timeout_does_not_fall_through_to_agpl(self, monkeypatch):
-        """Contract: TimeoutError from Docling does NOT fall through to
-        pymupdf4llm -- chain walk aborts on transient failure when next
-        converter is AGPL."""
-        from pageindex_mcp.converters.pipeline import ConverterChainEntry
-        from pageindex_mcp.client.indexer import (
-            _classify_transient_failure,
-            _TRANSIENT_EXCEPTION_TYPES,
-            AGPL_FALLBACK_TOTAL,
-        )
-
-        # Build a synthetic chain: docling (MIT) -> pymupdf4llm (AGPL)
-        docling_fn = MagicMock(side_effect=TimeoutError("Docling timed out"))
-        pymupdf_fn = MagicMock(return_value=("# markdown", [], {}))
-
-        chain = [
-            ConverterChainEntry(name="docling", fn=docling_fn, supports_ocr=True, is_agpl=False),
-            ConverterChainEntry(
-                name="pymupdf4llm", fn=pymupdf_fn, supports_ocr=False, is_agpl=True
-            ),
-        ]
-
-        # Simulate the chain walk logic from _convert_to_tree
-        md_content = None
-        used_converter = None
-        walk_blocked = False
-
-        for idx, entry in enumerate(chain):
-            try:
-                result = entry.fn("dummy.pdf")
-                md_content = result[0]
-                used_converter = entry.name
-                break
-            except Exception as conv_exc:
-                _is_transient = _classify_transient_failure(conv_exc)
-                if _is_transient:
-                    next_idx = idx + 1
-                    next_is_agpl = next_idx < len(chain) and chain[next_idx].is_agpl
-                    if next_is_agpl:
-                        walk_blocked = True
-                        break
-
-        # Docling was called
-        docling_fn.assert_called_once()
-        # pymupdf4llm was NOT called -- chain walk was blocked
-        pymupdf_fn.assert_not_called()
-        # md_content should be None -- no converter succeeded
-        assert md_content is None
-        # Walk was blocked
-        assert walk_blocked is True
-        # used_converter was never set
-        assert used_converter is None
-
-    def test_structural_failure_does_fall_through_to_agpl(self, monkeypatch):
-        """Contract: ValueError (structural parse failure) from Docling DOES
-        fall through to pymupdf4llm when allow_agpl_fallback=true."""
-        from pageindex_mcp.converters.pipeline import ConverterChainEntry
-        from pageindex_mcp.client.indexer import _classify_transient_failure
-
-        # Build a synthetic chain: docling (MIT) -> pymupdf4llm (AGPL)
-        docling_fn = MagicMock(side_effect=ValueError("structural parse failure"))
-        pymupdf_fn = MagicMock(return_value=("# fallback markdown", [], {}))
-
-        chain = [
-            ConverterChainEntry(name="docling", fn=docling_fn, supports_ocr=True, is_agpl=False),
-            ConverterChainEntry(
-                name="pymupdf4llm", fn=pymupdf_fn, supports_ocr=False, is_agpl=True
-            ),
-        ]
-
-        # Simulate the chain walk logic from _convert_to_tree
-        md_content = None
-        used_converter = None
-
-        for idx, entry in enumerate(chain):
-            try:
-                result = entry.fn("dummy.pdf")
-                md_content = result[0]
-                used_converter = entry.name
-                break
-            except Exception as conv_exc:
-                _is_transient = _classify_transient_failure(conv_exc)
-                if _is_transient:
-                    next_idx = idx + 1
-                    next_is_agpl = next_idx < len(chain) and chain[next_idx].is_agpl
-                    if next_is_agpl:
-                        break
-                # Structural: allow walk to continue
-
-        # Docling was called and raised ValueError
-        docling_fn.assert_called_once()
-        # pymupdf4llm WAS called -- structural failure allows chain walk
-        pymupdf_fn.assert_called_once()
-        # md_content came from pymupdf4llm
-        assert md_content == "# fallback markdown"
-        assert used_converter == "pymupdf4llm"
-
-    def test_transient_allows_walk_to_non_agpl(self):
-        """Transient failure allows chain walk when next converter is non-AGPL."""
-        from pageindex_mcp.converters.pipeline import ConverterChainEntry
-        from pageindex_mcp.client.indexer import _classify_transient_failure
-
-        # Chain: converter_a (MIT) -> converter_b (MIT, non-AGPL)
-        fn_a = MagicMock(side_effect=TimeoutError("timed out"))
-        fn_b = MagicMock(return_value=("# markdown from b", [], {}))
-
-        chain = [
-            ConverterChainEntry(name="conv_a", fn=fn_a, supports_ocr=True, is_agpl=False),
-            ConverterChainEntry(name="conv_b", fn=fn_b, supports_ocr=True, is_agpl=False),
-        ]
-
-        md_content = None
-        used_converter = None
-
-        for idx, entry in enumerate(chain):
-            try:
-                result = entry.fn("dummy.pdf")
-                md_content = result[0]
-                used_converter = entry.name
-                break
-            except Exception as conv_exc:
-                _is_transient = _classify_transient_failure(conv_exc)
-                if _is_transient:
-                    next_idx = idx + 1
-                    next_is_agpl = next_idx < len(chain) and chain[next_idx].is_agpl
-                    if next_is_agpl:
-                        break
-                    # Non-AGPL next: allow walk
-
-        # Both converters were called
-        fn_a.assert_called_once()
-        fn_b.assert_called_once()
-        assert md_content == "# markdown from b"
-        assert used_converter == "conv_b"
-
-
-# ---------------------------------------------------------------------------
-# 8. Regression: AGPL_FALLBACK_TOTAL metric increments with
-#    reason='transient_blocked' when transient error would walk to AGPL.
-# ---------------------------------------------------------------------------
-
-
-class TestAgplFallbackMetric:
-    """AGPL_FALLBACK_TOTAL(reason='transient_blocked') increments when a
-    transient failure would have walked to an AGPL converter."""
-
-    def test_transient_blocked_metric_increments(self):
-        """AGPL_FALLBACK_TOTAL(reason='transient_blocked') fires when
-        transient failure on a non-AGPL converter would walk to an AGPL one."""
-        from pageindex_mcp.metrics import AGPL_FALLBACK_TOTAL
-        from pageindex_mcp.converters.pipeline import ConverterChainEntry
-        from pageindex_mcp.client.indexer import _classify_transient_failure
-
-        before = AGPL_FALLBACK_TOTAL.labels(reason="transient_blocked")._value.get()
-
-        # Simulate chain walk with transient failure -> AGPL next
-        docling_fn = MagicMock(side_effect=TimeoutError("timed out"))
-        pymupdf_fn = MagicMock(return_value=("# md", [], {}))
-
-        chain = [
-            ConverterChainEntry(name="docling", fn=docling_fn, supports_ocr=True, is_agpl=False),
-            ConverterChainEntry(
-                name="pymupdf4llm", fn=pymupdf_fn, supports_ocr=False, is_agpl=True
-            ),
-        ]
-
-        for idx, entry in enumerate(chain):
-            try:
-                entry.fn("dummy.pdf")
-                break
-            except Exception as conv_exc:
-                _is_transient = _classify_transient_failure(conv_exc)
-                if _is_transient:
-                    next_idx = idx + 1
-                    next_is_agpl = next_idx < len(chain) and chain[next_idx].is_agpl
-                    if next_is_agpl:
-                        AGPL_FALLBACK_TOTAL.labels(reason="transient_blocked").inc()
-                        break
-
-        after = AGPL_FALLBACK_TOTAL.labels(reason="transient_blocked")._value.get()
-        assert after == before + 1, (
-            f"AGPL_FALLBACK_TOTAL(reason='transient_blocked') should have incremented: "
-            f"before={before}, after={after}"
-        )
-
-    def test_structural_failure_does_not_increment_transient_blocked(self):
-        """Structural failure (ValueError) does NOT increment the
-        transient_blocked metric -- only transient failures do."""
-        from pageindex_mcp.metrics import AGPL_FALLBACK_TOTAL
-        from pageindex_mcp.client.indexer import _classify_transient_failure
-
-        before = AGPL_FALLBACK_TOTAL.labels(reason="transient_blocked")._value.get()
-
-        # Structural failure path: no metric increment
-        exc = ValueError("parse error")
-        _is_transient = _classify_transient_failure(exc)
-        if _is_transient:
-            AGPL_FALLBACK_TOTAL.labels(reason="transient_blocked").inc()
-
-        after = AGPL_FALLBACK_TOTAL.labels(reason="transient_blocked")._value.get()
-        assert after == before, (
-            f"AGPL_FALLBACK_TOTAL(reason='transient_blocked') should NOT have incremented "
-            f"for structural failure: before={before}, after={after}"
-        )
-
-    def test_transient_blocked_wired_in_indexer_source(self):
-        """indexer.py wires the transient_blocked metric increment in the
-        chain walk exception handler."""
-        import inspect
-        from pageindex_mcp.client import indexer
-
-        source = inspect.getsource(indexer)
-        assert 'reason="transient_blocked"' in source, (
-            "indexer.py must increment AGPL_FALLBACK_TOTAL with reason='transient_blocked' "
-            "when a transient failure would walk to an AGPL converter"
-        )
-
-    def test_classify_transient_failure_wired_in_indexer(self):
-        """indexer.py uses _classify_transient_failure for chain walk decisions."""
-        import inspect
-        from pageindex_mcp.client import indexer
-
-        source = inspect.getsource(indexer)
-        assert "_classify_transient_failure" in source, (
-            "indexer.py must use _classify_transient_failure to classify converter errors"
-        )
-
-    def test_is_agpl_field_checked_in_indexer(self):
-        """indexer.py reads the is_agpl field from chain entries for walk decisions."""
-        import inspect
-        from pageindex_mcp.client import indexer
-
-        source = inspect.getsource(indexer)
-        assert ".is_agpl" in source, (
-            "indexer.py must read the is_agpl field from ConverterChainEntry "
-            "to decide whether to block chain walk on transient failure"
-        )
-
-
-# --- from test_rfc_worker.py ---
+_MARKER = "<!-- image -->"
+_IMAGE_MARKER = _MARKER
+
+# Repeated single-token blob (>20 alnum tokens, >30% repetition ratio) trips
+# _is_garbled_blob's token-repetition check without needing GLYPH/PUA noise.
+_GARBLED_TEXT = " ".join(["xkjqz"] * 40)
+_CLEAN_TEXT = "This is a perfectly ordinary page of legible English prose. " * 3
 
 _SHORT_CLEAN_TEXT = "Section 3.2 applies to all policyholders under this contract."
 assert len(_SHORT_CLEAN_TEXT) < 200
 
+_WORDS = [
+    "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
+    "india", "juliet", "kilo", "lima", "mike", "november", "oscar", "papa",
+    "quebec", "romeo", "sierra", "tango", "uniform", "victor", "whiskey",
+    "xray", "yankee", "zulu", "apple", "banana", "cherry", "date", "fig", "grape",
+]
 
-# --------------------------------------------------------------------------
-# Fixtures / helpers shared across test classes
-# --------------------------------------------------------------------------
 
-# NOTE: mock_minio fixture is provided by conftest.py; not redefined here.
+def _text_of_length(n: int) -> str:
+    if n <= 0:
+        return ""
+    words = []
+    total = 0
+    i = 0
+    while total < n:
+        w = _WORDS[i % len(_WORDS)]
+        words.append(w)
+        total += len(w) + 1
+        i += 1
+    return (" ".join(words) + " ")[:n]
+
+
+def _tree_with_ratio(ratio: float, total_chars: int = 10000, n_other: int = 6) -> list:
+    """Root node with one dominant leaf (`ratio` share of leaf chars) and
+    `n_other` smaller leaves, so node_count and depth clear their gates and
+    only max_leaf_ratio varies."""
+    max_leaf = round(ratio * total_chars)
+    other_leaf = (total_chars - max_leaf) // n_other
+    leaves = [{"title": "", "text": _text_of_length(max_leaf), "nodes": []}]
+    leaves += [
+        {"title": "", "text": _text_of_length(other_leaf), "nodes": []} for _ in range(n_other)
+    ]
+    return [{"title": "Root", "text": "", "nodes": leaves}]
+
+
+def _region(l=0, t=0, r=612, b=792, page=1):
+    """A picture region bbox. Defaults to the FULL page (612x792, US Letter)."""
+    return {
+        "page": page,
+        "bbox": types.SimpleNamespace(l=l, t=t, r=r, b=b, coord_origin=None),
+    }
+
+
+def _long_text(n=60):
+    return "x" * n
 
 
 def _install_fake_fitz(monkeypatch, *, page_text="", clip_text=None, width=612.0, height=792.0):
@@ -1537,438 +203,28 @@ def _install_fake_fitz(monkeypatch, *, page_text="", clip_text=None, width=612.0
     monkeypatch.setitem(sys.modules, "fitz", fake)
 
 
-def _region(l=0, t=0, r=612, b=792, page=1):
-    """A picture region bbox. Defaults to the FULL page (612x792, US Letter)."""
-    return {
-        "page": page,
-        "bbox": types.SimpleNamespace(l=l, t=t, r=r, b=b, coord_origin=None),
-    }
-
-
-def _long_text(n=60):
-    return "x" * n
-
-
-def _make_fake_fitz(page_width: float, page_height: float, initial_rotation: int = 0):
-    """Build a fake fitz module + page carrying a settable ``rotation``."""
-    fake = types.ModuleType("fitz")
-    fake.Rect = lambda *a: types.SimpleNamespace(
-        coords=a,
-        width=a[2] - a[0],
-        height=a[3] - a[1],
-    )
-
-    class _FakePage:
-        def __init__(self):
-            self.rect = types.SimpleNamespace(height=page_height, width=page_width)
-            self.rotation = initial_rotation
-
-        def get_text(self, mode="text", *, clip=None):
-            return ""
-
-        def set_rotation(self, value):
-            self.rotation = value
-
-        def get_pixmap(self, *, clip=None, dpi=300):
-            return types.SimpleNamespace(tobytes=lambda fmt: b"PNG_FAKE")
-
-    page = _FakePage()
-
-    class _FakeDoc:
-        page_count = 1
-
-        def __getitem__(self, idx):
-            return page
-
-        def close(self):
-            pass
-
-    fake.open = lambda path: _FakeDoc()
-    return fake, page
-
-
-# --------------------------------------------------------------------------
-# RFC-037 D3: read_verdict_ledger REMOVED (TestReadVerdictLedgerRetrieval deleted)
-# --------------------------------------------------------------------------
-
-
-class TestReadVerdictLedgerRemoval:
-    """RFC-037 D3: read_verdict_ledger must no longer be importable."""
-
-    def test_not_importable_from_storage(self):
-        import pageindex_mcp.storage as storage_mod
-
-        assert not hasattr(storage_mod, "read_verdict_ledger")
-        assert "read_verdict_ledger" not in storage_mod.__all__
-
-
-# --------------------------------------------------------------------------
-# D1: region-scoped text-layer check (_text_layer_has_content)
-# --------------------------------------------------------------------------
-
-
-class TestRegionHasOwnTextLayer:
-    """Direct unit tests on ``_text_layer_has_content`` itself."""
-
-    def test_header_only_outside_bbox_returns_false(self):
-        """Header text lives outside the region's own bbox -- clipped read
-        returns empty -- the region has NO text of its own."""
-        page = types.SimpleNamespace(get_text=lambda mode, clip=None: "")
-        rect = types.SimpleNamespace()
-        assert _text_layer_has_content(page, region_rect=rect) is False
-
-    def test_below_min_chars_threshold_returns_false(self):
-        page = types.SimpleNamespace(get_text=lambda mode, clip=None: "x" * 19)
-        rect = types.SimpleNamespace()
-        assert _text_layer_has_content(page, region_rect=rect) is False
-
-    def test_at_min_chars_threshold_returns_true(self):
-        # _PICTURE_OCR_MIN_CHARS is 20 and the length check is strict
-        # (`len(text) <= _PICTURE_OCR_MIN_CHARS` fails at exactly 20), so
-        # the smallest length that clears the threshold is 21 chars.
-        page = types.SimpleNamespace(get_text=lambda mode, clip=None: "The quick brown foxes")
-        rect = types.SimpleNamespace()
-        assert _text_layer_has_content(page, region_rect=rect) is True
-
-
-class TestRegionAwareExemptionIntegration:
-    """Region-scoped check wired into ``_recover_picture_text``."""
-
-    def test_header_only_outside_bbox_exemption_fires(self, monkeypatch):
-        """Page has header/footer text (page-level check would see content
-        and skip), but the picture's OWN bbox has none -- region-aware
-        exemption fires, OCR proceeds."""
-        monkeypatch.setattr(converters.pictures, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
-        _install_fake_fitz(monkeypatch, page_text=_long_text(60), clip_text="")
-        monkeypatch.setattr(
-            converters.pictures, "_tesseract_ocr_image", lambda png, langs: _long_text()
-        )
-
-        recovered, skip_reasons = _recover_picture_text("dummy.pdf", [_region()], ["eng"])
-
-        assert skip_reasons.get(0) != "page_coverage"
-        assert 0 in recovered
-        assert recovered[0]["ocr_text"] == _long_text()
-
-    def test_substantial_text_inside_bbox_exemption_does_not_fire(self, monkeypatch):
-        """Region's own bbox carries real text -- exemption must NOT fire,
-        the region-scoped check must not become permissive in the other
-        direction (edge case from the design doc)."""
-        monkeypatch.setattr(converters.pictures, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
-        _install_fake_fitz(monkeypatch, page_text="", clip_text=_long_text(60))
-        monkeypatch.setattr(
-            converters.pictures, "_tesseract_ocr_image", lambda png, langs: _long_text()
-        )
-
-        recovered, skip_reasons = _recover_picture_text("dummy.pdf", [_region()], ["eng"])
-
-        assert skip_reasons.get(0) == "page_coverage"
-        # RFC-029 D5a: skipped regions still surface in ``recovered`` carrying
-        # ``png_bytes`` + ``skipped_reason`` so downstream can reason about the
-        # crop, but ``ocr_text`` MUST be absent -- proving Tesseract was not run.
-        assert "ocr_text" not in recovered.get(0, {})
-        assert recovered.get(0, {}).get("skipped_reason") == "page_coverage"
-
-
-class TestHeadingOnlyFallbackTrigger:
-    """Chars-per-heading secondary trigger for
-    ``_document_level_text_fallback`` (heading-only trees where structure
-    survived but body prose did not)."""
-
-    def test_heading_only_markdown_below_chars_per_heading_floor_triggers(self, monkeypatch):
-        # 6 headings, ~40 chars total body text between them -> ~7 chars/heading,
-        # well under the 50-char floor, even though total_chars clears the
-        # absolute 100-char floor.
-        md = "\n\n".join(f"# Heading {i}\n\nshort" for i in range(6))
-        assert (
-            len(md.replace(converters._IMAGE_MARKER, "")) >= converters._DOC_TEXT_FALLBACK_MIN_CHARS
-        )
-
-        fake_pdfium = types.ModuleType("pypdfium2")
-
-        class _TextPage:
-            def get_text_range(self):
-                return "Recovered whole-document prose that clears the garble floor easily."
-
-        class _Page:
-            def get_textpage(self):
-                return _TextPage()
-
-        class _PdfDoc:
-            def __iter__(self):
-                return iter([_Page()])
-
-            def close(self):
-                pass
-
-        fake_pdfium.PdfDocument = lambda path: _PdfDoc()
-        monkeypatch.setitem(sys.modules, "pypdfium2", fake_pdfium)
-
-        result = _document_level_text_fallback(md, "/fake.pdf")
-
-        assert result != md
-        assert "Recovered whole-document prose" in result
-
-    def test_document_with_sufficient_chars_per_heading_unaffected(self, monkeypatch):
-        # 2 headings, well over 50 chars/heading of body prose -> fallback
-        # must NOT fire, markdown returned unchanged.
-        md = "# Heading 1\n\n" + ("word " * 40) + "\n\n# Heading 2\n\n" + ("word " * 40)
-
-        fake_pdfium = types.ModuleType("pypdfium2")
-        fake_pdfium.PdfDocument = lambda path: (_ for _ in ()).throw(
-            AssertionError("pdfium should not be invoked when chars/heading clears the floor")
-        )
-        monkeypatch.setitem(sys.modules, "pypdfium2", fake_pdfium)
-
-        result = _document_level_text_fallback(md, "/fake.pdf")
-
-        assert result == md
-
-
-class TestFullPageRegionCap:
-    """``MAX_FULLPAGE_PICTURE_OCR_REGIONS`` per-document boundary."""
-
-    def test_regions_past_cap_skipped_with_page_coverage(self, monkeypatch):
-        """With the cap set to 2 and 3 qualifying full-page regions, the
-        first 2 get the exemption and OCR fires; the 3rd is skipped with
-        "page_coverage" and a logged warning, not silently exempted."""
-        monkeypatch.setattr(converters.pictures, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
-        monkeypatch.setattr(converters.pictures, "_MAX_FULLPAGE_PICTURE_OCR_REGIONS", 2)
-        monkeypatch.setattr(
-            converters.pictures,
-            "_GATE_CONFIG",
-            PictureGateConfig(
-                coverage_exempt_no_text_layer=True,
-                max_fullpage_picture_ocr_regions=2,
-            ),
-        )
-        _install_fake_fitz(monkeypatch, page_text=_long_text(60), clip_text="")
-        monkeypatch.setattr(
-            converters.pictures, "_tesseract_ocr_image", lambda png, langs: _long_text()
-        )
-
-        regions = [_region() for _ in range(3)]
-        recovered, skip_reasons = _recover_picture_text("dummy.pdf", regions, ["eng"])
-
-        assert skip_reasons.get(0) != "page_coverage"
-        assert skip_reasons.get(1) != "page_coverage"
-        assert skip_reasons.get(2) == "page_coverage"
-        assert recovered[0]["ocr_text"] == _long_text()
-        assert recovered[1]["ocr_text"] == _long_text()
-        # RFC-029 D5a: region past the cap is retained with ``png_bytes`` +
-        # ``skipped_reason`` but WITHOUT ``ocr_text`` -- Tesseract skipped.
-        assert "ocr_text" not in recovered.get(2, {})
-        assert recovered.get(2, {}).get("skipped_reason") == "page_coverage"
-
-    def test_cap_at_default_fifty(self):
-        assert converters._MAX_FULLPAGE_PICTURE_OCR_REGIONS == 50
-
-
-# --------------------------------------------------------------------------
-# D2: garble-by-default for short post-retry text (check_garble)
-# --------------------------------------------------------------------------
-
-
-class TestGarbleByDefaultShortPostRetryText:
-    def test_short_text_with_garbling_reason_clean_text_not_forced(self, monkeypatch):
-        """Zone-7 fix: a prior GARBLING defect no longer force-flags clean
-        short text -- the real prongs run first, and none fire on this
-        clean policy sentence."""
-        monkeypatch.setattr(helpers.garble, "_GARBLE_SHORT_TEXT_DEFAULT", True)
-        assert (
-            check_garble(
-                _SHORT_CLEAN_TEXT,
-                expected_script=None,
-                profile=FLAT_MARKDOWN_PROFILE,
-                original_defect=TreeDefect.GARBLING,
-            )
-            is False
-        )
-
-    def test_short_text_with_node_garbling_reason_clean_text_not_forced(self, monkeypatch):
-        """D2/D3 consistency: node_garbling gets the same treatment as
-        garbling -- clean short text is not force-flagged post Zone-7."""
-        monkeypatch.setattr(helpers.garble, "_GARBLE_SHORT_TEXT_DEFAULT", True)
-        assert (
-            check_garble(
-                _SHORT_CLEAN_TEXT,
-                expected_script=None,
-                profile=FLAT_MARKDOWN_PROFILE,
-                original_defect=TreeDefect.NODE_GARBLING,
-            )
-            is False
-        )
-
-    def test_short_text_with_unrelated_reason_gets_normal_evaluation(self, monkeypatch):
-        monkeypatch.setattr(helpers.garble, "_GARBLE_SHORT_TEXT_DEFAULT", True)
-        assert (
-            check_garble(
-                _SHORT_CLEAN_TEXT,
-                expected_script=None,
-                profile=FLAT_MARKDOWN_PROFILE,
-                original_defect=TreeDefect.NODE_COUNT_LOW,
-            )
-            is False
-        )
-
-    def test_rollback_env_restores_prior_behavior(self, monkeypatch):
-        """GARBLE_SHORT_TEXT_DEFAULT=false disables the default-garbled path,
-        even for a garbling-origin short text, restoring pre-D2 behavior."""
-        monkeypatch.setattr(helpers.garble, "_GARBLE_SHORT_TEXT_DEFAULT", False)
-        assert (
-            check_garble(
-                _SHORT_CLEAN_TEXT,
-                expected_script=None,
-                profile=FLAT_MARKDOWN_PROFILE,
-                original_defect=TreeDefect.GARBLING,
-            )
-            is False
-        )
-
-
-class TestDecorativeFlagNoRotationGate:
-    def test_empty_ocr_on_rotated_page_sets_decorative_true(self, monkeypatch):
-        """The rotation gate is removed: empty OCR sets decorative=True even
-        when rotation != 0 (previously only fired at rotation == 0)."""
-        fake_fitz, _page = _make_fake_fitz(600.0, 800.0, initial_rotation=180)
-        monkeypatch.setattr(converters.pictures, "_tesseract_ocr_image", lambda path, langs: "")
-        region = _region(0, 0, 30, 30)
-
-        with patch.dict("sys.modules", {"fitz": fake_fitz}):
-            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
-
-        assert result[0].get("skipped_reason") == "ocr_min_chars"
-
-    def test_nonempty_ocr_on_rotated_page_does_not_set_skipped_reason(self, monkeypatch):
-        fake_fitz, _page = _make_fake_fitz(600.0, 800.0, initial_rotation=90)
-        monkeypatch.setattr(
-            converters.pictures,
-            "_tesseract_ocr_image",
-            lambda path, langs: "Recovered chart text with enough characters",
-        )
-        region = _region(0, 0, 30, 30)
-
-        with patch.dict("sys.modules", {"fitz": fake_fitz}):
-            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
-
-        assert "skipped_reason" not in result[0]
-
-
-# --------------------------------------------------------------------------
-# Task 2.5 (D2 item 3): rotated-page bbox crop spike (_bbox_to_fitz_rect)
-# --------------------------------------------------------------------------
-
-
-def _make_rotated_pdf(tmp_path, fitz):
-    """Build a page (600x800 MediaBox) with native rotation=270 and a text
-    marker near the top-left of the UNROTATED page."""
-    doc = fitz.open()
-    page = doc.new_page(width=600, height=800)
-    page.insert_text((50, 60), "MARKER", fontsize=20)
-    page.set_rotation(270)
-    path = str(tmp_path / "rot270.pdf")
-    doc.save(path)
-    doc.close()
-    return path
-
-
-class TestBboxToFitzRectRotationSpike:
-    @pytest.mark.xfail(
-        reason="D2 spike: _bbox_to_fitz_rect does not yet handle native page rotation; follow-up RFC needed"
-    )
-    def test_bbox_to_fitz_rect_crops_known_region_on_rotated_page(self, tmp_path):
-        fitz = pytest.importorskip("fitz")
-
-        path = _make_rotated_pdf(tmp_path, fitz)
-        doc = fitz.open(path)
-        page = doc[0]
-        assert page.rotation == 270
-
-        # Docling reports bboxes in BOTTOMLEFT-origin coords against the page's
-        # unrotated MediaBox height (800), not the rotation-swapped page.rect
-        # height (600) that `_recover_picture_text` reads at this call site.
-        mediabox_height = page.mediabox.height
-        marker_top_unrotated = 40.0
-        marker_bottom_unrotated = 90.0
-        bbox = types.SimpleNamespace(
-            l=20.0,
-            t=mediabox_height - marker_top_unrotated,
-            r=200.0,
-            b=mediabox_height - marker_bottom_unrotated,
-            coord_origin=types.SimpleNamespace(name="BOTTOMLEFT"),
-        )
-
-        # This mirrors the production call at the point _recover_picture_text
-        # invokes it: page.rect.height is read WHILE the page is still rotated
-        # (before the D6 page.set_rotation(0) step further down that function).
-        rect = _bbox_to_fitz_rect(bbox, page.rect.height, fitz)
-        assert rect is not None
-
-        cropped_text = page.get_text("text", clip=rect).strip()
-        doc.close()
-
-        assert cropped_text == "MARKER"
-
-
-# --- from test_rfc_storage.py ---
-
-_MARKER = "<!-- image -->"
-_IMAGE_MARKER = _MARKER
-
-# Repeated single-token blob (>20 alnum tokens, >30% repetition ratio) trips
-# _is_garbled_blob's token-repetition check without needing GLYPH</PUA noise.
-_GARBLED_TEXT = " ".join(["xkjqz"] * 40)
-_CLEAN_TEXT = "This is a perfectly ordinary page of legible English prose. " * 3
-
-
-# ---------------------------------------------------------------------------
-# D0: garble-aware _text_layer_has_content
-# ---------------------------------------------------------------------------
-
-
-def _page(text: str):
-    return types.SimpleNamespace(get_text=lambda mode="text": text)
-
-
-class TestTextLayerHasContent:
-    """Design Property 1: _text_layer_has_content returns False for text
-    that is either too short or flagged garbled, and True only when both
-    checks pass."""
-
-    def test_garbled_text_layer_returns_false(self):
-        """Long enough to clear the char-count floor but flagged garbled
-        (thin mojibake left by the PDF creator) must not be treated as
-        real content."""
-        assert _text_layer_has_content(_page(_GARBLED_TEXT)) is False
-
-    def test_clean_text_layer_returns_true(self):
-        assert _text_layer_has_content(_page(_CLEAN_TEXT)) is True
-
-
-# ---------------------------------------------------------------------------
-# D1: graceful marker-count mismatch splicing + raw marker recognition
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# D2 + D6: decorative-icon bbox classifier and page-rotation-corrected OCR
-# ---------------------------------------------------------------------------
-
-# NOTE: _region is already defined above (from test_rfc_worker.py) with defaults;
-# that version is a superset and works for all call sites.
-
-
-def _make_fake_fitz_storage(
+def _make_fake_fitz(
     page_width: float,
     page_height: float,
     initial_rotation: int = 0,
+    *,
+    clip_text: str = "",
     raise_on_pixmap: bool = False,
+    pixmap_fails_for_l: set | None = None,
 ):
-    """Build a fake fitz module + page that records the rotation in effect
-    at the moment ``get_pixmap`` is called."""
+    """Build a fake ``fitz`` module + page.
+
+    Records the rotation in effect when ``get_pixmap`` is called, and can be
+    told to raise for specific region ``l`` coordinates (crash isolation) or
+    for every crop (``raise_on_pixmap``).
+    """
     fake = types.ModuleType("fitz")
     fake.Rect = lambda *a: types.SimpleNamespace(
         coords=a,
+        l=a[0],
+        t=a[1],
+        r=a[2],
+        b=a[3],
         width=a[2] - a[0],
         height=a[3] - a[1],
     )
@@ -1980,7 +236,7 @@ def _make_fake_fitz_storage(
             self.pixmap_rotation_at_call = None
 
         def get_text(self, mode="text", *, clip=None):
-            return ""
+            return clip_text
 
         def set_rotation(self, value):
             self.rotation = value
@@ -1989,6 +245,8 @@ def _make_fake_fitz_storage(
             self.pixmap_rotation_at_call = self.rotation
             if raise_on_pixmap:
                 raise RuntimeError("boom")
+            if pixmap_fails_for_l and clip is not None and clip.l in pixmap_fails_for_l:
+                raise RuntimeError("simulated degenerate-region crop failure")
             return types.SimpleNamespace(tobytes=lambda fmt: b"PNG_FAKE")
 
     page = _FakePage()
@@ -2006,498 +264,703 @@ def _make_fake_fitz_storage(
     return fake, page
 
 
-class TestDecorativeIconSizeFilter:
-    """Design Property 3: a PictureItem region whose bbox width AND height
-    are both below DECORATIVE_ICON_MIN_DIM_PT skips crop+OCR and is tagged
-    skip_reasons[i] == "decorative_icon"."""
-
-    def test_sub_icon_region_skips_ocr_tags_decorative_icon(self, monkeypatch):
-        fake_fitz, _page = _make_fake_fitz_storage(600.0, 800.0)
-        monkeypatch.setattr(converters.pictures, "_DECORATIVE_ICON_MIN_DIM_PT", 20.0)
-
-        def _fail_if_called(*_a, **_k):
-            raise AssertionError("tesseract must not run for sub-icon regions")
-
-        monkeypatch.setattr(converters.pictures, "_tesseract_ocr_image", _fail_if_called)
-        region = _region(0, 0, 15, 12)
-
-        with patch.dict("sys.modules", {"fitz": fake_fitz}):
-            result, skip_reasons = _recover_picture_text("/fake.pdf", [region], ["eng"])
-
-        assert result == {}
-        assert skip_reasons[0] == "decorative_icon"
-
-    def test_region_above_threshold_proceeds_to_ocr(self, monkeypatch):
-        fake_fitz, _page = _make_fake_fitz_storage(600.0, 800.0)
-        monkeypatch.setattr(converters.pictures, "_DECORATIVE_ICON_MIN_DIM_PT", 20.0)
-        monkeypatch.setattr(
-            converters.pictures,
-            "_tesseract_ocr_image",
-            lambda path, langs: "Chart text with enough characters to pass the gate",
-        )
-        region = _region(0, 0, 30, 30)
-
-        with patch.dict("sys.modules", {"fitz": fake_fitz}):
-            result, skip_reasons = _recover_picture_text("/fake.pdf", [region], ["eng"])
-
-        assert 0 not in skip_reasons
-        assert result[0]["ocr_text"]
+def _tree_garble(nodes, expected_script=None):
+    """Test helper: replaces deleted _tree_is_garbled wrapper."""
+    if not nodes:
+        return False
+    return check_garble(
+        _flatten_tree_text(nodes),
+        expected_script=expected_script,
+        profile=BULK_PROFILE,
+    )
 
 
-# ---------------------------------------------------------------------------
-# D3: HTML-comment-marker exemption from garble detection
-# ---------------------------------------------------------------------------
+def _flat_garble(md, expected_script=None, original_defect=None):
+    """Test helper: replaces deleted _flat_text_is_garbled wrapper."""
+    return check_garble(
+        md,
+        expected_script=expected_script,
+        profile=FLAT_MARKDOWN_PROFILE,
+        original_defect=original_defect,
+    )
 
 
-class TestImageMarkerGarbleExemption:
-    """Design Property 4: a text blob consisting solely of <!-- ... -->
-    HTML comment markers is never flagged garbled; genuine repeated
-    non-comment tokens above the 30% threshold still are."""
-
-    def test_only_image_markers_not_garbled(self):
-        """A scanned-PDF markdown with nothing but repeated <!-- image -->
-        markers (100% single-token repetition pre-D3) must NOT be flagged
-        garbled -- these are structural markers, not mojibake."""
-        blob = "\n\n".join([_IMAGE_MARKER] * 45)
-        assert check_garble(blob, expected_script=None, profile=BULK_PROFILE) is False
-
-    def test_genuine_repeated_tokens_still_garbled(self):
-        blob = " ".join(["xkjqz"] * 40)
-        assert check_garble(blob, expected_script=None, profile=BULK_PROFILE) is True
+# ═════════════════════════════════════════════════════════════════════════
+# headings.py: segment labels, numbering depth, Arabic stem reversal
+# ═════════════════════════════════════════════════════════════════════════
 
 
-# ---------------------------------------------------------------------------
-# D4: content-quality guard on the cat_b_promoted gate
-# ---------------------------------------------------------------------------
+def test_segment_label_and_containment_depths_article_forms():
+    """RFC-033 D4 / Property 4: parenthesized article numbering yields the
+    same label as the plain form, so ``_containment_depths`` assigns an
+    explicit (non-None) depth to each and ``_relevel_by_containment`` no
+    longer no-ops on parenthesized Article headings."""
+    titles = ["Article (47) - Title", "Article 47 - Title"]
+    bad = [t for t in titles if _segment_label(t) != ["47"]]
+    assert not bad, f"_segment_label should return ['47'] for: {bad}"
+    depths = _containment_depths(titles)
+    assert all(d is not None for d in depths), depths
 
 
-class TestCatBPromotedContentQualityGuard:
-    """Design Property 5: promotion to PASS is blocked if
-    len(flat_text.strip()) < MIN_FLAT_PROMOTION_CHARS OR the ratio of
-    image-placeholder blocks to total blocks exceeds 0.5, regardless of
-    node_count, max_leaf_ratio, or garble status.
-
-    Note: `_flatten_tree_text` concatenates node text with no separator,
-    so per-block text carries a trailing "\\n" here (as real extracted
-    markdown blocks do) to make each block land on its own line for the
-    placeholder-ratio line-scan in `classify_verdict`.
-    """
-
-    def test_placeholder_blocks_below_char_threshold_blocked(self):
-        """Doc 21 regression case: 15 <!-- image --> blocks, ~210 total
-        chars. Passes node_count/leaf-ratio/garble gates pre-D4 but must
-        no longer be promoted via cat_b_promoted.
-        Zone-1: without gate evaluation (validate_result=None), the early
-        structural-OK return may fire with PASS -- the key property is that
-        cat_b_promoted is never the reason."""
-        structure = [{"title": "", "text": _IMAGE_MARKER + "\n"} for _ in range(15)]
-        verdict, reason = classify_verdict(structure, "flat_prose", None)
-        assert reason != "cat_b_promoted"
-
-    def test_real_text_blocks_above_threshold_promoted(self):
-        structure = [
-            {
-                "title": "",
-                "text": (
-                    f"block number {i} has real prose content describing the "
-                    "document in detail with enough words to be meaningful. " * 3 + "\n"
-                ),
-            }
-            for i in range(15)
-        ]
-        flat_text = "".join(b["text"] for b in structure)
-        assert len(flat_text.strip()) >= 500
-        verdict, reason = classify_verdict(structure, "flat_prose", None)
-        assert verdict == "PASS"
-        assert reason in ("structural_pass", "cat_b_promoted")
-
-
-# ---------------------------------------------------------------------------
-# D5: prefer synthetic structure over a rejected tree for flat-routed docs
-# ---------------------------------------------------------------------------
-
-
-def _synthesize_flat_structure(flat_structure: list, blocks: list) -> list:
-    # D5 (RFC-023): mirrors client.py's index() -- always prefer synthetic
-    # structure from blocks when blocks exist, regardless of whether
-    # flat_structure (the rejected tree) is empty or non-empty.
-    if blocks:
-        flat_structure = [
-            {"title": "", "text": _flat_block_primary_text(b)}
-            for b in blocks
-            if _flat_block_primary_text(b).strip()
-        ]
-    return flat_structure
-
-
-class TestSyntheticStructurePreference:
-    """Design Property 6: for any flat-routed document where `blocks` is
-    non-empty, the verdict-computation input structure is the synthetic
-    structure built from `blocks`, regardless of whether the rejected
-    tree structure is itself empty or non-empty."""
-
-    def test_non_empty_rejected_structure_replaced_by_synthetic_from_blocks(self):
-        """Doc 20 regression case: tree builder produced a non-empty
-        rejected structure (low node_count/depth), but 355 real blocks
-        exist. The rejected structure must never be used."""
-        rejected_structure = [{"title": "", "text": "sparse rejected tree content"}]
-        blocks = [{"text": f"block {i} has real prose content"} for i in range(355)]
-        structure = _synthesize_flat_structure(rejected_structure, blocks)
-        assert structure != rejected_structure
-        assert len(structure) == len(blocks)
-        assert all(node["text"] for node in structure)
-
-    def test_empty_rejected_structure_still_synthesized_from_blocks(self):
-        """Pre-D5 behavior (structure=[] and blocks) must be preserved --
-        no regression from B1/RFC-022."""
-        blocks = [{"text": "alpha content"}, {"text": "beta content"}, {"text": "gamma content"}]
-        structure = _synthesize_flat_structure([], blocks)
-        assert len(structure) == len(blocks)
-
-
-# ---------------------------------------------------------------------------
-# D7: Tesseract-on-raster fallback when the VLM crashes on garbled PDFs
-# ---------------------------------------------------------------------------
-
-
-def _vlm_tesseract_fallback(ocr_text: str, *, reason: str = "garbling") -> str:
-    """Reproduces client.py's recovery/reason-override logic exactly."""
-    if ocr_text and not check_garble(ocr_text, expected_script=None, profile=FLAT_MARKDOWN_PROFILE):
-        reason = "node_count<3"
-    return reason
-
-
-class TestVlmTesseractFallback:
-    """Design Property 8: on VLM exception, Tesseract OCR runs on the
-    rasterized page images; clean OCR text overrides reason to
-    'node_count<3' (flat success path); garbled/empty text still raises
-    LowQualityTreeError('garbling')."""
-
-    def test_clean_ocr_text_overrides_reason_to_node_count(self):
-        assert _vlm_tesseract_fallback(_CLEAN_TEXT) == "node_count<3"
-
-    def test_garbled_ocr_text_leaves_reason_as_garbling(self):
-        """Garbled Tesseract output must NOT override the reason -- the
-        document still raises LowQualityTreeError('garbling') per HR5."""
-        assert _vlm_tesseract_fallback(_GARBLED_TEXT) == "garbling"
-
-
-# ---------------------------------------------------------------------------
-# D8a: TessdataUnavailableError graceful degradation on image branch
-# ---------------------------------------------------------------------------
-
-
-class TestImageBranchTessdataDegradation:
-    """indexer.py image branch must catch TessdataUnavailableError and degrade
-    to ['deu','eng'] instead of propagating a terminal worker error.  This
-    aligns with the handling in images.py, recovery.py, and pictures.py."""
-
-    def test_ensure_tessdata_failure_degrades_to_latin(self, monkeypatch):
-        from pageindex_mcp.converters import ocr_langs
-        from pageindex_mcp.converters.ocr_langs import TessdataUnavailableError
-
-        monkeypatch.setattr(ocr_langs, "_system_tessdata_cache", {})
-        monkeypatch.delenv("TESSDATA_PREFIX", raising=False)
-        monkeypatch.setattr("shutil.which", lambda _cmd: None)
-
-        detected = ["ara"]
-        with pytest.raises(TessdataUnavailableError):
-            ensure_tessdata(detected)
-
-    def test_detect_ocr_langs_arabic_filename(self):
-        """An Arabic-named file triggers Arabic lang detection."""
-        from pageindex_mcp.converters import detect_ocr_langs
-
-        result = detect_ocr_langs("وزارة الصناعة والتكنولوجيا المتقدمة.jpg")
-        assert "ara" in result
-
-
-# D8: standalone-image OCR enrichment + terminal-vs-transient LLM failures
-# ---------------------------------------------------------------------------
-
-
-class TestClassifyLlmFailure:
-    """Design Property 9: LLMTransientFailure is classified terminal (no
-    retry) iff the error detail contains a CMap-corruption or
-    content-policy indicator, else transient (retryable)."""
-
-    def test_cmap_indicator_is_terminal(self):
-        assert _classify_llm_failure("CMap corruption detected") == "llm_failure_terminal"
-
-    def test_rate_limit_indicator_is_transient(self):
-        assert (
-            _classify_llm_failure("429 rate_limit exceeded, throttled") == "llm_failure_transient"
-        )
-
-
-# ---------------------------------------------------------------------------
-# D10: PASS_MAX_LEAF_RATIO env-var-tunable threshold
-# ---------------------------------------------------------------------------
-
-_WORDS = [
-    "alpha",
-    "bravo",
-    "charlie",
-    "delta",
-    "echo",
-    "foxtrot",
-    "golf",
-    "hotel",
-    "india",
-    "juliet",
-    "kilo",
-    "lima",
-    "mike",
-    "november",
-    "oscar",
-    "papa",
-    "quebec",
-    "romeo",
-    "sierra",
-    "tango",
-    "uniform",
-    "victor",
-    "whiskey",
-    "xray",
-    "yankee",
-    "zulu",
-    "apple",
-    "banana",
-    "cherry",
-    "date",
-    "fig",
-    "grape",
-]
-
-
-def _text_of_length(n: int) -> str:
-    if n <= 0:
-        return ""
-    words = []
-    total = 0
-    i = 0
-    while total < n:
-        w = _WORDS[i % len(_WORDS)]
-        words.append(w)
-        total += len(w) + 1
-        i += 1
-    return (" ".join(words) + " ")[:n]
-
-
-def _tree_with_ratio(ratio: float, total_chars: int = 10000, n_other: int = 6) -> list:
-    """Root node with one dominant leaf (`ratio` share of leaf chars) and
-    `n_other` smaller leaves, so node_count and depth clear their gates
-    and only max_leaf_ratio varies."""
-    max_leaf = round(ratio * total_chars)
-    other_leaf = (total_chars - max_leaf) // n_other
-    leaves = [{"title": "", "text": _text_of_length(max_leaf), "nodes": []}]
-    leaves += [
-        {"title": "", "text": _text_of_length(other_leaf), "nodes": []} for _ in range(n_other)
+def test_ar_stems_and_numbering_depth_match_reversed_forms():
+    """RFC-033 D8 / Property 8: Tesseract's RTL-reversal bug mirrors the glyph
+    order of scanned Arabic headings, so the forward-oriented stem regexes and
+    ``numbering_depth`` must recover the same structure from the reversed
+    variant as from clean OCR output."""
+    stem_pairs = [
+        ("الباب", "بابلا"),
+        ("الفصل", "لصفلا"),
+        ("فصل", "لصف"),
+        ("القسم", "مسقلا"),
+        ("الجزء", "ءزجلا"),
     ]
-    return [{"title": "Root", "text": "", "nodes": leaves}]
+    failures = []
+    for forward, reversed_ in stem_pairs:
+        if _AR_PART_RE.match(forward) is None:
+            failures.append(f"_AR_PART_RE does not match forward stem {forward!r}")
+        if _AR_PART_RE.match(reversed_) is None:
+            failures.append(f"_AR_PART_RE does not match reversed stem {reversed_!r}")
+    depth_pairs = [("المادة", "ةداملا", 2), ("الباب", "بابلا", 1)]
+    for forward, reversed_, expected in depth_pairs:
+        got = (numbering_depth(forward), numbering_depth(reversed_))
+        if got != (expected, expected):
+            failures.append(f"numbering_depth({forward!r}/{reversed_!r}) == {got}, want {expected}")
+    assert not failures, "\n".join(failures)
 
 
-class TestPassMaxLeafRatioEnvVar:
-    """Design Property 10: the leaf-concentration threshold for the main
-    PASS gate reads from PASS_MAX_LEAF_RATIO (default 0.20) rather than a
-    hardcoded value."""
+# ═════════════════════════════════════════════════════════════════════════
+# headings.py: reconstruct_bidi_order heading-branch double-reversal guard
+# ═════════════════════════════════════════════════════════════════════════
 
-    def test_ratio_below_widened_threshold_passes(self, monkeypatch):
-        """max_leaf_ratio=0.18 with PASS_MAX_LEAF_RATIO=0.20 -> PASS."""
-        monkeypatch.setenv("PASS_MAX_LEAF_RATIO", "0.20")
-        structure = _tree_with_ratio(0.18)
-        assert classify_verdict(structure, "hierarchical", None) == ("PASS", "structural_pass")
+# `reconstruct_bidi_order()` narrows RFC-023 D9's unconditional heading branch --
+# `get_display()` is now applied to a heading only when it is not already in
+# logical order, so already-correct Arabic headings are no longer reversed by
+# our own pipeline (Run-15: المحتويات / الخلاصة -> تايوتحملا / ةصالخلا).
 
-    def test_ratio_above_widened_threshold_stays_marginal(self, monkeypatch):
-        """max_leaf_ratio=0.22 with PASS_MAX_LEAF_RATIO=0.20 -> MARGINAL."""
-        monkeypatch.setenv("PASS_MAX_LEAF_RATIO", "0.20")
-        reset_pipeline_config()
-        structure = _tree_with_ratio(0.22)
-        verdict, reason = classify_verdict(structure, "hierarchical", None)
-        assert verdict == "MARGINAL"
-        assert reason == "leaf_concentration=0.22"
+_LOGICAL_TOC_HEADING = "المحتويات"
+_LOGICAL_SUMMARY_HEADING = "الخلاصة"
+
+_LOGICAL_D9_HEADING = "الفصل الأول: تعريفات"
+_VISUAL_D9_HEADING = get_display(_LOGICAL_D9_HEADING)
 
 
-# ---------------------------------------------------------------------------
-# D11: widen OCR escalation to structural-failure reasons for image-dominant docs
-# ---------------------------------------------------------------------------
+class TestHeadingGuardIdempotence:
+    """Property 10: reconstruct_bidi_order never reverses an already-logical
+    heading, while genuinely visual-order headings are still corrected."""
+
+    def test_visual_order_heading_corrected_and_repair_path_idempotent(self):
+        """(b) Genuinely visual-order headings are still corrected -- the
+        RFC-023 D9 bilingual case must not regress.  (c) client.py's secondary
+        repair path re-applies reconstruct_bidi_order to node titles when
+        validate_tree flags 'rtl_reversal'; a node entering that path once
+        must not be reversed again on a second pass -- reconstruct_bidi_order
+        must be a fixed point of itself once applied."""
+        body_en = "This is the English body text describing the agreement terms in detail. " * 5
+        doc = "## " + _VISUAL_D9_HEADING + "\n" + body_en
+        result, _ = reconstruct_bidi_order(doc)
+        assert result.splitlines()[0] == "## " + _LOGICAL_D9_HEADING
+        assert body_en in result
+
+        failures = []
+        for heading in (
+            _LOGICAL_TOC_HEADING,
+            _LOGICAL_SUMMARY_HEADING,
+            _LOGICAL_D9_HEADING,
+            _VISUAL_D9_HEADING,
+        ):
+            once, _ = reconstruct_bidi_order("# " + heading)
+            twice, _ = reconstruct_bidi_order(once)
+            if twice != once:
+                failures.append(f"{heading!r}: not a fixed point ({once!r} -> {twice!r})")
+        assert not failures, "\n".join(failures)
 
 
-def _image_dominant(md_content: str) -> tuple[bool, int, int]:
-    """Reproduces client.py's image-dominance ratio computation exactly."""
-    total_lines = md_content.splitlines()
-    non_empty_lines = [ln for ln in total_lines if ln.strip()]
-    image_lines = sum(1 for ln in non_empty_lines if _MARKER in ln)
-    dominant = bool(non_empty_lines) and (image_lines / len(non_empty_lines)) > 0.50
-    return dominant, image_lines, len(non_empty_lines)
+class TestReconstructBidiOrder:
+    """RFC-015 D7: reconstruct_bidi_order() reorders Arabic, gated + structure-safe."""
+
+    def test_non_arabic_unchanged_and_arabic_is_char_preserving(self):
+        md_en = "# English Heading\n\nJust some plain English prose here.\n"
+        result_en, _ = reconstruct_bidi_order(md_en)
+        assert result_en == md_en
+
+        # BiDi reordering permutes characters; it must not add/drop any.
+        md_ar = "المادة الأولى في القانون العربي الطويل الكافي جدا"
+        result_ar, _ = reconstruct_bidi_order(md_ar)
+        assert sorted(result_ar) == sorted(md_ar)
 
 
-def _would_escalate(reason: str, md_content: str, *, ext: str = ".pdf") -> bool:
-    """Reproduces the D11 gate's overall condition (reason in structural
-    failures + image-dominant), gated on the module flags."""
-    if reason not in ("node_count<3", "depth<2"):
-        return False
-    if (
-        ext != ".pdf"
-        or not OCR_ESCALATION_GARBLE
-        or not pipeline_config.image_dominant_ocr_escalation_enabled
-    ):
-        return False
-    dominant, _, _ = _image_dominant(md_content)
-    return dominant
+# ═════════════════════════════════════════════════════════════════════════
+# headings.py: structural heading injection (line-start anchoring)
+# ═════════════════════════════════════════════════════════════════════════
 
 
-class TestStructuralFailureOcrEscalation:
-    """Design Property 12: for any validate_tree failure with reason in
-    ('node_count<3', 'depth<2') where the image-line ratio (image lines /
-    non-empty lines) exceeds 0.50, the system triggers the same OCR
-    escalation path as reason == 'garbling'; the ratio is computed
-    against non_empty_lines, not total_lines."""
+class TestStructuralHeadingInjectionLineStartAnchored:
+    """Property 9: structural heading injection never promotes mid-sentence
+    references (RFC-033 D5), and is idempotent."""
 
-    def test_structural_failure_image_dominant_triggers_escalation(self):
-        md = f"{_MARKER}\n{_MARKER}\n{_MARKER}\nsome prose"
-        assert _would_escalate("node_count<3", md) is True
+    def test_line_start_anchoring(self):
+        promoted = _inject_english_article_headings(
+            "Some intro text.\n\nArticle (3) Definitions\n\nMore body text follows."
+        )
+        assert "## Article (3) Definitions" in promoted.splitlines()
 
-    def test_structural_failure_non_image_dominant_no_escalation(self):
-        md = "\n".join(["real paragraph text here"] * 8 + [_MARKER])
-        assert _would_escalate("node_count<3", md) is False
+        mid = _inject_english_article_headings(
+            "Some intro text.\n\nsee Article (1) above\n\nMore body text follows."
+        )
+        assert "## see Article (1) above" not in mid
+        assert "see Article (1) above" in mid
+
+        # A clause *body* that opens with its own number must not be swallowed
+        # into a heading title -- line-start anchoring alone does not catch it.
+        prose = "Ziffer 3 gilt entsprechend fuer die Anspruecke des Versicherungsnehmers, " + (
+            "soweit diese nach den vorstehenden Bestimmungen nicht ausgeschlossen sind. " * 3
+        )
+        assert _inject_german_clause_headings(prose) == prose
+
+    def test_injection_is_idempotent(self):
+        cases = [
+            (_inject_german_clause_headings, "Ziffer 1 Haftung"),
+            (_inject_english_article_headings, "Article (3) Definitions"),
+        ]
+        failures = []
+        for inject, heading in cases:
+            once = inject(f"Intro.\n\n{heading}\n\nBody.")
+            if inject(once) != once:
+                failures.append(f"{inject.__name__} is not idempotent for {heading!r}")
+        assert not failures, "\n".join(failures)
 
 
-# ===========================================================================
-# Zone: OCR Recovery Cascade — marker cleanup and decide_ocr_mode removal
-# ===========================================================================
+# ═════════════════════════════════════════════════════════════════════════
+# headings.py: Arabic mirror-reversal detection and repair
+# ═════════════════════════════════════════════════════════════════════════
+
+_FORWARD_DOC = """مرسوم اتحادي رقم (13) لسنة 2016
+في شأن تنظيم القطاع الصحي
+
+الباب الأول
+أحكام تمهيدية
+
+المادة (1)
+تعريفات
+تسري على هذا المرسوم الاتحادي التعريفات التالية ما لم يقتض السياق خلاف ذلك.
+
+المادة (2)
+نطاق التطبيق
+تسري أحكام هذا المرسوم الاتحادي على جميع المنشآت الصحية في الدولة."""
 
 
-class TestPipelineMarkerCleanupOnEmptyPicResults:
-    """Regression: when _recover_picture_results returns [] (OCR skip),
-    downstream _fallback_and_recover_pictures strips <!-- image --> markers
-    from the md output.  Markers must not appear in the returned markdown
-    when pic_results is empty."""
+def _mirror_reverse(doc: str) -> str:
+    """Character-reverse each non-empty line, mirroring the Tesseract
+    RTL-reversal bug described in RFC-033 D8 (line content reversed, line
+    boundaries preserved)."""
+    return "\n".join(line[::-1] if line.strip() else line for line in doc.split("\n"))
 
-    def test_markers_stripped_when_pic_results_empty(self, monkeypatch):
-        """_fallback_and_recover_pictures strips residual <!-- image --> markers
-        when per-picture OCR is skipped and returns empty pic_results."""
-        from pageindex_mcp.converters.pipeline import _fallback_and_recover_pictures
-        from pageindex_mcp.converters import pictures as pictures_mod
 
-        # Mock _recover_picture_results to return empty list (OCR skip)
+_REVERSED_DOC = _mirror_reverse(_FORWARD_DOC)
+
+
+def test_decide_rtl_distinguishes_logical_from_visual_order():
+    """RFC-033 D8 / Property 11 + D7: reversal detection is precise -- it fires
+    on mirror-reversed Arabic and does NOT fire on forward/logical-order Arabic
+    (modeled on the مرسوم 13 / مرسوم 33 corpus fixtures), which is what
+    prevents a double reversal by our own pipeline."""
+    cases = [
+        (_FORWARD_DOC, False, "forward corpus-modeled document"),
+        ("قرار مجلس الوزراء رقم لسنة بشأن تنظيم علاقات العمل", False, "logical-order line"),
+        ("رارق سلجم ءارزولا مقر ةنسل نأشب ميظنت تاقالع لمعلا", True, "visual-order line"),
+    ]
+    failures = [
+        f"{label}: decide_rtl(...).reversed == {decide_rtl(text).reversed}, want {expected}"
+        for text, expected, label in cases
+        if decide_rtl(text).reversed is not expected
+    ]
+    assert not failures, "\n".join(failures)
+
+
+class TestArabicReversalRepairCorrectness:
+    @pytest.fixture(autouse=True)
+    def _disable_density_guard(self, monkeypatch):
+        import pageindex_mcp.converters.headings as _h
+
+        monkeypatch.setattr(_h, "_AR_HEADING_MIN_CONTENT_CHARS", 0)
+
+    def test_reversed_document_recovers_corrected_heading_structure(self):
+        """When reversal is detected, structural lines (الباب/المادة) are
+        promoted to the same heading levels a clean, forward-oriented OCR
+        pass would produce -- the corrected structure is recovered even
+        though the underlying OCR text is mirror-reversed."""
+        result = _inject_arabic_structural_headings(_REVERSED_DOC)
+        result_lines = result.split("\n")
+        assert f"# {'الباب الأول'[::-1]}" in result_lines
+        assert f"## {'المادة (1)'[::-1]}" in result_lines
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# normalize.py: dash / indented-heading / fi-hash normalization
+# ═════════════════════════════════════════════════════════════════════════
+
+
+def test_normalize_dashes_and_indented_headings():
+    """CONV-01-C2: U+2013 en-dash, U+2014 em-dash, U+2212 minus -> ASCII '-'.
+    D2: ``_normalize_indented_headings`` strips leading whitespace before a
+    markdown heading marker and leaves indented non-headings alone."""
+    dash_cases = [
+        ("–", "-"),
+        ("—", "-"),
+        ("−", "-"),
+        # Mixed clause-code text "A – 1" normalizes to a matchable "A - 1"
+        ("§ 5 – 1", "§ 5 - 1"),
+        # ASCII hyphen and ordinary text are left untouched
+        ("plain-text 123", "plain-text 123"),
+    ]
+    failures = [
+        f"normalize_dashes({src!r}) == {normalize_dashes(src)!r}, want {want!r}"
+        for src, want in dash_cases
+        if normalize_dashes(src) != want
+    ]
+    assert not failures, "\n".join(failures)
+
+    assert _normalize_indented_headings("    ### Article 10\n") == "### Article 10\n"
+    assert _normalize_indented_headings("    some code block\n") == "    some code block\n"
+
+
+def test_fix_fi_hash_substitution_only_in_arabic_dominant_text():
+    """D5: ``_fix_fi_hash_substitution`` replaces inline ``#`` with في only in
+    Arabic-dominant text; English text with an inline ``#`` is untouched."""
+    result = _fix_fi_hash_substitution("المادة الأولى#المادة الثانية")
+    assert "في" in result
+    assert "#" not in result
+
+    md_en = "section1#section2 and more text here"
+    assert _fix_fi_hash_substitution(md_en) == md_en
+
+
+def test_is_numeric_extension_accepts_letter_suffix_rejects_bare_marker():
+    """RFC-015 D5d: ``_is_numeric_extension`` accepts digit + optional
+    letter-suffix subclauses but not a bare list marker (the k-loop requires a
+    proper non-empty numeric anchor prefix)."""
+    # Blueprint's worked example: ('7','10','a') extends anchor ('7','10').
+    assert _is_numeric_extension(("7", "10", "a"), {("7", "10")}) is True
+    assert _is_numeric_extension(("a",), set()) is False
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# formats.py: converter dispatch table (CONV-01-C1/C3, INDEX-01-C1/C3)
+# ═════════════════════════════════════════════════════════════════════════
+
+
+def test_converter_dispatch_table_routes_each_format_to_its_own_converter():
+    """CONV-01-C1: .pdf->pdf_to_markdown, .docx->docx_to_markdown,
+    .pptx->pptx_to_markdown, .html->html_to_markdown_with_images -- four
+    distinct callables, one per supported extension.
+    INDEX-01-C3: the routes stay disjoint; ``pdf_to_markdown`` is reserved for
+    .pdf and is never the .docx/.html target.
+    INDEX-01-C1 (live): ``pdf_to_markdown`` is the pymupdf4llm-driven primary
+    route helper defined in ``pageindex_mcp.converters``, not the PyPDF2
+    fallback path (asserted only when the AGPL extractor is installed)."""
+    dispatch = {
+        ".pdf": pdf_to_markdown,
+        ".docx": docx_to_markdown,
+        ".pptx": pptx_to_markdown,
+        ".html": html_to_markdown_with_images,
+    }
+    assert len(set(dispatch.values())) == 4
+    non_callable = [ext for ext, fn in dispatch.items() if not callable(fn)]
+    assert not non_callable, f"converters for {non_callable} must be callable"
+
+    misrouted = [ext for ext in (".docx", ".pptx", ".html") if dispatch[ext] is pdf_to_markdown]
+    assert not misrouted, f"{misrouted} must not dispatch to the .pdf route"
+
+    if pytest.importorskip("pymupdf4llm", reason="AGPL extractor not installed"):
+        assert pdf_to_markdown.__module__ == "pageindex_mcp.converters"
+
+
+def _classify_extension(filename: str) -> str:
+    """Reference of the converter dispatch decision: returns the format token or
+    raises ValueError("unsupported_format"). Mirrors Converter.convert()'s guard
+    so CONV-01-C3 is asserted without booting LibreOffice or an LLM."""
+    supported = {".pdf", ".docx", ".pptx", ".html"}
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in supported:
+        raise ValueError("unsupported_format")
+    return ext
+
+
+def test_unsupported_format_raises_unsupported_format():
+    """CONV-01-C3: a .xyz file is rejected with reason=unsupported_format and no
+    converter / LLM / subprocess is invoked."""
+    with pytest.raises(ValueError, match="unsupported_format"):
+        _classify_extension("mystery.xyz")
+    # Supported formats are NOT rejected.
+    for good in ("a.pdf", "b.docx", "c.pptx", "d.html"):
+        assert _classify_extension(good) in {".pdf", ".docx", ".pptx", ".html"}
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# ocr_langs.py: detect_ocr_langs / ensure_tessdata / _try_download_tessdata
+# ═════════════════════════════════════════════════════════════════════════
+
+
+def test_ensure_tessdata_returns_requested_langs_without_downloading(monkeypatch, tmp_path):
+    """LANG-01-C3: when every requested <lang>.traineddata already exists under
+    TESSDATA_PREFIX (pre-baked), no download is attempted and the full
+    requested language list is returned unchanged.  Without TESSDATA_PREFIX,
+    ensure_tessdata trusts the system install for Latin langs and verifies
+    non-Latin via the (Zone-7) subprocess system check."""
+    from pageindex_mcp.converters import ocr_langs
+
+    # (a) no prefix -> system check path
+    monkeypatch.delenv("TESSDATA_PREFIX", raising=False)
+    monkeypatch.delenv("TESSDATA_ALLOW_DOWNLOAD", raising=False)
+    monkeypatch.setattr(ocr_langs, "_system_tessdata_cache", {"ara": True})
+    assert ensure_tessdata(["ara", "eng"]) == ["ara", "eng"]
+
+    # (b) pre-baked prefix -> no download attempted (LANG-01-C3)
+    monkeypatch.setenv("TESSDATA_PREFIX", str(tmp_path))
+    monkeypatch.setenv("TESSDATA_ALLOW_DOWNLOAD", "0")
+    (tmp_path / "ara.traineddata").write_bytes(b"stub")
+    (tmp_path / "eng.traineddata").write_bytes(b"stub")
+    download_calls = []
+    monkeypatch.setattr(
+        converters_mod,
+        "_try_download_tessdata",
+        lambda lang, prefix: download_calls.append(lang) or True,
+    )
+    assert ensure_tessdata(["ara", "eng"]) == ["ara", "eng"]
+    assert download_calls == []
+
+
+def test_tessdata_download_timeout_leaves_no_partial_file(monkeypatch, tmp_path):
+    """RFC-009 D5 / Property 5: a socket timeout during download is handled
+    (not raised), returns False, and leaves no partial file behind."""
+
+    def fake_urlopen(url, timeout=None):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    assert _try_download_tessdata("eng", str(tmp_path)) is False
+    assert not (tmp_path / "eng.traineddata").exists()
+
+
+def test_ensure_tessdata_raises_tessdata_unavailable_when_nothing_installed(monkeypatch):
+    """D8a: an Arabic-named file detects the "ara" lang, and with no prefix, no
+    cache and no tesseract binary ensure_tessdata raises TessdataUnavailableError -- the signal indexer.py's image branch
+    catches to degrade to ['deu','eng'] instead of a terminal worker error."""
+    from pageindex_mcp.converters import ocr_langs
+    from pageindex_mcp.converters.ocr_langs import TessdataUnavailableError
+
+    monkeypatch.setattr(ocr_langs, "_system_tessdata_cache", {})
+    monkeypatch.delenv("TESSDATA_PREFIX", raising=False)
+    monkeypatch.setattr("shutil.which", lambda _cmd: None)
+
+    from pageindex_mcp.converters import detect_ocr_langs
+
+    # An Arabic-named file detects "ara" -- the lang that then fails to resolve.
+    assert "ara" in detect_ocr_langs("وزارة الصناعة والتكنولوجيا المتقدمة.jpg")
+
+    with pytest.raises(TessdataUnavailableError):
+        ensure_tessdata(["ara"])
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# formats.py: xlsx_to_markdown
+# ═════════════════════════════════════════════════════════════════════════
+
+
+def test_xlsx_to_markdown_arabic_table_and_empty_workbook(tmp_path):
+    """Fix 4: xlsx_to_markdown produces a pipe-table with Arabic headers and
+    numeric cells; a workbook with no data raises RuntimeError."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "إحصاءات"
+    ws.append(["النشاط", "2019", "2020"])
+    ws.append(["الزراعة", 100, 110])
+    ws.append(["الصناعة", 200, 220])
+    path = tmp_path / "test.xlsx"
+    wb.save(str(path))
+    wb.close()
+
+    md = xlsx_to_markdown(str(path))
+    missing = [
+        tok
+        for tok in ("## إحصاءات", "النشاط", "2019", "2020", "الزراعة", "100", "الصناعة", "220", "|", "---")
+        if tok not in md
+    ]
+    assert not missing, f"missing from xlsx markdown: {missing}"
+
+    empty_wb = openpyxl.Workbook()
+    empty_wb.active.title = "Empty"
+    empty_path = tmp_path / "empty.xlsx"
+    empty_wb.save(str(empty_path))
+    empty_wb.close()
+    with pytest.raises(RuntimeError):
+        xlsx_to_markdown(str(empty_path))
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# formats.py: html_to_markdown_with_images image-describe resilience
+# ═════════════════════════════════════════════════════════════════════════
+
+# Covers the OpenAI vision call's error handling inside `_describe`:
+#   - RateLimitError / APIConnectionError -> retry once after backoff
+#   - non-OpenAI exceptions (TypeError etc.) propagate, are NOT swallowed
+# No MinIO/Redis/network required: get_openai_client is monkeypatched.
+
+
+def _counter_value(error_type: str) -> float:
+    return IMAGE_DESCRIBE_FAILURES.labels(error_type=error_type)._value.get()
+
+
+def _fake_request() -> httpx.Request:
+    return httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+
+
+def _fake_response(status_code: int = 429) -> httpx.Response:
+    return httpx.Response(status_code, request=_fake_request())
+
+
+def _make_client(create_mock: AsyncMock) -> SimpleNamespace:
+    """Build a fake openai client shaped like client.chat.completions.create."""
+    return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create_mock)))
+
+
+def _success_response(text: str = "a picture") -> SimpleNamespace:
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text))])
+
+
+def _write_html(tmp_path, img_src: str = "https://example.com/pic.png") -> str:
+    html_path = tmp_path / "doc.html"
+    html_path.write_text(f'<html><body><img src="{img_src}"></body></html>', encoding="utf-8")
+    return str(html_path)
+
+
+async def test_openai_transient_errors_retry_once_then_succeed(tmp_path, monkeypatch):
+    """(a) RateLimitError and APIConnectionError each retry once after a 2s
+    backoff and then succeed; no "[Image: image]" fallback, no failure counter
+    bump on eventual success."""
+    cases = [
+        (
+            openai.RateLimitError("rate limited", response=_fake_response(429), body=None),
+            "a cat photo",
+        ),
+        (
+            openai.APIConnectionError(message="connection failed", request=_fake_request()),
+            "a dog photo",
+        ),
+    ]
+    failures = []
+    for exc, caption in cases:
+        create_mock = AsyncMock(side_effect=[exc, _success_response(caption)])
         monkeypatch.setattr(
-            pictures_mod,
-            "_recover_picture_results",
-            lambda *a, **kw: [],
+            "pageindex_mcp.client.get_openai_client", lambda c=create_mock: _make_client(c)
+        )
+        sleep_mock = AsyncMock()
+        monkeypatch.setattr(converters_mod.formats.asyncio, "sleep", sleep_mock)
+
+        before = _counter_value(type(exc).__name__)
+        result = await converters_mod.html_to_markdown_with_images(
+            _write_html(tmp_path), model="gpt-4.1"
         )
 
-        md_with_markers = "# Heading\n\n<!-- image -->\n\nBody text <!-- image --> end"
-        md_out, pic_results, _records = _fallback_and_recover_pictures(
-            md_with_markers,
-            document=None,
-            pdf_path="/fake.pdf",
-            filename="fake.pdf",
-            expected_script=None,
-            landscape_fallback_pages=[],
-            heading_pages={},
-            force_full_page_ocr_applied=True,  # force OCR skip
-        )
-        assert "<!-- image -->" not in md_out, (
-            "Residual <!-- image --> markers must be stripped when pic_results is empty"
-        )
-        assert pic_results == []
-
-    def test_markers_preserved_when_pic_results_nonempty(self, monkeypatch):
-        """When pic_results are populated, markers are NOT stripped
-        (they serve as splice targets for bind_markers)."""
-        from pageindex_mcp.converters import pipeline as pipeline_mod
-        from pageindex_mcp.converters.pictures import _recover_picture_results
-
-        fake_pr = {"ocr_text": "chart", "page": 1, "bbox": {}, "png_bytes": b"png"}
-        monkeypatch.setattr(
-            pipeline_mod,
-            "_recover_picture_results",
-            lambda *a, **kw: [fake_pr],
-        )
-
-        md_with_markers = "# H\n\n<!-- image -->\n\nBody"
-        md_out, pic_results, _records = pipeline_mod._fallback_and_recover_pictures(
-            md_with_markers,
-            document=None,
-            pdf_path="/fake.pdf",
-            filename="fake.pdf",
-            expected_script=None,
-            landscape_fallback_pages=[],
-            heading_pages={},
-            force_full_page_ocr_applied=False,
-        )
-        assert len(pic_results) == 1
+        if caption not in result:
+            failures.append(f"{type(exc).__name__}: caption missing from {result!r}")
+        if "[Image: image]" in result:
+            failures.append(f"{type(exc).__name__}: fell back to the 'image' placeholder")
+        if create_mock.await_count != 2:
+            failures.append(f"{type(exc).__name__}: {create_mock.await_count} awaits, want 2")
+        sleep_mock.assert_awaited_once_with(2)
+        if _counter_value(type(exc).__name__) != before:
+            failures.append(f"{type(exc).__name__}: failure counter moved on a success")
+    assert not failures, "\n".join(failures)
 
 
-class TestIndexerMarkerCleanupFallback:
-    """Regression: indexer.py has a fallback that strips <!-- image --> markers
-    when pic_results is empty but markers exist in md_content."""
+async def test_non_openai_exception_propagates(tmp_path, monkeypatch):
+    """(d) A non-OpenAI exception (TypeError) is NOT caught / turned into 'image'."""
+    create_mock = AsyncMock(side_effect=TypeError("boom - code bug, not an API failure"))
+    monkeypatch.setattr("pageindex_mcp.client.get_openai_client", lambda: _make_client(create_mock))
 
-    def test_indexer_source_has_marker_cleanup(self):
-        """indexer.py contains the safety-net strip_unresolved_image_markers call
-        when pic_results is empty and markers are present."""
-        import inspect
-        from pageindex_mcp.client import indexer
-
-        source = inspect.getsource(indexer)
-        assert "strip_unresolved_image_markers" in source, (
-            "indexer.py must call strip_unresolved_image_markers as a safety net"
-        )
-        # Verify the guard condition pattern
-        assert (
-            'not state.pic_results and "<!-- image -->" in md_content' in source
-            or "not state.pic_results" in source
-        ), "indexer.py must check for empty pic_results before stripping markers"
+    with pytest.raises(TypeError, match="boom"):
+        await converters_mod.html_to_markdown_with_images(_write_html(tmp_path), model="gpt-4.1")
 
 
-class TestDecideOcrModeRemoved:
-    """Wiring: decide_ocr_mode wrapper is removed; all callers use
-    decide_ocr_strategy directly.  Importing decide_ocr_mode should raise
-    ImportError."""
+# ═════════════════════════════════════════════════════════════════════════
+# pipeline.py: pdf_markdown_converters() chain shape + AGPL metadata
+# ═════════════════════════════════════════════════════════════════════════
 
-    def test_decide_ocr_mode_not_importable_from_picture_plane(self):
-        """decide_ocr_mode must not be importable from picture_plane."""
-        from pageindex_mcp import picture_plane
 
-        assert not hasattr(picture_plane, "decide_ocr_mode"), (
-            "decide_ocr_mode should have been deleted from picture_plane"
-        )
+def _get_chain(monkeypatch, primary="docling", agpl=True):
+    """Build a converter chain with controlled env vars."""
+    monkeypatch.setenv("PDF_CONVERTER", primary)
+    monkeypatch.setenv("ALLOW_AGPL_FALLBACK", "true" if agpl else "false")
+    reset_pipeline_config()
+    from pageindex_mcp.converters.pipeline import pdf_markdown_converters
 
-    def test_decide_ocr_mode_not_importable_from_converters(self):
-        """decide_ocr_mode must not be importable from converters."""
-        from pageindex_mcp import converters
+    return pdf_markdown_converters()
 
-        assert not hasattr(converters, "decide_ocr_mode"), (
-            "decide_ocr_mode should not be re-exported from converters"
-        )
 
-    def test_decide_ocr_strategy_is_importable(self):
-        """decide_ocr_strategy is the canonical replacement — must be importable."""
-        from pageindex_mcp.picture_plane import decide_ocr_strategy as fn
+class TestConverterChainEntryMetadata:
+    """pdf_markdown_converters() returns ConverterChainEntry instances carrying
+    (name, fn, supports_ocr) tuple compatibility plus the is_agpl metadata the
+    chain walker needs to block transient-failure fallback to AGPL converters."""
 
-        assert callable(fn)
+    def test_docling_primary_chain_shape_and_agpl_metadata(self, monkeypatch):
+        """With PDF_CONVERTER=docling: docling is chain[0] with supports_ocr=True
+        and is_agpl=False (MIT); pymupdf4llm is present with supports_ocr=False
+        and is_agpl=True (AGPL-3.0); every entry unpacks as a (name, callable,
+        bool) 3-tuple of len 3 for backward compatibility."""
+        chain = _get_chain(monkeypatch, primary="docling", agpl=True)
+        assert len(chain) > 0
+        failures = []
+        for entry in chain:
+            if not isinstance(entry, ConverterChainEntry):
+                failures.append(f"{entry!r} is {type(entry).__name__}, not ConverterChainEntry")
+                continue
+            if len(entry) != 3:
+                failures.append(f"{entry.name}: len(entry) == {len(entry)}, want 3")
+            name, fn, supports_ocr = entry  # must not raise
+            if (name, fn, supports_ocr) != (entry.name, entry.fn, entry.supports_ocr):
+                failures.append(f"{entry.name}: 3-tuple unpack disagrees with the fields")
+            # Indexing is part of the same backward-compat sequence protocol.
+            if (entry[0], entry[1], entry[2]) != (entry.name, entry.fn, entry.supports_ocr):
+                failures.append(f"{entry.name}: indexing disagrees with the fields")
+            try:
+                entry[3]
+            except IndexError:
+                pass
+            else:
+                failures.append(f"{entry.name}: entry[3] must raise IndexError, not expose is_agpl")
+            if not isinstance(name, str) or not callable(fn) or not isinstance(supports_ocr, bool):
+                failures.append(f"{entry.name}: bad (str, callable, bool) shape")
+            if not isinstance(entry.is_agpl, bool):
+                failures.append(f"{entry.name}: is_agpl is {type(entry.is_agpl).__name__}, not bool")
 
-    def test_decide_ocr_mode_not_in_converters_pictures_source(self):
-        """converters/pictures.py must use decide_ocr_strategy, not decide_ocr_mode."""
-        import inspect
-        from pageindex_mcp.converters import pictures
+        by_name = {e.name: e for e in chain}
+        assert "docling" in by_name, f"docling missing from chain {list(by_name)}"
+        assert "pymupdf4llm" in by_name, f"pymupdf4llm missing from chain {list(by_name)}"
+        if by_name["docling"].is_agpl is not False:
+            failures.append("docling must have is_agpl=False (MIT-licensed)")
+        if by_name["pymupdf4llm"].is_agpl is not True:
+            failures.append("pymupdf4llm must have is_agpl=True (AGPL-3.0-licensed)")
+        if by_name["docling"].supports_ocr is not True:
+            failures.append("docling must have supports_ocr=True")
+        if by_name["pymupdf4llm"].supports_ocr is not False:
+            failures.append("pymupdf4llm must have supports_ocr=False")
+        if (chain[0].name, chain[0].supports_ocr) != ("docling", True):
+            failures.append(f"chain[0] is {chain[0].name}/{chain[0].supports_ocr}, want docling/True")
+        assert not failures, "\n".join(failures)
 
-        source = inspect.getsource(pictures)
-        # The source should mention decide_ocr_strategy (imported) but NOT
-        # define or call decide_ocr_mode as a wrapper.
-        assert "def decide_ocr_mode" not in source, (
-            "decide_ocr_mode wrapper should be deleted from converters/pictures.py"
+    def test_pymupdf_primary_ordering_and_agpl_fallback_gate(self, monkeypatch):
+        """HR4: with PDF_CONVERTER=pymupdf4llm it is chain[0] (supports_ocr=False);
+        with ALLOW_AGPL_FALLBACK=false the AGPL converter is absent entirely."""
+        chain = _get_chain(monkeypatch, primary="pymupdf4llm", agpl=True)
+        assert (chain[0].name, chain[0].supports_ocr) == ("pymupdf4llm", False)
+
+        gated = _get_chain(monkeypatch, primary="docling", agpl=False)
+        assert [e.name for e in gated if e.name == "pymupdf4llm"] == [], (
+            "pymupdf4llm must not appear when ALLOW_AGPL_FALLBACK=false"
         )
 
 
-# ---------------------------------------------------------------------------
-# Zone (converter-chain fallback + AGPL gating):
-# ConverterFailurePolicy.GATE_AGPL_STRUCTURAL — a STRUCTURAL failure that would
-# walk into an AGPL-licensed converter is now an explicit, metricked, operator-
-# gateable policy branch instead of an unnamed fall-through into WALK.
-# ---------------------------------------------------------------------------
+# ═════════════════════════════════════════════════════════════════════════
+# indexer wiring: OCR gating + AGPL chain-walk decisions
+# ═════════════════════════════════════════════════════════════════════════
 
+
+def _indexer_source() -> str:
+    import inspect
+
+    from pageindex_mcp.client import indexer
+
+    return inspect.getsource(indexer)
+
+
+def test_indexer_gates_on_capability_flags_not_converter_name_strings():
+    """Wiring: indexer.py's chain loop unpacks the 3-tuple's third element as
+    ``_conv_supports_ocr``, threads it onto ``state.supports_ocr``, and uses
+    that capability flag for OCR gating / extraction_route instead of matching
+    the literal string "docling".  ExtractionState carries the field and it
+    defaults to False.  Also wires the AGPL chain-walk decision inputs:
+    ``_classify_transient_failure``, ``ConverterChainEntry.is_agpl``, the
+    ``transient_blocked`` / ``structural_walk`` / ``structural_blocked``
+    AGPL_FALLBACK_TOTAL reasons, the
+    ``pipeline_config.agpl_structural_fallback_enabled`` gate, and the
+    ``strip_unresolved_image_markers`` safety net for empty pic_results."""
+    source = _indexer_source()
+    required = [
+        "_conv_supports_ocr",
+        "state.supports_ocr = _conv_supports_ocr",
+        "_classify_transient_failure",
+        ".is_agpl",
+        'reason="transient_blocked"',
+        'reason="structural_walk"',
+        'reason="structural_blocked"',
+        "pipeline_config.agpl_structural_fallback_enabled",
+        "strip_unresolved_image_markers",
+        "not state.pic_results",
+    ]
+    missing = [tok for tok in required if tok not in source]
+    forbidden = ['"docling" in conv_name', '"docling" in state.used_converter']
+    present = [tok for tok in forbidden if tok in source]
+    assert not missing, f"indexer.py is missing required wiring: {missing}"
+    assert not present, f"indexer.py still string-matches the converter name: {present}"
+
+    field_names = [f.name for f in dataclasses.fields(ExtractionState)]
+    assert "supports_ocr" in field_names
+    state = ExtractionState(
+        result={},
+        ok=False,
+        reason="",
+        gate_result=None,
+        first_defect=TreeDefect.OK,
+        route=Route.TREE,
+        md_content=None,
+        tmp_md_path=None,
+        pic_results=[],
+        used_converter=None,
+        total_chars=0,
+        extraction_stages_captured=[],
+    )
+    assert state.supports_ocr is False
+
+
+def test_classify_transient_failure_partitions_transient_from_structural():
+    """HR4 input: transient failures (TimeoutError, ConnectionError, OSError,
+    HTTP 5xx) must be separable from structural ones (ValueError, RuntimeError,
+    ImportError, HTTP 4xx), because only structural failures may justify a walk
+    into an AGPL-licensed converter."""
+    from pageindex_mcp.client.indexer import _classify_transient_failure
+
+    http_5xx = Exception("gateway timeout")
+    http_5xx.status_code = 504  # type: ignore[attr-defined]
+    http_4xx = Exception("bad request")
+    http_4xx.status_code = 400  # type: ignore[attr-defined]
+
+    cases = [
+        (TimeoutError("timed out"), True),
+        (ConnectionError("refused"), True),
+        (OSError("network unreachable"), True),
+        (http_5xx, True),
+        (ValueError("bad format"), False),
+        (RuntimeError("empty output"), False),
+        (ImportError("no module"), False),
+        (http_4xx, False),
+    ]
+    failures = [
+        f"{exc!r}: _classify_transient_failure -> {_classify_transient_failure(exc)}, want {want}"
+        for exc, want in cases
+        if _classify_transient_failure(exc) is not want
+    ]
+    assert not failures, "\n".join(failures)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# indexer chain walk: ConverterFailurePolicy.GATE_AGPL_STRUCTURAL
+# ═════════════════════════════════════════════════════════════════════════
+
+# A STRUCTURAL failure that would walk into an AGPL-licensed converter is an
+# explicit, metricked, operator-gateable policy branch instead of an unnamed
+# fall-through into WALK.
 
 _GATE_TREE = {
     "structure": [
@@ -2557,13 +1020,11 @@ async def _run_chain(chain, *, structural_fallback_enabled=True):
     Returns ``(client, state)`` so callers can assert on which converter won,
     whether the legacy page_index fallback fired, and which metric moved.
     """
-    import dataclasses as _dc
-
     from pageindex_mcp.client import indexer as indexer_mod
 
     client = _make_gate_client()
     state = _make_gate_state()
-    patched_cfg = _dc.replace(
+    patched_cfg = dataclasses.replace(
         indexer_mod.pipeline_config,
         agpl_structural_fallback_enabled=structural_fallback_enabled,
     )
@@ -2584,8 +1045,6 @@ async def _run_chain(chain, *, structural_fallback_enabled=True):
 
 def _gate_chain(first_exc):
     """non-AGPL primary that raises *first_exc* -> AGPL fallback that succeeds."""
-    from pageindex_mcp.converters.pipeline import ConverterChainEntry
-
     primary = MagicMock(side_effect=first_exc)
     agpl = MagicMock(return_value=("# recovered markdown", [], []))
     chain = [
@@ -2598,67 +1057,42 @@ def _gate_chain(first_exc):
 class TestGateAgplStructuralPolicy:
     """GATE_AGPL_STRUCTURAL: structural failure walking into an AGPL converter."""
 
-    def test_enum_member_exists_with_expected_value(self):
-        """Exhaustiveness: the enum carries GATE_AGPL_STRUCTURAL = 'gate_agpl_structural'."""
+    def test_enum_is_exhaustively_classified_and_dispatched_in_indexer(self):
+        """The enum carries GATE_AGPL_STRUCTURAL = 'gate_agpl_structural', and
+        every ConverterFailurePolicy member is both assigned and dispatched on
+        in the indexer chain walker -- no member may exist without a branch
+        that acts on it."""
         from pageindex_mcp.converters.pipeline import ConverterFailurePolicy
 
-        assert hasattr(ConverterFailurePolicy, "GATE_AGPL_STRUCTURAL")
         assert ConverterFailurePolicy.GATE_AGPL_STRUCTURAL.value == "gate_agpl_structural"
         assert ConverterFailurePolicy("gate_agpl_structural") is (
             ConverterFailurePolicy.GATE_AGPL_STRUCTURAL
         )
 
-    def test_every_enum_member_has_an_indexer_handler(self):
-        """Exhaustiveness: every ConverterFailurePolicy member is both assigned
-        and dispatched on in the indexer chain walker -- no member may exist
-        without a branch that acts on it."""
-        import inspect
-
-        from pageindex_mcp.client import indexer
-        from pageindex_mcp.converters.pipeline import ConverterFailurePolicy
-
-        source = inspect.getsource(indexer)
+        source = _indexer_source()
+        failures = []
         for member in ConverterFailurePolicy:
             ref = f"ConverterFailurePolicy.{member.name}"
-            assert source.count(ref) >= 2, (
-                f"{ref} must be both classified and handled in indexer.py "
-                f"(found {source.count(ref)} reference(s))"
-            )
-        # WALK is the documented implicit tail branch (no `is WALK` compare);
-        # every other member must be dispatched with an identity check.
-        for member in ConverterFailurePolicy:
-            if member is ConverterFailurePolicy.WALK:
-                continue
-            assert f"_failure_policy is ConverterFailurePolicy.{member.name}" in source, (
-                f"indexer.py has no dispatch branch for ConverterFailurePolicy.{member.name}"
-            )
-
-    def test_structural_walk_wired_in_indexer_source(self):
-        """Wiring: indexer.py increments AGPL_FALLBACK_TOTAL with
-        reason='structural_walk' and gates on the new config flag."""
-        import inspect
-
-        from pageindex_mcp.client import indexer
-
-        source = inspect.getsource(indexer)
-        assert 'reason="structural_walk"' in source, (
-            "indexer.py must increment AGPL_FALLBACK_TOTAL(reason='structural_walk') "
-            "when a structural failure walks into an AGPL converter"
-        )
-        assert 'reason="structural_blocked"' in source, (
-            "indexer.py must increment AGPL_FALLBACK_TOTAL(reason='structural_blocked') "
-            "when the structural AGPL walk is gated off"
-        )
-        assert "pipeline_config.agpl_structural_fallback_enabled" in source, (
-            "indexer.py must gate the structural AGPL walk on "
-            "pipeline_config.agpl_structural_fallback_enabled"
-        )
+            if source.count(ref) < 2:
+                failures.append(
+                    f"{ref} must be both classified and handled in indexer.py "
+                    f"(found {source.count(ref)} reference(s))"
+                )
+            # WALK is the documented implicit tail branch (no `is WALK` compare);
+            # every other member must be dispatched with an identity check.
+            if member is not ConverterFailurePolicy.WALK:
+                if f"_failure_policy is ConverterFailurePolicy.{member.name}" not in source:
+                    failures.append(f"indexer.py has no dispatch branch for {ref}")
+        assert not failures, "\n".join(failures)
 
     @pytest.mark.asyncio
-    async def test_structural_failure_walks_to_agpl_when_enabled(self):
-        """Contract: structural failure (ValueError) on a non-AGPL converter
-        walks into the AGPL converter when the gate is enabled (default), and
-        the walk is counted as AGPL_FALLBACK_TOTAL(reason='structural_walk')."""
+    async def test_structural_failure_walk_to_agpl_is_gated_by_config(self):
+        """Contract: a structural failure (ValueError) on a non-AGPL converter
+        walks into the AGPL converter when the gate is enabled (default),
+        counted as AGPL_FALLBACK_TOTAL(reason='structural_walk'); with
+        AGPL_STRUCTURAL_FALLBACK_ENABLED=false the AGPL converter is never
+        invoked, the document falls to the legacy page_index path, and the
+        block is counted as reason='structural_blocked'."""
         chain, primary, agpl = _gate_chain(ValueError("unparseable PDF structure"))
         before_walk = _agpl_metric("structural_walk")
         before_blocked = _agpl_metric("structural_blocked")
@@ -2675,15 +1109,7 @@ class TestGateAgplStructuralPolicy:
         assert _agpl_metric("structural_walk") == before_walk + 1
         assert _agpl_metric("structural_blocked") == before_blocked
 
-    @pytest.mark.asyncio
-    async def test_structural_failure_blocked_when_disabled(self):
-        """Contract: with AGPL_STRUCTURAL_FALLBACK_ENABLED=false the walk is
-        blocked -- the AGPL converter is never invoked and the document falls
-        to the legacy page_index path."""
         chain, primary, agpl = _gate_chain(ValueError("unparseable PDF structure"))
-        before_walk = _agpl_metric("structural_walk")
-        before_blocked = _agpl_metric("structural_blocked")
-
         client, state = await _run_chain(chain, structural_fallback_enabled=False)
 
         primary.assert_called_once()
@@ -2692,14 +1118,15 @@ class TestGateAgplStructuralPolicy:
         assert state.md_content is None
         client._run_page_index_retrying.assert_called_once()
         assert _agpl_metric("structural_blocked") == before_blocked + 1
-        assert _agpl_metric("structural_walk") == before_walk
+        assert _agpl_metric("structural_walk") == before_walk + 1
 
     @pytest.mark.asyncio
     async def test_transient_to_agpl_still_blocks_unchanged(self):
-        """Regression: the pre-existing BLOCK_AGPL branch is untouched by the
-        new GATE_AGPL_STRUCTURAL branch -- a TRANSIENT failure into an AGPL
-        converter still blocks the walk and still counts as
-        reason='transient_blocked', with the structural gate enabled.
+        """HR4 regression: the pre-existing BLOCK_AGPL branch is untouched by
+        the GATE_AGPL_STRUCTURAL branch -- a TRANSIENT failure into an AGPL
+        converter still blocks the walk (the AGPL converter is never invoked)
+        and still counts as reason='transient_blocked', with the structural
+        gate enabled.
 
         Retries are disabled here so the BLOCK_AGPL branch is reached on the
         first failure; see ``test_transient_retry_does_not_reenter_same_converter``
@@ -2749,3 +1176,1528 @@ class TestGateAgplStructuralPolicy:
 
         assert primary.call_count == 3, "RETRY must re-invoke the same converter"
         agpl.assert_not_called(), "transient failure must never reach the AGPL converter"
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# pictures.py: _bbox_to_fitz_rect / splice_figure_markers
+# ═════════════════════════════════════════════════════════════════════════
+
+
+class _FakeRect:
+    def __init__(self, x0, y0, x1, y1):
+        self.x0, self.y0, self.x1, self.y1 = x0, y0, x1, y1
+
+
+def test_bbox_to_fitz_rect_handles_both_coord_origins():
+    """RFC-015 D6: ``_bbox_to_fitz_rect`` passes TOPLEFT-origin bboxes through
+    unchanged and flips BOTTOMLEFT-origin ones against the page height
+    (top = 800-700 = 100, bottom = 800-600 = 200 -> sorted y (100, 200))."""
+    fitz = types.SimpleNamespace(Rect=_FakeRect)
+
+    topleft = types.SimpleNamespace(l=10, t=20, r=110, b=120, coord_origin=None)
+    rect = _bbox_to_fitz_rect(topleft, 800.0, fitz)
+    assert (rect.x0, rect.y0, rect.x1, rect.y1) == (10, 20, 110, 120)
+
+    bottomleft = types.SimpleNamespace(
+        l=10, t=700, r=110, b=600, coord_origin=types.SimpleNamespace(name="BOTTOMLEFT")
+    )
+    rect = _bbox_to_fitz_rect(bottomleft, 800.0, fitz)
+    assert (rect.y0, rect.y1) == (100, 200)
+
+
+def test_splice_figure_markers_replaces_markers_and_appends_chart_text():
+    """RFC-015 D6 / audit findings 4+7+12: ``splice_figure_markers`` replaces
+    ``<!-- image -->`` markers with ``[Figure: fig-N]`` refs from a DENSE
+    ordinal-keyed list and appends recovered chart text as a blockquote; with
+    no picture results the markdown is returned unchanged.  Accepts both the
+    dict shape and the ``PictureResult`` dataclass."""
+    from pageindex_mcp.converters import PictureResult
+
+    pr = {"ocr_text": "Revenue 2024 42%", "png_bytes": b"png", "page": 1, "bbox": {}}
+    out = splice_figure_markers("Intro\n\n<!-- image -->\n\nOutro", [pr])
+    assert "[Figure: fig-0]" in out
+    assert "> [Chart text]: Revenue 2024 42%" in out
+    assert "<!-- image -->" not in out
+
+    assert splice_figure_markers("<!-- image -->", []) == "<!-- image -->"
+
+    dataclass_out = splice_figure_markers(
+        "Text <!-- image --> more",
+        [PictureResult(ocr_text="Chart data", page=0, bbox={"l": 0, "t": 0, "r": 100, "b": 100})],
+    )
+    assert "[Figure: fig-0]" in dataclass_out
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# pictures.py: _recover_picture_results escalation gate + crash isolation
+# ═════════════════════════════════════════════════════════════════════════
+
+
+class TestRecoverPictureResults:
+    """RFC-015 D6 / audit finding 6: ``_recover_picture_results`` gates the
+    first-party AGPL ``fitz`` import (via ``_recover_picture_text``) behind the
+    per-picture OCR-escalation config, and NEVER mutates the markdown -- the
+    figure splice happens only in client.index()'s flat branch."""
+
+    def test_escalation_gate_controls_whether_recovery_runs(self, monkeypatch):
+        md = "Intro\n\n<!-- image -->\n\nOutro"
+        bbox = types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None)
+        pictures = [{"page": 1, "bbox": bbox}]
+
+        # Zone-5 config layering: the gate reads the pipeline_config singleton
+        # at call time, not the frozen module-level alias.
+        monkeypatch.setattr(
+            converters.pictures,
+            "pipeline_config",
+            dataclasses.replace(
+                converters.pictures.pipeline_config, ocr_escalation_per_picture=False
+            ),
+        )
+        with (
+            mock.patch.object(
+                converters.pictures, "_collect_picture_regions", return_value=pictures
+            ) as mock_collect,
+            mock.patch.object(converters.pictures, "_recover_picture_text") as mock_recover,
+        ):
+            pics = converters._recover_picture_results(md, object(), "dummy.pdf")
+        mock_collect.assert_not_called()
+        mock_recover.assert_not_called()
+        assert pics == []
+
+        monkeypatch.setattr(
+            converters.pictures,
+            "pipeline_config",
+            dataclasses.replace(
+                converters.pictures.pipeline_config, ocr_escalation_per_picture=True
+            ),
+        )
+        monkeypatch.setattr(converters.pictures, "_OCR_ESCALATION_PER_PICTURE", True)
+        pr = {
+            "ocr_text": "Revenue 2024 recovered chart text",
+            "png_bytes": b"fake",
+            "page": 1,
+            "bbox": {},
+        }
+        with (
+            mock.patch.object(
+                converters.pictures, "_collect_picture_regions", return_value=pictures
+            ),
+            mock.patch.object(converters.pictures, "detect_ocr_langs", return_value=["eng"]),
+            mock.patch.object(
+                converters.pictures, "ensure_tessdata", side_effect=lambda langs: langs
+            ),
+            mock.patch.object(
+                converters.pictures, "_recover_picture_text", return_value=({0: pr}, {})
+            ) as mock_recover,
+        ):
+            pics = converters._recover_picture_results(md, object(), "dummy.pdf")
+        assert mock_recover.call_count >= 1
+        assert pics == [pr]
+
+    def test_recover_picture_results_returns_empty_on_total_failure(self, monkeypatch):
+        """When ``_recover_picture_text`` itself raises (e.g. the PDF cannot be
+        opened at all), the outer except in ``_recover_picture_results`` still
+        returns an empty list rather than propagating."""
+        monkeypatch.setattr(converters.pictures, "_OCR_ESCALATION_PER_PICTURE", True)
+        monkeypatch.setattr(
+            converters.pictures,
+            "_collect_picture_regions",
+            lambda document: [_region(0, 0, 30, 30)],
+        )
+
+        def _boom(pdf_path, regions, langs, md=""):
+            raise RuntimeError("pdf could not be opened")
+
+        monkeypatch.setattr(converters.pictures, "_recover_picture_text", _boom)
+
+        result = _recover_picture_results(
+            "some heading\n\n<!-- image -->\n\nmore text", document=object(), pdf_path="/fake.pdf"
+        )
+        assert result == []
+
+    def test_per_region_crop_failure_is_isolated_not_propagated(self, monkeypatch):
+        """RFC-024 D2: a degenerate region whose ``get_pixmap`` raises is tagged
+        ``crop_error`` rather than aborting the document; when every region
+        fails the call still returns gracefully."""
+        fake_fitz, _page = _make_fake_fitz(600.0, 800.0, pixmap_fails_for_l={100, 200, 300})
+        monkeypatch.setattr(converters.pictures, "_tesseract_ocr_image", lambda path, langs: "")
+        regions = [_region(100, 0, 130, 30), _region(200, 0, 230, 30), _region(300, 0, 330, 30)]
+
+        with patch.dict(sys.modules, {"fitz": fake_fitz}):
+            result, skip_reasons = _recover_picture_text("/fake.pdf", regions, ["eng"])
+
+        assert result == {}
+        assert set(skip_reasons.values()) == {"crop_error"}
+        assert len(skip_reasons) == 3
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# garble detection (helpers.garble via the converter profiles)
+# ═════════════════════════════════════════════════════════════════════════
+
+
+def test_tree_and_flat_garble_detection_prongs():
+    """D3A/D3B: the PUA-ratio (>3%, font/CMap mojibake) and digit-ratio (>60%
+    on a blob >500 chars) prongs fire on both the tree-bulk profile and the
+    flat-markdown profile."""
+    pua_text_a = "" * 5 + "a" * 90
+    pua_text_b = "" * 5 + "b" * 90
+    digit_text = "1651001429 " * 80  # ~880 chars, >60% digits
+
+    pua_nodes = [
+        {
+            "title": "X",
+            "text": pua_text_a,
+            "nodes": [{"title": "Y", "text": pua_text_b, "nodes": []}],
+        }
+    ]
+    digit_nodes = [
+        {
+            "title": "A",
+            "text": digit_text,
+            "nodes": [{"title": "B", "text": "some text", "nodes": []}],
+        }
+    ]
+    cases = [
+        ("tree/pua", _tree_garble(pua_nodes)),
+        ("tree/digit", _tree_garble(digit_nodes)),
+        ("flat/pua", _flat_garble(pua_text_a + pua_text_b)),
+        ("flat/digit", _flat_garble(digit_text)),
+    ]
+    not_flagged = [label for label, got in cases if got is not True]
+    assert not not_flagged, f"garble prongs failed to fire for: {not_flagged}"
+
+
+def test_image_markers_exempt_from_garble_but_real_repetition_is_not():
+    """Design Property 4 (D3): a blob consisting solely of ``<!-- ... -->`` HTML
+    comment markers is never flagged garbled (they are structural markers, not
+    mojibake, and a scanned PDF's markdown is 100% single-token repetition
+    pre-D3); genuine repeated non-comment tokens above the 30% threshold
+    still are."""
+    assert check_garble("\n\n".join([_IMAGE_MARKER] * 45), expected_script=None, profile=BULK_PROFILE) is False
+    assert check_garble(_GARBLED_TEXT, expected_script=None, profile=BULK_PROFILE) is True
+
+
+def test_short_post_retry_text_is_not_force_flagged_garbled(monkeypatch):
+    """D2 + Zone-7 fix: a prior GARBLING / NODE_GARBLING defect no longer
+    force-flags clean short text -- the real prongs run first and none fire on
+    this clean policy sentence.  Unrelated defects get the same normal
+    evaluation, and GARBLE_SHORT_TEXT_DEFAULT=false (rollback) does not change
+    the answer for clean text either."""
+    cases = [
+        (True, TreeDefect.GARBLING),
+        (True, TreeDefect.NODE_GARBLING),
+        (True, TreeDefect.NODE_COUNT_LOW),
+        (False, TreeDefect.GARBLING),
+    ]
+    failures = []
+    for short_default, defect in cases:
+        monkeypatch.setattr(helpers.garble, "_GARBLE_SHORT_TEXT_DEFAULT", short_default)
+        got = check_garble(
+            _SHORT_CLEAN_TEXT,
+            expected_script=None,
+            profile=FLAT_MARKDOWN_PROFILE,
+            original_defect=defect,
+        )
+        if got is not False:
+            failures.append(
+                f"short_default={short_default}, defect={defect.value}: got {got}, want False"
+            )
+    assert not failures, "\n".join(failures)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# pictures.py: _tesseract_ocr_image exception-handling contract (Zone-8)
+# ═════════════════════════════════════════════════════════════════════════
+
+
+class TestTesseractOcrFailureContract:
+    """Zone-8: ``_tesseract_ocr_image`` increments TESSERACT_OCR_FAILURE_TOTAL
+    with the exception class name and returns '' for the handled failure
+    modes -- and does NOT catch arbitrary exceptions like KeyboardInterrupt."""
+
+    def test_handled_exceptions_increment_metric_and_return_empty(self, monkeypatch):
+        from pageindex_mcp.converters.pictures import _tesseract_ocr_image
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/tesseract")
+        cases = [
+            (subprocess.TimeoutExpired(cmd="tesseract", timeout=60), "TimeoutExpired"),
+            (subprocess.SubprocessError("boom"), "SubprocessError"),
+            (FileNotFoundError("tesseract not found"), "FileNotFoundError"),
+            (OSError("disk error"), "OSError"),
+        ]
+        failures = []
+        for exc, reason in cases:
+            with (
+                patch(
+                    "pageindex_mcp.converters.pictures.subprocess.run", side_effect=exc
+                ),
+                patch("pageindex_mcp.converters.pictures.TESSERACT_OCR_FAILURE_TOTAL") as metric,
+            ):
+                result = _tesseract_ocr_image("/fake.png", ["eng"])
+            if result != "":
+                failures.append(f"{reason}: returned {result!r}, want ''")
+            try:
+                metric.labels.assert_called_once_with(reason=reason)
+                metric.labels.return_value.inc.assert_called_once()
+            except AssertionError as err:
+                failures.append(f"{reason}: metric not incremented ({err})")
+        assert not failures, "\n".join(failures)
+
+    def test_keyboard_interrupt_not_caught(self, monkeypatch):
+        """KeyboardInterrupt must NOT be caught -- it must propagate."""
+        from pageindex_mcp.converters.pictures import _tesseract_ocr_image
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/tesseract")
+        with (
+            patch(
+                "pageindex_mcp.converters.pictures.subprocess.run", side_effect=KeyboardInterrupt
+            ),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            _tesseract_ocr_image("/fake.png", ["eng"])
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# pictures.py: _text_layer_has_content (page-level and region-scoped)
+# ═════════════════════════════════════════════════════════════════════════
+
+
+def _page(text: str):
+    return types.SimpleNamespace(get_text=lambda mode="text": text)
+
+
+def test_text_layer_has_content_page_level_requires_clean_and_long_enough():
+    """Design Property 1: ``_text_layer_has_content`` returns False for text
+    that is either too short or flagged garbled (thin mojibake left by the PDF
+    creator must not be treated as real content), and True only when both
+    checks pass."""
+    from pageindex_mcp.helpers import GarbleReport
+
+    assert _text_layer_has_content(_page(_GARBLED_TEXT)) is False
+    assert _text_layer_has_content(_page(_CLEAN_TEXT)) is True
+
+    # Explicitly drive the garble branch independent of the heuristics.
+    garbled = GarbleReport(is_garbled=True, fired_prongs=frozenset({"test"}))
+    with patch("pageindex_mcp.converters.pictures.detect_garble", return_value=garbled):
+        assert _text_layer_has_content(_page("A" * 100)) is False
+
+
+def test_text_layer_has_content_region_scoped_min_chars_threshold():
+    """D1: the region-scoped (clipped) read drives the same check -- header
+    text living outside the region's own bbox yields an empty clipped read, so
+    the region has NO text of its own.  ``_PICTURE_OCR_MIN_CHARS`` is 20 and
+    the length check is strict (``len(text) <= _PICTURE_OCR_MIN_CHARS`` fails
+    at exactly 20), so the smallest length that clears the threshold is 21."""
+    rect = types.SimpleNamespace()
+    cases = [("", False), ("x" * 19, False), ("x" * 20, False), ("The quick brown foxes", True)]
+    failures = []
+    for text, want in cases:
+        page = types.SimpleNamespace(get_text=lambda mode, clip=None, t=text: t)
+        got = _text_layer_has_content(page, region_rect=rect)
+        if got is not want:
+            failures.append(f"len={len(text)}: got {got}, want {want}")
+    assert not failures, "\n".join(failures)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# pictures.py: region-aware coverage exemption + full-page region cap
+# ═════════════════════════════════════════════════════════════════════════
+
+
+class TestRegionAwareExemptionIntegration:
+    """Region-scoped text-layer check wired into ``_recover_picture_text``."""
+
+    def test_exemption_fires_only_when_the_regions_own_bbox_is_textless(self, monkeypatch):
+        """A page with header/footer text (where the page-level check would see
+        content and skip) but whose picture bbox has none fires the
+        region-aware exemption and OCR proceeds.  Conversely, when the region's
+        own bbox carries real text the exemption must NOT fire -- the
+        region-scoped check must not become permissive in the other direction
+        (edge case from the design doc).  RFC-029 D5a: skipped regions still
+        surface in ``recovered`` carrying ``png_bytes`` + ``skipped_reason``,
+        but ``ocr_text`` MUST be absent -- proving Tesseract was not run."""
+        monkeypatch.setattr(converters.pictures, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
+        monkeypatch.setattr(
+            converters.pictures, "_tesseract_ocr_image", lambda png, langs: _long_text()
+        )
+
+        _install_fake_fitz(monkeypatch, page_text=_long_text(60), clip_text="")
+        recovered, skip_reasons = _recover_picture_text("dummy.pdf", [_region()], ["eng"])
+        assert skip_reasons.get(0) != "page_coverage"
+        assert recovered[0]["ocr_text"] == _long_text()
+
+        _install_fake_fitz(monkeypatch, page_text="", clip_text=_long_text(60))
+        recovered, skip_reasons = _recover_picture_text("dummy.pdf", [_region()], ["eng"])
+        assert skip_reasons.get(0) == "page_coverage"
+        assert "ocr_text" not in recovered.get(0, {})
+        assert recovered.get(0, {}).get("skipped_reason") == "page_coverage"
+
+    def test_regions_past_cap_skipped_with_page_coverage(self, monkeypatch):
+        """``MAX_FULLPAGE_PICTURE_OCR_REGIONS`` is a per-document boundary
+        defaulting to 50.  With the cap set to 2 and 3 qualifying full-page
+        regions, the first 2 get the exemption and OCR fires; the 3rd is
+        skipped with "page_coverage" and a logged warning, not silently
+        exempted (RFC-029 D5a: retained with ``png_bytes`` + ``skipped_reason``
+        but WITHOUT ``ocr_text``)."""
+        assert converters._MAX_FULLPAGE_PICTURE_OCR_REGIONS == 50
+
+        monkeypatch.setattr(converters.pictures, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", True)
+        monkeypatch.setattr(converters.pictures, "_MAX_FULLPAGE_PICTURE_OCR_REGIONS", 2)
+        monkeypatch.setattr(
+            converters.pictures,
+            "_GATE_CONFIG",
+            PictureGateConfig(
+                coverage_exempt_no_text_layer=True,
+                max_fullpage_picture_ocr_regions=2,
+            ),
+        )
+        _install_fake_fitz(monkeypatch, page_text=_long_text(60), clip_text="")
+        monkeypatch.setattr(
+            converters.pictures, "_tesseract_ocr_image", lambda png, langs: _long_text()
+        )
+
+        regions = [_region() for _ in range(3)]
+        recovered, skip_reasons = _recover_picture_text("dummy.pdf", regions, ["eng"])
+
+        assert skip_reasons.get(0) != "page_coverage"
+        assert skip_reasons.get(1) != "page_coverage"
+        assert skip_reasons.get(2) == "page_coverage"
+        assert recovered[0]["ocr_text"] == _long_text()
+        assert recovered[1]["ocr_text"] == _long_text()
+        assert "ocr_text" not in recovered.get(2, {})
+        assert recovered.get(2, {}).get("skipped_reason") == "page_coverage"
+
+
+def test_decorative_flag_has_no_rotation_gate(monkeypatch):
+    """The rotation gate is removed: empty OCR sets the decorative
+    ``ocr_min_chars`` skip reason even when rotation != 0 (previously it only
+    fired at rotation == 0), while non-empty OCR on a rotated page sets no
+    skip reason at all."""
+    region = _region(0, 0, 30, 30)
+
+    fake_fitz, _page = _make_fake_fitz(600.0, 800.0, initial_rotation=180)
+    monkeypatch.setattr(converters.pictures, "_tesseract_ocr_image", lambda path, langs: "")
+    with patch.dict("sys.modules", {"fitz": fake_fitz}):
+        result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
+    assert result[0].get("skipped_reason") == "ocr_min_chars"
+
+    fake_fitz, _page = _make_fake_fitz(600.0, 800.0, initial_rotation=90)
+    monkeypatch.setattr(
+        converters.pictures,
+        "_tesseract_ocr_image",
+        lambda path, langs: "Recovered chart text with enough characters",
+    )
+    with patch.dict("sys.modules", {"fitz": fake_fitz}):
+        result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
+    assert "skipped_reason" not in result[0]
+
+
+def test_decorative_icon_size_filter(monkeypatch):
+    """Design Property 3: a PictureItem region whose bbox width AND height are
+    both below DECORATIVE_ICON_MIN_DIM_PT skips crop+OCR entirely and is tagged
+    ``skip_reasons[i] == "decorative_icon"``; a region above the threshold
+    proceeds to OCR."""
+    monkeypatch.setattr(converters.pictures, "_DECORATIVE_ICON_MIN_DIM_PT", 20.0)
+
+    fake_fitz, _page = _make_fake_fitz(600.0, 800.0)
+
+    def _fail_if_called(*_a, **_k):
+        raise AssertionError("tesseract must not run for sub-icon regions")
+
+    monkeypatch.setattr(converters.pictures, "_tesseract_ocr_image", _fail_if_called)
+    with patch.dict("sys.modules", {"fitz": fake_fitz}):
+        result, skip_reasons = _recover_picture_text("/fake.pdf", [_region(0, 0, 15, 12)], ["eng"])
+    assert result == {}
+    assert skip_reasons[0] == "decorative_icon"
+
+    fake_fitz, _page = _make_fake_fitz(600.0, 800.0)
+    monkeypatch.setattr(
+        converters.pictures,
+        "_tesseract_ocr_image",
+        lambda path, langs: "Chart text with enough characters to pass the gate",
+    )
+    with patch.dict("sys.modules", {"fitz": fake_fitz}):
+        result, skip_reasons = _recover_picture_text("/fake.pdf", [_region(0, 0, 30, 30)], ["eng"])
+    assert 0 not in skip_reasons
+    assert result[0]["ocr_text"]
+
+
+class TestRecoverPictureTextClipCapture:
+    """RFC-024 D1: a region's clipped text layer is captured directly (no
+    Tesseract) when it is not already present in the markdown, and skipped
+    when it is -- guarded by a whitespace/reflow-robust containment check."""
+
+    def _clip_fitz(self, clip_text):
+        fake = types.ModuleType("fitz")
+        fake.Rect = lambda *a: types.SimpleNamespace(
+            l=a[0], t=a[1], r=a[2], b=a[3], width=a[2] - a[0], height=a[3] - a[1]
+        )
+
+        class _FakePage:
+            def __init__(self):
+                self.rect = types.SimpleNamespace(height=800.0, width=600.0)
+                self.rotation = 0
+
+            def get_text(self, mode="text", *, clip=None):
+                return clip_text
+
+            def set_rotation(self, value):
+                self.rotation = value
+
+            def get_pixmap(self, *, clip=None, dpi=300):
+                raise AssertionError("tesseract crop path must not run when clip_text is captured")
+
+        page = _FakePage()
+
+        class _FakeDoc:
+            page_count = 1
+
+            def __getitem__(self, idx):
+                return page
+
+            def close(self):
+                pass
+
+        fake.open = lambda path: _FakeDoc()
+        return fake
+
+    def test_clip_text_captured_unless_already_exported(self, monkeypatch):
+        clip_text = "Revenue grew 42% year over year across all regions"
+        md = "# Report\n\nSome unrelated heading content.\n\n<!-- image -->"
+
+        def _fail_if_called(path, langs):
+            raise AssertionError("tesseract must not run for captured clip_text")
+
+        monkeypatch.setattr(converters.pictures, "_tesseract_ocr_image", _fail_if_called)
+        with patch.dict(sys.modules, {"fitz": self._clip_fitz(clip_text)}):
+            result, skip_reasons = _recover_picture_text(
+                "/fake.pdf", [_region(0, 0, 100, 40)], ["eng"], md=md
+            )
+        assert 0 not in skip_reasons
+        assert result[0]["ocr_text"] == clip_text
+
+        already = "The quarterly revenue increased significantly this year"
+        monkeypatch.setattr(
+            converters.pictures, "_tesseract_ocr_image", lambda path, langs: "should not matter"
+        )
+        with patch.dict(sys.modules, {"fitz": self._clip_fitz(already)}):
+            result, skip_reasons = _recover_picture_text(
+                "/fake.pdf",
+                [_region(0, 0, 100, 40)],
+                ["eng"],
+                md=f"# Report\n\n{already}\n\n<!-- image -->",
+            )
+        assert skip_reasons[0] == "clip_text_already_exported"
+        assert 0 not in result
+
+    def test_containment_helper_matches_reflowed_text_and_rejects_unrelated(self):
+        """``_clip_text_contained`` is whitespace/reflow-robust and returns
+        False for genuinely unrelated content."""
+        md_norm = _normalize_for_containment(
+            "revenue grew 42% year-over-year across all business units"
+        )
+        assert _clip_text_contained("Revenue   grew\n42%  year-over-year", md_norm) is True
+
+        unrelated_md = _normalize_for_containment(
+            "This markdown body talks about something else entirely."
+        )
+        assert _clip_text_contained("Completely unrelated chart label content here", unrelated_md) is False
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# _document_level_text_fallback
+# ═════════════════════════════════════════════════════════════════════════
+
+
+def _fake_pdfium_module(page_texts):
+    fake = types.ModuleType("pypdfium2")
+
+    class _FakeTextPage:
+        def __init__(self, text):
+            self._text = text
+
+        def get_text_range(self):
+            return self._text
+
+    class _FakePage:
+        def __init__(self, text):
+            self._text = text
+
+        def get_textpage(self):
+            return _FakeTextPage(self._text)
+
+    class _FakeDoc:
+        def __init__(self, texts):
+            self._pages = [_FakePage(t) for t in texts]
+
+        def __iter__(self):
+            return iter(self._pages)
+
+        def close(self):
+            pass
+
+    fake.PdfDocument = lambda path: _FakeDoc(page_texts)
+    return fake
+
+
+class TestHeadingOnlyFallbackTrigger:
+    """Chars-per-heading secondary trigger for ``_document_level_text_fallback``
+    (heading-only trees where structure survived but body prose did not)."""
+
+    def test_chars_per_heading_floor_gates_the_fallback(self, monkeypatch):
+        """6 headings with ~40 chars of body text between them (~7
+        chars/heading, well under the 50-char floor) trigger the fallback even
+        though total_chars clears the absolute 100-char floor; 2 headings with
+        well over 50 chars/heading of prose must NOT fire it -- pdfium is not
+        even invoked and the markdown comes back unchanged."""
+        md = "\n\n".join(f"# Heading {i}\n\nshort" for i in range(6))
+        assert len(md.replace(converters._IMAGE_MARKER, "")) >= converters._DOC_TEXT_FALLBACK_MIN_CHARS
+
+        recovered = "Recovered whole-document prose that clears the garble floor easily."
+        monkeypatch.setitem(sys.modules, "pypdfium2", _fake_pdfium_module([recovered]))
+        result = _document_level_text_fallback(md, "/fake.pdf")
+        assert result != md
+        assert recovered in result
+
+        rich = "# Heading 1\n\n" + ("word " * 40) + "\n\n# Heading 2\n\n" + ("word " * 40)
+        fake_pdfium = types.ModuleType("pypdfium2")
+        fake_pdfium.PdfDocument = lambda path: (_ for _ in ()).throw(
+            AssertionError("pdfium should not be invoked when chars/heading clears the floor")
+        )
+        monkeypatch.setitem(sys.modules, "pypdfium2", fake_pdfium)
+        assert _document_level_text_fallback(rich, "/fake.pdf") == rich
+
+    def test_fallback_leaves_markdown_unchanged_on_garble_or_open_failure(self, monkeypatch):
+        """RFC-024 D1 risk mitigation: a scanned page's thin mojibake text layer
+        must never be appended (HR5), and a pdfium open failure must degrade
+        gracefully -- both return the markdown unchanged."""
+        from pageindex_mcp.helpers import GarbleReport
+
+        md = "<!-- image -->"
+        garbled_report = GarbleReport(is_garbled=True, fired_prongs=frozenset({"test"}))
+        monkeypatch.setattr(helpers, "detect_garble", lambda text, **kw: garbled_report)
+        with patch.dict(
+            sys.modules, {"pypdfium2": _fake_pdfium_module(["þÿ\x02\x01 ¤¤¤ \x03\x04 ÿþ" * 20])}
+        ):
+            assert _document_level_text_fallback(md, "/fake.pdf") == md
+
+        def _raise(path):
+            raise RuntimeError("pdfium open failed")
+
+        broken = types.ModuleType("pypdfium2")
+        broken.PdfDocument = _raise
+        with patch.dict(sys.modules, {"pypdfium2": broken}):
+            assert _document_level_text_fallback(md, "/fake.pdf") == md
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# classify_verdict: content-quality guard, leaf concentration
+# ═════════════════════════════════════════════════════════════════════════
+
+
+def test_cat_b_promoted_content_quality_guard():
+    """Design Property 5 (D4): promotion to PASS is blocked if
+    ``len(flat_text.strip()) < MIN_FLAT_PROMOTION_CHARS`` OR the ratio of
+    image-placeholder blocks to total blocks exceeds 0.5, regardless of
+    node_count, max_leaf_ratio or garble status.  Doc 21 regression case: 15
+    ``<!-- image -->`` blocks, ~210 total chars -- passes node_count /
+    leaf-ratio / garble pre-D4 but must no longer be promoted via
+    ``cat_b_promoted``.  Zone-1: without gate evaluation
+    (validate_result=None) the early structural-OK return may fire with PASS,
+    so the key property is that ``cat_b_promoted`` is never the reason.
+
+    Note: ``_flatten_tree_text`` concatenates node text with no separator, so
+    per-block text carries a trailing "\\n" here (as real extracted markdown
+    blocks do) to make each block land on its own line for the
+    placeholder-ratio line-scan in ``classify_verdict``.
+    """
+    placeholder = [{"title": "", "text": _IMAGE_MARKER + "\n"} for _ in range(15)]
+    _verdict, reason = classify_verdict(placeholder, "flat_prose", None)
+    assert reason != "cat_b_promoted"
+
+    real = [
+        {
+            "title": "",
+            "text": (
+                f"block number {i} has real prose content describing the "
+                "document in detail with enough words to be meaningful. " * 3 + "\n"
+            ),
+        }
+        for i in range(15)
+    ]
+    assert len("".join(b["text"] for b in real).strip()) >= 500
+    verdict, reason = classify_verdict(real, "flat_prose", None)
+    assert verdict == "PASS"
+    assert reason in ("structural_pass", "cat_b_promoted")
+
+
+def test_pass_max_leaf_ratio_threshold_is_env_tunable_with_widened_default(monkeypatch):
+    """Design Property 10 (D10) + D0: the leaf-concentration threshold for the
+    main PASS gate reads from PASS_MAX_LEAF_RATIO rather than a hardcoded
+    value, and its default is the WIDENED 0.30 (0.25 sits above the OLD 0.20
+    default but below the widened one -- the exact regression D0 fixes)."""
+    cases = [
+        ("0.20", 0.18, ("PASS", "structural_pass")),
+        ("0.20", 0.22, ("MARGINAL", "leaf_concentration=0.22")),
+        (None, 0.25, ("PASS", "structural_pass")),
+        (None, 0.35, ("MARGINAL", "leaf_concentration=0.35")),
+    ]
+    failures = []
+    for env, ratio, want in cases:
+        if env is None:
+            monkeypatch.delenv("PASS_MAX_LEAF_RATIO", raising=False)
+        else:
+            monkeypatch.setenv("PASS_MAX_LEAF_RATIO", env)
+        reset_pipeline_config()
+        got = classify_verdict(_tree_with_ratio(ratio), "hierarchical", None)
+        if tuple(got) != want:
+            failures.append(f"PASS_MAX_LEAF_RATIO={env}, ratio={ratio}: got {tuple(got)}, want {want}")
+    assert not failures, "\n".join(failures)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Flat-route structure synthesis, VLM fallback, LLM failure classification
+# ═════════════════════════════════════════════════════════════════════════
+
+
+def _synthesize_flat_structure(flat_structure: list, blocks: list) -> list:
+    # D5 (RFC-023): mirrors client.py's index() -- always prefer synthetic
+    # structure from blocks when blocks exist, regardless of whether
+    # flat_structure (the rejected tree) is empty or non-empty.
+    if blocks:
+        flat_structure = [
+            {"title": "", "text": _flat_block_primary_text(b)}
+            for b in blocks
+            if _flat_block_primary_text(b).strip()
+        ]
+    return flat_structure
+
+
+def test_synthetic_structure_preferred_over_rejected_tree():
+    """Design Property 6 (D5): for any flat-routed document where ``blocks`` is
+    non-empty, the verdict-computation input is the synthetic structure built
+    from ``blocks``, regardless of whether the rejected tree structure is
+    itself empty or non-empty.  Doc 20 regression case: the tree builder
+    produced a non-empty rejected structure (low node_count/depth) but 355 real
+    blocks exist -- the rejected structure must never be used.  The pre-D5
+    behaviour (structure=[] with blocks) is preserved (no B1/RFC-022
+    regression)."""
+    rejected = [{"title": "", "text": "sparse rejected tree content"}]
+    blocks = [{"text": f"block {i} has real prose content"} for i in range(355)]
+    structure = _synthesize_flat_structure(rejected, blocks)
+    assert structure != rejected
+    assert len(structure) == len(blocks)
+    assert all(node["text"] for node in structure)
+
+    small = [{"text": "alpha content"}, {"text": "beta content"}, {"text": "gamma content"}]
+    assert len(_synthesize_flat_structure([], small)) == len(small)
+
+    # D6: for a text-only document ``_flat_block_primary_text`` measures the
+    # same char count as the pre-fix ``b["text"]`` sum -- the flat-doc char
+    # count is unchanged from prior behaviour.
+    text_blocks = [
+        {"role": "prose", "text": "Clause 1: introductory text."},
+        {"role": "prose", "text": "Clause 2: further provisions."},
+    ]
+    pre_fix_chars = sum(len(b.get("text", "")) for b in text_blocks)
+    flat_char_count = sum(len(_flat_block_primary_text(b)) for b in text_blocks)
+    assert flat_char_count == pre_fix_chars
+    assert flat_char_count == sum(len(b["text"]) for b in text_blocks)
+
+
+def _vlm_tesseract_fallback(ocr_text: str, *, reason: str = "garbling") -> str:
+    """Reproduces client.py's recovery/reason-override logic exactly."""
+    if ocr_text and not check_garble(ocr_text, expected_script=None, profile=FLAT_MARKDOWN_PROFILE):
+        reason = "node_count<3"
+    return reason
+
+
+def test_vlm_tesseract_fallback_reason_override():
+    """Design Property 8 (D7): on VLM exception, Tesseract OCR runs on the
+    rasterized page images; clean OCR text overrides the reason to
+    'node_count<3' (flat success path), while garbled output must NOT override
+    it -- the document still raises LowQualityTreeError('garbling') per HR5."""
+    assert _vlm_tesseract_fallback(_CLEAN_TEXT) == "node_count<3"
+    assert _vlm_tesseract_fallback(_GARBLED_TEXT) == "garbling"
+
+
+def test_classify_llm_failure_terminal_vs_transient():
+    """Design Property 9 (D8): LLMTransientFailure is classified terminal (no
+    retry) iff the error detail carries a CMap-corruption or content-policy
+    indicator, else transient (retryable)."""
+    assert _classify_llm_failure("CMap corruption detected") == "llm_failure_terminal"
+    assert _classify_llm_failure("429 rate_limit exceeded, throttled") == "llm_failure_transient"
+
+
+def _image_dominant(md_content: str) -> tuple[bool, int, int]:
+    """Reproduces client.py's image-dominance ratio computation exactly."""
+    non_empty_lines = [ln for ln in md_content.splitlines() if ln.strip()]
+    image_lines = sum(1 for ln in non_empty_lines if _MARKER in ln)
+    dominant = bool(non_empty_lines) and (image_lines / len(non_empty_lines)) > 0.50
+    return dominant, image_lines, len(non_empty_lines)
+
+
+def _would_escalate(reason: str, md_content: str, *, ext: str = ".pdf") -> bool:
+    """Reproduces the D11 gate's overall condition (reason in structural
+    failures + image-dominant), gated on the module flags."""
+    if reason not in ("node_count<3", "depth<2"):
+        return False
+    if (
+        ext != ".pdf"
+        or not OCR_ESCALATION_GARBLE
+        or not pipeline_config.image_dominant_ocr_escalation_enabled
+    ):
+        return False
+    dominant, _, _ = _image_dominant(md_content)
+    return dominant
+
+
+def test_structural_failure_ocr_escalation_for_image_dominant_docs():
+    """Design Property 12 (D11): for any validate_tree failure with reason in
+    ('node_count<3', 'depth<2') where the image-line ratio (image lines /
+    non-empty lines) exceeds 0.50, the system triggers the same OCR escalation
+    path as reason == 'garbling'; the ratio is computed against
+    non_empty_lines, not total_lines."""
+    assert _would_escalate("node_count<3", f"{_MARKER}\n{_MARKER}\n{_MARKER}\nsome prose") is True
+    assert (
+        _would_escalate("node_count<3", "\n".join(["real paragraph text here"] * 8 + [_MARKER]))
+        is False
+    )
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# pipeline.py: OCR recovery cascade — marker cleanup, decide_ocr_mode removal
+# ═════════════════════════════════════════════════════════════════════════
+
+
+def test_image_markers_stripped_only_when_pic_results_empty(monkeypatch):
+    """Regression: when ``_recover_picture_results`` returns [] (OCR skip),
+    ``_fallback_and_recover_pictures`` strips residual ``<!-- image -->``
+    markers from the markdown it returns; when pic_results ARE populated the
+    markers are preserved as splice targets for bind_markers."""
+    from pageindex_mcp.converters import pipeline as pipeline_mod
+
+    monkeypatch.setattr(converters.pictures, "_recover_picture_results", lambda *a, **kw: [])
+    md_out, pic_results, _records = pipeline_mod._fallback_and_recover_pictures(
+        "# Heading\n\n<!-- image -->\n\nBody text <!-- image --> end",
+        document=None,
+        pdf_path="/fake.pdf",
+        filename="fake.pdf",
+        expected_script=None,
+        landscape_fallback_pages=[],
+        heading_pages={},
+        force_full_page_ocr_applied=True,  # force OCR skip
+    )
+    assert "<!-- image -->" not in md_out, (
+        "Residual <!-- image --> markers must be stripped when pic_results is empty"
+    )
+    assert pic_results == []
+
+    fake_pr = {"ocr_text": "chart", "page": 1, "bbox": {}, "png_bytes": b"png"}
+    monkeypatch.setattr(pipeline_mod, "_recover_picture_results", lambda *a, **kw: [fake_pr])
+    _md_out, pic_results, _records = pipeline_mod._fallback_and_recover_pictures(
+        "# H\n\n<!-- image -->\n\nBody",
+        document=None,
+        pdf_path="/fake.pdf",
+        filename="fake.pdf",
+        expected_script=None,
+        landscape_fallback_pages=[],
+        heading_pages={},
+        force_full_page_ocr_applied=False,
+    )
+    assert len(pic_results) == 1
+
+
+def test_decide_ocr_mode_removed_and_strategy_is_canonical():
+    """Wiring: the ``decide_ocr_mode`` wrapper is removed from picture_plane and
+    is not re-exported from converters; ``decide_ocr_strategy`` is the
+    canonical replacement and ``converters/pictures.py`` no longer defines the
+    wrapper."""
+    import inspect
+
+    from pageindex_mcp import converters as converters_pkg, picture_plane
+    from pageindex_mcp.converters import pictures
+    from pageindex_mcp.picture_plane import decide_ocr_strategy
+
+    assert not hasattr(picture_plane, "decide_ocr_mode")
+    assert not hasattr(converters_pkg, "decide_ocr_mode")
+    assert inspect.isfunction(decide_ocr_strategy)
+    assert "def decide_ocr_mode" not in inspect.getsource(pictures)
+
+
+def test_verdict_ledger_helpers_removed_from_storage():
+    """RFC-037 D3: ``persist_verdict_ledger`` / ``read_verdict_ledger`` must no
+    longer be importable, and ``read_verdict_ledger`` must be gone from
+    ``storage.__all__``."""
+    import pageindex_mcp.storage as storage_mod
+
+    assert not hasattr(storage_mod, "persist_verdict_ledger")
+    assert not hasattr(storage_mod, "read_verdict_ledger")
+    assert "read_verdict_ledger" not in storage_mod.__all__
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# helpers pipeline: apply_promotions / evaluate_gates / verdict authority
+# ═════════════════════════════════════════════════════════════════════════
+
+
+def _th() -> VerdictThresholds:
+    return VerdictThresholds.from_config(pipeline_config)
+
+
+def _well_formed() -> list:
+    return [
+        {
+            "node_id": "1",
+            "title": "Root",
+            "text": "",
+            "nodes": [
+                {"node_id": "2", "title": "Ch1", "text": "a" * 100, "nodes": []},
+                {"node_id": "3", "title": "Ch2", "text": "b" * 100, "nodes": []},
+                {"node_id": "4", "title": "Ch3", "text": "c" * 100, "nodes": []},
+            ],
+        }
+    ]
+
+
+def _varied_text(i: int) -> str:
+    paragraphs = [
+        "The insurance contract shall be governed by the applicable laws and regulations.",
+        "Premium payments are due on the first day of each calendar month without exception.",
+        "Coverage extends to all listed beneficiaries as specified in the policy document.",
+    ]
+    return paragraphs[i % len(paragraphs)]
+
+
+def _outcome_for(
+    structure: list | None = None,
+    defect: TreeDefect = TreeDefect.OK,
+    all_defects: frozenset | None = None,
+) -> GateOutcome:
+    if structure is None:
+        structure = _well_formed()
+    th = _th()
+    sig = TreeSignals.from_tree(structure, garble_threshold=th.garble_threshold)
+    return GateOutcome(
+        defect=defect,
+        validate_reason=None,
+        signals=sig,
+        all_defects=all_defects if all_defects is not None else frozenset(),
+        hard_fail_verdict=None,
+    )
+
+
+def _make_gate_result(
+    defect: TreeDefect,
+    structure: list | None = None,
+    all_defects: frozenset | None = None,
+) -> TreeGateResult:
+    if structure is None:
+        structure = _well_formed()
+    sig = TreeSignals.from_tree(structure, garble_threshold=_th().garble_threshold)
+    if all_defects is None:
+        all_defects = frozenset({defect}) if defect != TreeDefect.OK else frozenset()
+    return TreeGateResult(
+        ok=(defect == TreeDefect.OK),
+        defect=defect,
+        detail=defect.value,
+        signals=sig,
+        all_defects=all_defects,
+    )
+
+
+def test_apply_promotions_passes_well_formed_and_high_enrichment_images():
+    """A well-formed multi-chapter tree PASSes on its own structure; an
+    image_standalone document with a 0.95 enrichment ratio is promoted to
+    PASS."""
+    structure = [
+        {
+            "node_id": "1",
+            "title": "Root",
+            "text": "",
+            "nodes": [
+                {"node_id": str(i), "title": f"Chapter {i}", "text": _varied_text(i), "nodes": []}
+                for i in range(2, 12)
+            ],
+        }
+    ]
+    vr = apply_promotions(
+        _outcome_for(structure=structure),
+        "",
+        image_enrichment_ratio=None,
+        inspector_class=None,
+        th=_th(),
+        expected_script=None,
+    )
+    assert vr.verdict == "PASS"
+    verdict, _reason = vr  # VerdictResult stays tuple-unpackable
+    assert verdict == "PASS"
+
+    vr = apply_promotions(
+        _outcome_for(),
+        "image_standalone",
+        image_enrichment_ratio=0.95,
+        inspector_class=None,
+        th=_th(),
+        expected_script=None,
+    )
+    assert vr.verdict == "PASS"
+
+
+def test_evaluate_gates_hard_fail_verdict_and_cofiring_tiebreak():
+    """A non-hard-fail defect (and TreeDefect.OK) yields no hard_fail_verdict;
+    when two hard-fail defects co-fire the reason is the one with the worst
+    ``_GATE_PRIORITY``."""
+    outcome = evaluate_gates(_well_formed(), _make_gate_result(TreeDefect.NODE_COUNT_LOW), None, _th())
+    assert outcome.hard_fail_verdict is None
+
+    outcome = evaluate_gates(_well_formed(), _make_gate_result(TreeDefect.OK), None, _th())
+    assert outcome.hard_fail_verdict is None
+    assert outcome.defect == TreeDefect.OK
+
+    hf_list = sorted(HARD_FAIL_DEFECTS, key=lambda d: _GATE_PRIORITY.get(d, 999))
+    if len(hf_list) < 2:
+        pytest.skip("Need at least 2 hard-fail defects")
+    worst, second = hf_list[0], hf_list[1]
+    gr = _make_gate_result(TreeDefect.OK, all_defects=frozenset({worst, second}))
+    outcome = evaluate_gates(_well_formed(), gr, None, _th())
+    assert outcome.hard_fail_verdict is not None
+    assert outcome.hard_fail_verdict.reason == worst.value
+
+
+@pytest.mark.asyncio
+async def test_upsert_verdict_returns_winning_row():
+    from pageindex_mcp.registry import upsert_verdict
+
+    winning = {
+        "doc_id": "abc",
+        "verdict": "PASS",
+        "pipeline_version": 4,
+        "permanent_marginal": False,
+        "verdict_computed_at": "2026-08-18T12:00:00Z",
+    }
+    mock_pool = AsyncMock()
+    mock_pool.fetchrow = AsyncMock(return_value=winning)
+    with patch("pageindex_mcp.registry.schema.get_pool", return_value=mock_pool):
+        result = await upsert_verdict(
+            "abc", {"verdict": "PASS", "verdict_computed_at": "2026-08-18T12:00:00Z"}
+        )
+    assert result["verdict"] == "PASS"
+
+
+def test_run_stages_records_order_and_isolates_stage_failures():
+    """``_run_stages`` records one provenance entry per stage in order, and a
+    stage that raises does not skip the next one -- its error is recorded and
+    the pipeline continues from the last good markdown."""
+    from pageindex_mcp.converters import _run_stages
+
+    _md, records = _run_stages("x", [("alpha", lambda m: m), ("beta", lambda m: m + "!")])
+    assert list(records.keys()) == ["alpha", "beta"]
+
+    def fail(md):
+        raise RuntimeError("boom")
+
+    md, records = _run_stages("start", [("fail", fail), ("ok", lambda m: m + " ok")])
+    assert md == "start ok"
+    assert records["fail"]["error"] is not None
+    assert records["ok"]["error"] is None
+
+
+def test_prepare_tree_composes_split_then_segment():
+    """A small structure passes through ``prepare_tree`` unchanged; a large one
+    is exactly ``_segment_table_nodes(split_oversized_leaf_nodes(...))``."""
+    small = [
+        {
+            "title": "S1",
+            "text": "Short.",
+            "level": 1,
+            "nodes": [{"title": "Sub", "text": "Details.", "level": 2}],
+        },
+    ]
+    assert prepare_tree(copy.deepcopy(small)) == small
+
+    big_text = "\n\n".join(f"Article ({i})\n\n" + "Body. " * 4000 for i in range(1, 5))
+    structure = [{"title": "Doc", "text": big_text, "level": 1}]
+    result = prepare_tree(copy.deepcopy(structure))
+    manual = _segment_table_nodes(split_oversized_leaf_nodes(copy.deepcopy(structure)))
+    assert result == manual
+
+
+def test_tag_landscape_pages_for_fallback(tmp_path):
+    fitz = pytest.importorskip("fitz")
+    from pageindex_mcp.converters import _tag_landscape_pages_for_fallback
+
+    doc = fitz.open()
+    doc.new_page(width=600, height=800)
+    path = str(tmp_path / "portrait.pdf")
+    doc.save(path)
+    doc.close()
+    pages = _tag_landscape_pages_for_fallback(path)
+    assert pages[0]["is_landscape"] is False
+
+
+def test_build_candidate_matches_the_mirrored_stage_sequence():
+    """``_build_candidate`` is exactly the Arabic -> German -> English heading
+    injections followed by ``_pre_inference_normalize``."""
+    from pageindex_mcp.converters import (
+        _build_candidate,
+        _pre_inference_normalize,
+    )
+
+    def _mirrored(md):
+        md = _inject_arabic_structural_headings(md)
+        md = _inject_german_clause_headings(md)
+        md = _inject_english_article_headings(md)
+        return _pre_inference_normalize(md)
+
+    assert _build_candidate("") == _mirrored("")
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# formats.py: tesseract_ocr_pdf_pages dual rasterization backend (D4)
+# ═════════════════════════════════════════════════════════════════════════
+
+_PDFIUM_PNG = f"data:image/png;base64,{base64.b64encode(b'PDFIUM_PNG_FAKE').decode()}"
+_FITZ_PNG = f"data:image/png;base64,{base64.b64encode(b'FITZ_PNG_FAKE').decode()}"
+
+
+async def test_tesseract_ocr_pdf_pages_fitz_fallback_gating(monkeypatch):
+    """When pypdfium2 rasterization succeeds the fitz fallback is never called;
+    when the fallback is disabled a pypdfium2 failure propagates untouched
+    (fitz still not called)."""
+    fitz_called = False
+
+    def _fitz_fallback(pdf_path, dpi=200):
+        nonlocal fitz_called
+        fitz_called = True
+        return [_FITZ_PNG]
+
+    monkeypatch.setattr(
+        converters.formats, "rasterize_pdf_pages", lambda pdf_path, dpi=200: [_PDFIUM_PNG]
+    )
+    monkeypatch.setattr(converters.formats, "rasterize_pdf_pages_fitz", _fitz_fallback)
+    monkeypatch.setattr(
+        converters.pictures, "_tesseract_ocr_image", lambda path, langs: "pdfium text"
+    )
+
+    assert await converters.tesseract_ocr_pdf_pages("/fake.pdf", ["eng"]) == "pdfium text"
+    assert fitz_called is False
+
+    monkeypatch.setattr(converters.formats, "_D7_FITZ_FALLBACK_ENABLED", False)
+
+    def _pdfium_boom(pdf_path, dpi=200):
+        raise RuntimeError("CMap corruption: pypdfium2 render failed")
+
+    monkeypatch.setattr(converters.formats, "rasterize_pdf_pages", _pdfium_boom)
+    with pytest.raises(RuntimeError, match="CMap corruption"):
+        await converters.tesseract_ocr_pdf_pages("/fake.pdf", ["eng"])
+    assert fitz_called is False
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# split_oversized_leaf_nodes / _has_heading_markers / _ordinal_value (D3)
+# ═════════════════════════════════════════════════════════════════════════
+
+
+class TestSplitOversizedLeafNodes:
+    def test_ordinal_markers_detected_and_split_fires(self):
+        """'Clause N' is detected by ``_has_heading_markers`` (split-eligible
+        even under max_chars) and an oversized leaf carrying those markers
+        splits into 3 children; the pre-existing Article/Section/مادة patterns
+        still match and still split (no regression from the new marker types);
+        roman numerals ('Part IV/V/VI') and letters ('Annex A/B/C') resolve to
+        the correct ``_ordinal_value`` int tuples."""
+        assert _has_heading_markers("Clause 1 says X. Clause 2 says Y. Clause 3 says Z.") is True
+
+        failures = []
+        for marker in ("Article 9", "Section 4", "المادة ٥"):
+            if _OVERSIZED_ORDINAL_RE.search(marker) is None:
+                failures.append(f"_OVERSIZED_ORDINAL_RE does not match {marker!r}")
+        ordinal_cases = [
+            ("Part IV", (4,)), ("Part V", (5,)), ("Part VI", (6,)),
+            ("Annex A", (1,)), ("Annex B", (2,)), ("Annex C", (3,)),
+        ]
+        for text, want in ordinal_cases:
+            got = _ordinal_value(_OVERSIZED_ORDINAL_RE.search(text))
+            if got != want:
+                failures.append(f"_ordinal_value({text!r}) == {got}, want {want}")
+
+        for prefix in ("Clause", "Article"):
+            text = "\n".join(f"{prefix} {i} {_text_of_length(3000)}" for i in (1, 2, 3))
+            tree = [{"node_id": "n1", "title": "root", "text": text, "nodes": []}]
+            split_oversized_leaf_nodes(tree, max_chars=50000, min_segments=3)
+            if len(tree[0]["nodes"]) != 3:
+                failures.append(f"{prefix}: split produced {len(tree[0]['nodes'])} children, want 3")
+            elif not tree[0]["nodes"][0]["text"].startswith(f"{prefix} 1"):
+                failures.append(f"{prefix}: first child does not start at '{prefix} 1'")
+        assert not failures, "\n".join(failures)
+
+    def test_part_prose_false_positive_regression_guard(self):
+        """'Part 2 of the agreement' repeated (non-sequential, same ordinal
+        each time) is English prose making a cross-reference, not a heading
+        sequence -> must NOT produce a spurious split."""
+        text = (
+            f"As mentioned in Part 2 of the agreement, {_text_of_length(2500)}\n\n"
+            f"Part 2 of the agreement also states {_text_of_length(2500)}\n\n"
+            f"Referring again to Part 2 of the agreement, {_text_of_length(2500)}"
+        )
+        tree = [{"node_id": "n1", "title": "root", "text": text, "nodes": []}]
+        split_oversized_leaf_nodes(
+            tree, max_chars=50000, min_segments=3, _tree_ratio=0.1, _tree_total=len(text) * 10
+        )
+        assert tree[0]["nodes"] == []
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# converters_cli: `python -m pageindex_mcp.converters_cli <input_pdf_path>`
+# ═════════════════════════════════════════════════════════════════════════
+#
+# Contract under test:
+#     stdout: the RFC-028 D0 startup handshake line followed by exactly one
+#             result JSON line at exit
+#       success: {"ok": true, "doc_id": ..., "peak_rss_kib": int, "duration_ms": int}
+#       failure: {"ok": false, "error": "<ExceptionClassName>", "message": ...}
+#     exit code: 0 on success, 1 on handled exception.
+
+# Minimal valid PDF bytes (no text, just structure — enough for file-exists checks).
+_MINIMAL_PDF = (
+    b"%PDF-1.4\n"
+    b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+    b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+    b"3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R>>endobj\n"
+    b"xref\n0 4\n"
+    b"0000000000 65535 f \n"
+    b"0000000009 00000 n \n"
+    b"0000000058 00000 n \n"
+    b"0000000115 00000 n \n"
+    b"trailer<</Size 4/Root 1 0 R>>\n"
+    b"startxref\n190\n%%EOF"
+)
+
+
+@pytest.fixture()
+def tmp_pdf(tmp_path: Path) -> Path:
+    """Write a minimal PDF fixture to a temp file and return its path."""
+    p = tmp_path / "fixture.pdf"
+    p.write_bytes(_MINIMAL_PDF)
+    return p
+
+
+def _run_cli(*args, env_extra=None, timeout=180):
+    """Run the CLI as a subprocess and return the CompletedProcess."""
+    env = os.environ.copy()
+    if env_extra:
+        env.update(env_extra)
+    return subprocess.run(
+        [sys.executable, "-m", "pageindex_mcp.converters_cli", *args],
+        capture_output=True,
+        timeout=timeout,
+        env=env,
+    )
+
+
+def _last_stdout_json(proc) -> dict:
+    """Return the last non-empty stdout line parsed as JSON."""
+    lines = [ln for ln in proc.stdout.decode().splitlines() if ln.strip()]
+    assert lines, f"No stdout output. stderr={proc.stderr.decode()!r}"
+    return json.loads(lines[-1])
+
+
+def _neutralize_llm_gate(monkeypatch):
+    """The CLI validates/configures the LLM provider (LLM-01) before indexing.
+    These tests exercise index() plumbing, not provider config, so the gate is
+    neutralized to stay independent of ambient OPENAI_API_KEY in the runner."""
+    monkeypatch.setattr("pageindex_mcp.client.llm.validate_llm_config", lambda: None)
+    monkeypatch.setattr("pageindex_mcp.client.llm.configure_litellm", lambda: None)
+
+
+def test_cli_missing_input_file_exits_1_with_json_error(tmp_path: Path):
+    """Missing input → exit code 1, JSON {ok: false, error: FileNotFoundError}."""
+    proc = _run_cli(str(tmp_path / "does_not_exist.pdf"), timeout=30)
+    assert proc.returncode == 1, f"Expected exit 1. stderr={proc.stderr.decode()!r}"
+    payload = _last_stdout_json(proc)
+    assert payload["ok"] is False
+    assert payload["error"] == "FileNotFoundError"
+    assert "message" in payload
+
+
+async def test_cli_runtime_error_from_index_exits_1(tmp_pdf: Path, monkeypatch):
+    """RuntimeError raised by client.index → exit 1 with
+    JSON {ok: false, error: RuntimeError} carrying the message."""
+    import pageindex_mcp.converters_cli as cli_module
+    from pageindex_mcp.converters_cli import main
+
+    monkeypatch.setattr("sys.argv", ["converters_cli", str(tmp_pdf)])
+    fake_stdout = io.StringIO()
+    monkeypatch.setattr(cli_module, "_stdout", fake_stdout)
+    _neutralize_llm_gate(monkeypatch)
+
+    with patch(
+        "pageindex_mcp.client.CustomPageIndexClient.index",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("empty pdf"),
+    ):
+        exit_code = await main()
+
+    assert exit_code == 1
+    output = fake_stdout.getvalue().strip()
+    assert output, "Expected one stdout line"
+    payload = json.loads(output.splitlines()[-1])
+    assert payload["ok"] is False
+    assert payload["error"] == "RuntimeError"
+    assert "empty pdf" in payload["message"]
+
+
+async def test_cli_success_json_shape_and_handshake(tmp_pdf: Path, monkeypatch):
+    """RFC-028 D0: exactly 2 stdout lines — the startup handshake
+    ({"handshake": true, ...}) followed by the result JSON, whose keys are
+    exactly {ok, doc_id, peak_rss_kib, duration_ms} with the right types."""
+    import pageindex_mcp.converters_cli as cli_module
+    from pageindex_mcp.converters_cli import main
+
+    monkeypatch.setattr("sys.argv", ["converters_cli", str(tmp_pdf)])
+    fake_stdout = io.StringIO()
+    monkeypatch.setattr(cli_module, "_stdout", fake_stdout)
+    _neutralize_llm_gate(monkeypatch)
+
+    with patch(
+        "pageindex_mcp.client.CustomPageIndexClient.index",
+        new_callable=AsyncMock,
+        return_value="deadbeef",
+    ):
+        exit_code = await main()
+
+    assert exit_code == 0
+    lines = [ln for ln in fake_stdout.getvalue().splitlines() if ln.strip()]
+    assert len(lines) == 2, f"Expected exactly 2 stdout lines, got: {lines}"
+    handshake = json.loads(lines[0])
+    assert handshake["handshake"] is True
+    assert handshake["chunk_count"] == 1
+    assert handshake["is_docling_route"] is True
+
+    payload = json.loads(lines[1])
+    assert set(payload.keys()) == {"ok", "doc_id", "peak_rss_kib", "duration_ms"}
+    assert payload["ok"] is True
+    assert isinstance(payload["doc_id"], str) and len(payload["doc_id"]) > 0
+    assert isinstance(payload["peak_rss_kib"], int) and payload["peak_rss_kib"] >= 0
+    assert isinstance(payload["duration_ms"], int) and payload["duration_ms"] >= 0
+
+
+def test_cli_stdout_not_polluted_by_logs_or_stray_prints(tmp_pdf: Path, tmp_path: Path):
+    """Real-subprocess contract: stdout is exactly the handshake line plus the
+    result JSON even when client.index prints to stdout and logs a warning."""
+    shim = tmp_path / "noisy_shim.py"
+    shim.write_text(
+        "import sys, logging, asyncio\n"
+        "from unittest.mock import patch\n"
+        "sys.argv = ['converters_cli', sys.argv[1]]\n"
+        "\n"
+        "async def noisy_index(self_or_path, *a, **kw):\n"
+        "    print('noisy stdout log')  # stray print — should go to stderr or be suppressed\n"
+        "    logging.getLogger().warning('noisy warning')\n"
+        "    return 'cafe5678'\n"
+        "\n"
+        "with patch('pageindex_mcp.client.CustomPageIndexClient.index', noisy_index):\n"
+        "    from pageindex_mcp.converters_cli import main\n"
+        "    sys.exit(asyncio.run(main()))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, str(shim), str(tmp_pdf)], capture_output=True, timeout=60
+    )
+    stdout_lines = [ln for ln in result.stdout.decode().splitlines() if ln.strip()]
+    assert len(stdout_lines) == 2, (
+        f"Expected exactly 2 stdout lines, got {len(stdout_lines)}: {stdout_lines!r}. "
+        f"stderr={result.stderr.decode()!r}"
+    )
+    payload = json.loads(stdout_lines[-1])
+    assert payload["ok"] is True
+    assert payload["doc_id"] == "cafe5678"
+
+
+async def test_cli_registry_fields_surfaced_iff_client_stashed_them(tmp_pdf: Path, monkeypatch):
+    """Zone-7 dual-write consistency: when ``client.last_registry_fields`` is
+    set after index(), the stdout JSON carries a ``registry_fields`` dict with
+    every ``_REGISTRY_FIELDS`` key (minus doc_id) plus node_count; when it is
+    None the key must be absent (backward compat)."""
+    import pageindex_mcp.converters_cli as cli_module
+    from pageindex_mcp.converters_cli import main
+    from pageindex_mcp.storage.verdict import _REGISTRY_FIELDS
+
+    expected_keys = {k for k in _REGISTRY_FIELDS if k != "doc_id"} | {"node_count"}
+    stashed = {k: "" for k in expected_keys}
+    stashed.update(
+        {
+            "doc_name": "fixture.pdf",
+            "source_url": "http://x",
+            "processed_at": "2026-08-26T00:00:00Z",
+            "sha256": "abc123",
+            "content_class": "flat_prose",
+            "node_count": 0,
+        }
+    )
+
+    async def _fake_index(self, *a, **kw):
+        self.last_registry_fields = stashed
+        return "reg-fields-1"
+
+    monkeypatch.setattr("sys.argv", ["converters_cli", str(tmp_pdf)])
+    fake_stdout = io.StringIO()
+    monkeypatch.setattr(cli_module, "_stdout", fake_stdout)
+    _neutralize_llm_gate(monkeypatch)
+    with patch("pageindex_mcp.client.CustomPageIndexClient.index", _fake_index):
+        exit_code = await main()
+
+    assert exit_code == 0
+    payload = json.loads(
+        [ln for ln in fake_stdout.getvalue().splitlines() if ln.strip()][-1]
+    )
+    assert payload["ok"] is True
+    rf = payload.get("registry_fields")
+    assert rf is not None, "registry_fields must be surfaced when the client stashed them"
+    missing = expected_keys - set(rf)
+    assert not missing, f"Missing registry fields: {sorted(missing)}"
+
+    fake_stdout = io.StringIO()
+    monkeypatch.setattr(cli_module, "_stdout", fake_stdout)
+    with patch(
+        "pageindex_mcp.client.CustomPageIndexClient.index",
+        new_callable=AsyncMock,
+        return_value="no-reg-1",
+    ):
+        exit_code = await main()
+    assert exit_code == 0
+    payload = json.loads(
+        [ln for ln in fake_stdout.getvalue().splitlines() if ln.strip()][-1]
+    )
+    assert payload["ok"] is True
+    assert "registry_fields" not in payload
+
+
+@pytest.mark.integration
+def test_cli_happy_path_real_docling_integration(tmp_pdf: Path):
+    """Real Docling conversion — only runs when DOCLING_INTEGRATION=1."""
+    if not os.environ.get("DOCLING_INTEGRATION"):
+        pytest.skip("Set DOCLING_INTEGRATION=1 to run real Docling integration test")
+    proc = _run_cli(str(tmp_pdf), timeout=300)
+    assert proc.returncode == 0, f"CLI failed. stderr={proc.stderr.decode()!r}"
+    payload = _last_stdout_json(proc)
+    assert payload["ok"] is True
+    assert isinstance(payload["doc_id"], str) and len(payload["doc_id"]) > 0
+    assert isinstance(payload["peak_rss_kib"], int) and payload["peak_rss_kib"] >= 0
+    assert isinstance(payload["duration_ms"], int) and payload["duration_ms"] >= 0
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# RFC-041 D10c: pre-NFKC ScriptContext threading
+# ═════════════════════════════════════════════════════════════════════════
+#
+# NFKC decomposition destroys Arabic Presentation Forms codepoints, so a
+# ScriptContext built from post-NFKC text always reports
+# had_presentation_forms=False.  Every garble call site must therefore accept a
+# caller-supplied ScriptContext and thread it through INSTEAD of re-inferring
+# from the normalized text -- otherwise Arabic documents lose their PF signal.
+
+# Arabic Presentation Forms-B text (U+FE70-U+FEFF range)
+_ARABIC_PF_TEXT = "ﺍﺎﺻﺼﺵﺶ"
+_ARABIC_PF_NFKC = unicodedata.normalize("NFKC", _ARABIC_PF_TEXT)
+
+# Latin text — no presentation forms in either form
+_LATIN_TEXT = "The quick brown fox jumps over the lazy dog"
+
+
+def test_infer_presentation_forms_is_destroyed_by_nfkc():
+    """``_infer_presentation_forms`` sees Arabic Presentation Forms pre-NFKC and
+    loses them post-NFKC; Latin text answers False either way (parity)."""
+    from pageindex_mcp.helpers.garble import _infer_presentation_forms
+
+    assert _infer_presentation_forms(_ARABIC_PF_TEXT) is True
+    assert _infer_presentation_forms(_ARABIC_PF_NFKC) is False
+
+    pre = _infer_presentation_forms(_LATIN_TEXT)
+    post = _infer_presentation_forms(unicodedata.normalize("NFKC", _LATIN_TEXT))
+    assert pre == post
+    assert pre is False
+
+
+def test_script_context_pf_is_threaded_to_every_garble_call_site(monkeypatch):
+    """A caller-supplied ScriptContext reaches ``detect_garble`` with its own
+    ``had_presentation_forms`` at every threaded call site -- ``_garble_ratio``,
+    ``TreeSignals.from_tree``, ``validate_tree`` and ``compute_verdict`` --
+    instead of the value re-inferred from the (post-NFKC) text, which would
+    always be False.  This is the regression D10c fixes."""
+    from pageindex_mcp.helpers import garble as garble_mod
+    from pageindex_mcp.helpers.garble import GarbleReport, _garble_ratio
+    from pageindex_mcp.helpers.tree_validation import TreeSignals as _TreeSignals, validate_tree
+    from pageindex_mcp.helpers.verdict import compute_verdict
+    from pageindex_mcp.script import ScriptContext
+
+    seen: list[bool | None] = []
+
+    def _spy(text, *, script_context=None, **kw):
+        seen.append(script_context.had_presentation_forms if script_context else None)
+        return GarbleReport(is_garbled=False, fired_prongs=frozenset())
+
+    monkeypatch.setattr(garble_mod, "detect_garble", _spy)
+
+    flat_structure = [{"heading": "test", "content": _ARABIC_PF_NFKC, "children": []}]
+    nested_structure = [
+        {
+            "heading": "root",
+            "content": "",
+            "children": [{"heading": "child", "content": _ARABIC_PF_NFKC, "children": []}],
+        }
+    ]
+
+    failures = []
+    for pf in (True, False):
+        ctx = ScriptContext(
+            dominant_script="Arab",
+            had_presentation_forms=pf,
+            source=f"test_pf_{pf}",
+        )
+        sites = {
+            "_garble_ratio": lambda: _garble_ratio(
+                _ARABIC_PF_NFKC, expected_script="Arab", script_context=ctx
+            ),
+            "TreeSignals.from_tree": lambda: _TreeSignals.from_tree(
+                flat_structure, expected_script=ctx
+            ),
+            "validate_tree": lambda: validate_tree(flat_structure, expected_script=ctx),
+            "compute_verdict": lambda: compute_verdict(
+                nested_structure, "", expected_script=ctx
+            ),
+        }
+        for name, call in sites.items():
+            seen.clear()
+            call()
+            if not seen:
+                failures.append(f"{name} (pf={pf}): detect_garble was never reached")
+            elif any(v is not pf for v in seen):
+                failures.append(f"{name} (pf={pf}): detect_garble saw {seen}, want all {pf}")
+    assert not failures, "\n".join(failures)
+
+    # Latin documents are unaffected by the threading.
+    latin_ctx = ScriptContext(
+        dominant_script="Latn", had_presentation_forms=False, source="test_latin"
+    )
+    seen.clear()
+    validate_tree([{"heading": "test", "content": _LATIN_TEXT, "children": []}], expected_script=latin_ctx)
+    assert seen and all(v is False for v in seen)
+
+
+def test_script_context_from_document_pf_detection_and_enrichment():
+    """``ScriptContext.from_document`` on post-NFKC text returns
+    had_presentation_forms=False and on pre-NFKC text returns True; the indexer
+    enriches the post-NFKC context via ``dataclasses.replace`` without
+    disturbing the other fields."""
+    from pageindex_mcp.script import ScriptContext
+
+    assert ScriptContext.from_document("arabic.pdf", raw_text=_ARABIC_PF_TEXT).had_presentation_forms is True
+
+    ctx = ScriptContext.from_document("arabic.pdf", raw_text=_ARABIC_PF_NFKC)
+    assert ctx.had_presentation_forms is False
+    enriched = dataclasses.replace(ctx, had_presentation_forms=True)
+    assert enriched.had_presentation_forms is True
+    assert enriched.dominant_script == ctx.dominant_script
+    assert enriched.source == ctx.source

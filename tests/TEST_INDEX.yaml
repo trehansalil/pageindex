@@ -16,31 +16,22 @@ mappings:
     coverage_threshold: 90
     tests:
       - test_client.py            # primary
-      - test_architecture_guards.py
+      - test_source_invariants.py
       - test_verdict.py
-      - test_d8_surya_fallback.py
-      - test_rfc048_surya_image.py
+      - test_ocr_fallback.py
       - test_config.py
       - test_converters.py
-      - test_converters_cli.py
       - test_gates.py
       - test_image_blocks.py
-      - test_preprocess_client_supported.py
       - test_inspector.py
       - test_bidi.py
       - test_flat.py
       - test_garble.py
-      - test_rfc_quality.py
-      - test_rfc_tables.py
       - test_density_gate.py
-      - test_observability_combined.py
+      - test_obs_logging.py
       - test_hr3_zdr_egress.py
       - test_recovery.py
       - test_worker.py
-      - test_zone4_bidi_rtl.py
-      - test_d10c_pre_nfkc_threading.py
-      - test_d6_flat_verdicts.py
-      - test_d4_corrective_retry.py  # RFC-046 D4: corrective retry in image path
 
   client/images.py:
     coverage_threshold: 90
@@ -52,7 +43,7 @@ mappings:
       - test_bidi.py
       - test_flat.py
       - test_verdict.py
-      - test_rfc_quality.py
+      - test_gates.py
 
   client/recovery.py:
     coverage_threshold: 90
@@ -62,17 +53,12 @@ mappings:
       - test_converters.py
       - test_gates.py
       - test_image_blocks.py
-      - test_observability_combined.py
+      - test_obs_logging.py
       - test_inspector.py
       - test_bidi.py
       - test_verdict.py
-      - test_rfc_quality.py
       - test_recovery.py
-      - test_zone3_ocr_recovery.py
-      - test_zone4_bidi_rtl.py
-      - test_d10c_pre_nfkc_threading.py
-      - test_d7_arbitration.py
-      - test_d4_corrective_retry.py  # RFC-046 D4: image recovery + corrective retry
+      - test_garble.py
       - test_integration.py          # RFC-043 D1: e2e zero-content recovery
 
   client/remote.py:
@@ -87,10 +73,10 @@ mappings:
     coverage_threshold: 90
     tests:
       - test_client.py
-      - test_converters_cli.py
+      - test_converters.py
       - test_hr3_zdr_egress.py
       - test_worker.py
-      - test_observability_combined.py
+      - test_obs_logging.py
 
   # ── Data-integrity critical (coverage: 90%) ─────────────────────────────────
   storage/minio_ops.py:
@@ -98,11 +84,10 @@ mappings:
     tests:
       - test_storage.py           # primary
       - test_density_gate.py
-      - test_observability_combined.py
-      - test_converters_pipeline.py
+      - test_obs_logging.py
+      - test_converters.py
       - test_hr3_zdr_egress.py
       - test_bidi.py
-      - test_converters.py
       - test_staging_e2e.py
 
   storage/documents.py:
@@ -111,16 +96,14 @@ mappings:
       - test_storage.py           # primary
       - test_client.py
       - test_density_gate.py
-      - test_documents_tools.py
       - test_image_blocks.py
-      - test_observability_combined.py
+      - test_obs_logging.py
       - test_inspector.py
-      - test_rag.py
       - test_registry_backfill.py
       - test_bidi.py
-      - test_converters_pipeline.py
+      - test_converters.py
       - test_verdict.py
-      - test_rfc_quality.py
+      - test_gates.py
       - test_registry.py
       - test_integration.py          # RFC-043 D1/D5: e2e recovery + erasure
 
@@ -131,15 +114,13 @@ mappings:
       - test_registry.py
       - test_client.py
       - test_density_gate.py
-      - test_documents_tools.py
       - test_image_blocks.py
-      - test_observability_combined.py
+      - test_obs_logging.py
       - test_inspector.py
-      - test_converters_pipeline.py
+      - test_converters.py
       - test_bidi.py
       - test_verdict.py
-      - test_rfc_quality.py
-      - test_converters.py
+      - test_gates.py
       - test_registry_backfill.py
       - test_worker.py
 
@@ -153,14 +134,14 @@ mappings:
       - test_registry_backfill.py
       - test_bidi.py
       - test_verdict.py
-      - test_rfc_quality.py
+      - test_gates.py
       - test_registry.py
 
   storage/staging.py:
     coverage_threshold: 90
     tests:
       - test_staging_e2e.py
-      - test_observability_combined.py
+      - test_obs_logging.py
       - test_converters.py
       - test_density_gate.py
 
@@ -186,7 +167,7 @@ mappings:
     tests:
       - test_worker.py            # primary
       - test_density_gate.py
-      - test_memory_redis.py
+      - test_storage.py
 
   worker/lifecycle.py:
     coverage_threshold: 85
@@ -194,7 +175,7 @@ mappings:
       - test_worker.py            # primary
       - test_recovery.py
       - test_hr3_zdr_egress.py
-      - test_memory_redis.py
+      - test_storage.py
 
   worker/registry_mirror.py:
     coverage_threshold: 85
@@ -210,9 +191,9 @@ mappings:
       - test_worker.py            # primary
       - test_config.py
       - test_density_gate.py
-      - test_observability_combined.py
+      - test_obs_logging.py
       - test_recovery.py
-      - test_memory_redis.py
+      - test_storage.py
 
   worker/timeouts.py:
     tests:
@@ -222,11 +203,12 @@ mappings:
   # ── Standard modules (coverage: governance default 70%) ─────────────────────
   auth.py:
     tests:
-      - test_auth.py
+      - test_upload.py
 
   cache.py:
     tests:
-      - test_memory_redis.py
+      - test_cache.py            # primary
+      - test_storage.py
 
   config.py:
     tests:
@@ -234,37 +216,30 @@ mappings:
       - test_verdict.py
       - test_converters.py
       - test_registry.py
-      - test_d8_surya_fallback.py
-      - test_rfc_quality.py
-      - test_rfc_registry.py
+      - test_ocr_fallback.py
       - test_gates.py
       - test_hr3_zdr_egress.py
       - test_staging_e2e.py
       - test_storage.py
-      - test_converters_pipeline.py
-      - test_observability_combined.py
-      - test_hr3_zdr_egress.py
+      - test_obs_logging.py
       - test_garble.py
       - test_recovery.py
-      - test_zone1_verdict_partition.py
 
   converters/types.py:
     tests:
       - test_converters.py
       - test_density_gate.py
       - test_image_blocks.py
-      - test_observability_combined.py
-      - test_converters_pipeline.py
+      - test_obs_logging.py
       - test_helpers_combined.py
       - test_garble.py
-      - test_rfc_quality.py
-      - test_rfc_tables.py
+      - test_gates.py
 
   converters/ocr_langs.py:
     tests:
       - test_converters.py
       - test_bidi.py
-      - test_observability_combined.py
+      - test_obs_logging.py
       - test_helpers_combined.py
       - test_garble.py
       - test_recovery.py
@@ -274,8 +249,7 @@ mappings:
       - test_converters.py            # primary
       - test_bidi.py
       - test_density_gate.py
-      - test_outline.py
-      - test_converters_pipeline.py
+      - test_flat.py
       - test_recovery.py
 
   converters/normalize.py:
@@ -283,37 +257,33 @@ mappings:
       - test_converters.py
       - test_bidi.py
       - test_gates.py
-      - test_zone4_bidi_rtl.py
 
   converters/pictures.py:
     tests:
       - test_config.py
       - test_image_blocks.py
-      - test_observability_combined.py
+      - test_obs_logging.py
       - test_gates.py
-      - test_converters_pipeline.py
-      - test_bidi.py
       - test_converters.py
+      - test_bidi.py
       - test_garble.py
       - test_inspector.py
       - test_recovery.py
-      - test_rfc_registry.py
-      - test_rfc_tables.py
-      - test_zone3_ocr_recovery.py
-      - test_zone4_bidi_rtl.py
+      - test_registry.py
+      - test_density_gate.py
 
   converters/docling_conv.py:
     tests:
       - test_converters.py
-      - test_observability_combined.py
+      - test_obs_logging.py
       - test_inspector.py
       - test_bidi.py
       - test_recovery.py
-      - test_rfc_tables.py
+      - test_density_gate.py
 
   converters/preclassify.py:
     tests:
-      - test_preclassify.py
+      - test_script.py
 
   converters/pipeline.py:
     tests:
@@ -322,24 +292,22 @@ mappings:
       - test_density_gate.py
       - test_gates.py
       - test_hr3_zdr_egress.py
-      - test_observability_combined.py
-      - test_converters_pipeline.py
+      - test_obs_logging.py
       - test_bidi.py
       - test_recovery.py
 
   converters/formats.py:
     tests:
       - test_converters.py
-      - test_converters_pipeline.py
       - test_hr3_zdr_egress.py
 
   converters_cli.py:
     tests:
-      - test_converters_cli.py
+      - test_converters.py
 
   helpers/arbitrate.py:
     tests:
-      - test_d7_arbitration.py
+      - test_garble.py
 
   helpers/types.py:
     tests:
@@ -347,15 +315,10 @@ mappings:
       - test_converters.py
       - test_gates.py
       - test_garble.py
-      - test_converters_pipeline.py
       - test_recovery.py
       - test_bidi.py
-      - test_rfc_quality.py
       - test_helpers_combined.py
       - test_inspector.py
-      - test_zone1_verdict_partition.py
-      - test_d10c_pre_nfkc_threading.py
-      - test_d7_arbitration.py
 
   helpers/tree_validation.py:
     tests:
@@ -367,90 +330,68 @@ mappings:
       - test_garble.py
       - test_gates.py
       - test_image_blocks.py
-      - test_converters_pipeline.py
       - test_recovery.py
       - test_bidi.py
       - test_flat.py
       - test_inspector.py
-      - test_rfc_quality.py
-      - test_zone1_verdict_partition.py
-      - test_rfc_registry.py
-      - test_rfc_reorder.py
-      - test_rfc_tables.py
+      - test_registry.py
       - test_storage.py
-      - test_zone4_measurement.py
 
   helpers/garble.py:
     tests:
       - test_garble.py                # primary
       - test_helpers_combined.py
-      - test_converters_pipeline.py
+      - test_converters.py
       - test_recovery.py
       - test_bidi.py
       - test_flat.py
-      - test_converters.py
       - test_inspector.py
       - test_verdict.py
-      - test_rfc_quality.py
+      - test_gates.py
       - test_script.py
-      - test_d10c_pre_nfkc_threading.py
 
   helpers/gates.py:
     tests:
       - test_gates.py            # primary
       - test_verdict.py
       - test_density_gate.py
-      - test_d7_arabic_density_floor.py
-      - test_d8_surya_fallback.py
+      - test_garble.py
+      - test_ocr_fallback.py
       - test_helpers_combined.py
-      - test_converters_pipeline.py
+      - test_converters.py
       - test_recovery.py
       - test_flat.py
-      - test_converters.py
-      - test_garble.py
       - test_inspector.py
-      - test_rfc_quality.py
-      - test_rfc_registry.py
-      - test_rfc_tables.py
-      - test_zone4_bidi_rtl.py
+      - test_registry.py
+      - test_bidi.py
       - test_integration.py          # RFC-043 D1: e2e zero-content recovery
 
   helpers/verdict.py:
     tests:
       - test_verdict.py       # primary
-      - test_zone1_verdict_partition.py  # golden promotion-partition table
       - test_client.py
       - test_converters.py
       - test_density_gate.py
       - test_helpers_combined.py
       - test_gates.py
-      - test_converters_pipeline.py
       - test_recovery.py
       - test_flat.py
       - test_garble.py
       - test_inspector.py
-      - test_rfc_quality.py
-      - test_rfc_registry.py
-      - test_rfc_tables.py
-      - test_d6_flat_verdicts.py
+      - test_registry.py
 
   helpers/tree_split.py:
     tests:
       - test_helpers_combined.py               # primary
       - test_converters.py
-      - test_outline.py
-      - test_density_gate.py
-      - test_converters_pipeline.py
-      - test_bidi.py
       - test_flat.py
-      - test_rfc_reorder.py
-      - test_rfc_tables.py
+      - test_density_gate.py
+      - test_bidi.py
       - test_verdict.py
 
   helpers/tables.py:
     tests:
       - test_helpers_combined.py               # primary
-      - test_rfc_reorder.py
 
   helpers/table_stitch.py:
     tests:
@@ -461,9 +402,8 @@ mappings:
 
   helpers/heuristic_registry.py:
     tests:
-      - test_heuristic_registry.py    # primary
+      - test_client.py    # primary
       - test_triad_golden.py          # D6 golden-file snapshots
-      - test_triad_properties.py      # D7 property-based triad tests
 
   helpers/flat.py:
     tests:
@@ -475,22 +415,15 @@ mappings:
       - test_image_blocks.py
       - test_bidi.py
       - test_inspector.py
-      - test_converters_pipeline.py
       - test_verdict.py
-      - test_rfc_quality.py
-      - test_rfc_tables.py
       - test_gates.py
-      - test_zone4_measurement.py
-      - test_no_naive_block_text.py    # cross-cutting AST guard
-      - test_rfc042_measurement_guard.py
-      - test_d6_flat_verdicts.py
+      - test_source_invariants.py    # cross-cutting AST guard
 
   helpers/rag.py:
     tests:
       - test_helpers_combined.py               # primary
       - test_client.py
-      - test_observability_combined.py
-      - test_rag.py
+      - test_obs_logging.py
       - test_hr3_zdr_egress.py
 
   job_status.py:
@@ -499,13 +432,13 @@ mappings:
 
   memory_admission.py:
     tests:
-      - test_memory_redis.py
+      - test_storage.py
 
   metrics/definitions.py:
     tests:
-      - test_observability_combined.py           # primary
-      - test_auth.py
-      - test_memory_redis.py
+      - test_obs_logging.py           # primary
+      - test_upload.py
+      - test_storage.py
       - test_config.py
       - test_converters.py
       - test_image_blocks.py
@@ -514,11 +447,10 @@ mappings:
       - test_hr3_zdr_egress.py
       - test_density_gate.py
       - test_registry.py
-      - test_storage.py
 
   metrics/sync.py:
     tests:
-      - test_observability_combined.py           # primary
+      - test_obs_logging.py           # primary
       - test_registry.py
       - test_storage.py
 
@@ -533,18 +465,16 @@ mappings:
       - test_garble.py
       - test_converters.py
       - test_recovery.py
-      - test_zone3_ocr_recovery.py
-      - test_rfc048_surya_image.py
+      - test_ocr_fallback.py
 
   queue_metrics.py:
     tests:
-      - test_observability_combined.py
+      - test_obs_logging.py
 
   registry/schema.py:
     tests:
       - test_registry.py          # primary
-      - test_rfc_registry.py
-      - test_converters_pipeline.py
+      - test_converters.py
       - test_registry_backfill.py
       - test_density_gate.py
       - test_worker.py
@@ -553,10 +483,9 @@ mappings:
     tests:
       - test_registry.py          # primary
       - test_registry_backfill.py
-      - test_rfc_registry.py
-      - test_converters_pipeline.py
+      - test_converters.py
       - test_verdict.py
-      - test_documents_tools.py  # RFC-043 D5: get_doc_sha256 erasure fallback
+      - test_client.py  # RFC-043 D5: get_doc_sha256 erasure fallback
       - test_storage.py
       - test_worker.py
 
@@ -585,24 +514,23 @@ mappings:
       - test_script.py            # primary
       - test_gates.py
       - test_bidi.py
-      - test_converters_pipeline.py
+      - test_converters.py
       - test_recovery.py
 
   server.py:
     tests:
-      - test_observability_combined.py
+      - test_obs_logging.py
       - test_storage.py
       - test_hr3_zdr_egress.py
 
   tools/documents.py:
     tests:
-      - test_documents_tools.py   # primary
-      - test_rag.py
-      - test_observability_combined.py
+      - test_client.py   # primary
+      - test_obs_logging.py
 
   tracing.py:
     tests:
-      - test_observability_combined.py
+      - test_obs_logging.py
 
   upload_app.py:
     tests:
@@ -612,26 +540,24 @@ mappings:
   obs/__init__.py:
     tests:
       - test_obs_logging.py primary
-      - test_architecture_guards.py
+      - test_source_invariants.py
   obs/constants.py:
     tests:
       - test_obs_logging.py primary
   obs/context.py:
     tests:
       - test_obs_logging.py primary
-      - test_logtrace.py
   obs/decision_points.py:
     tests:
       - test_obs_logging.py primary
-      - test_rfc046_attribution.py
-      - test_d6_flat_verdicts.py
-      - test_d7_arbitration.py
-      - test_d8_surya_fallback.py
-      - test_rfc048_surya_image.py
+      - test_recovery.py
+      - test_flat.py
+      - test_garble.py
+      - test_ocr_fallback.py
   obs/decisions.py:
     tests:
       - test_obs_logging.py primary
-      - test_rfc046_attribution.py
+      - test_recovery.py
   obs/filter.py:
     tests:
       - test_obs_logging.py primary
@@ -644,11 +570,10 @@ mappings:
   obs/phases.py:
     tests:
       - test_obs_logging.py primary
-      - test_rfc046_attribution.py
+      - test_recovery.py
   obs/redact.py:
     tests:
-      - test_observability_combined.py primary
-      - test_obs_logging.py
+      - test_obs_logging.py primary
   obs/safe.py:
     tests:
       - test_obs_logging.py primary
@@ -659,31 +584,31 @@ mappings:
   # through it and this suite never exercises them. Frozen by the guard below.
   client/__init__.py:
     tests:
-      - test_facade_surface_guard.py
+      - test_source_invariants.py
   converters/__init__.py:
     tests:
-      - test_facade_surface_guard.py
+      - test_source_invariants.py
   helpers/__init__.py:
     tests:
-      - test_facade_surface_guard.py
+      - test_source_invariants.py
   metrics/__init__.py:
     tests:
-      - test_facade_surface_guard.py
+      - test_source_invariants.py
   registry/__init__.py:
     tests:
-      - test_facade_surface_guard.py
+      - test_source_invariants.py
   registry_backfill/__init__.py:
     tests:
-      - test_facade_surface_guard.py
+      - test_source_invariants.py
   storage/__init__.py:
     tests:
-      - test_facade_surface_guard.py
+      - test_source_invariants.py
   tools/__init__.py:
     tests:
-      - test_facade_surface_guard.py
+      - test_source_invariants.py
   worker/__init__.py:
     tests:
-      - test_facade_surface_guard.py
+      - test_source_invariants.py
 
   # ── Modules with no dedicated test file yet ─────────────────────────────────
   hash_cache_migrate.py:
@@ -699,10 +624,10 @@ mappings:
 standalone:
   scripts/rfc_lifecycle_lint.py:
     tests:
-      - test_rfc_lifecycle_lint.py    # D8 RFC lifecycle CI gate
+      - test_source_invariants.py    # D8 RFC lifecycle CI gate
   scripts/facade_surface_measure.py:
     tests:
-      - test_rfc045_facade_measurement.py    # RFC-045 D6 disposition rule
+      - test_source_invariants.py    # RFC-045 D6 disposition rule
   scripts/ocr_spike_eval.py:
     tests:
-      - test_ocr_spike_eval.py    # RFC-046 Wave 2 / D1 OCR eval
+      - test_ocr_fallback.py    # RFC-046 Wave 2 / D1 OCR eval

@@ -12,6 +12,15 @@ Consolidates (former test_zone6_*.py files):
   - late_success:         late-success reap-recovery regression
   - fallback_pipeline:    Candidate.has_depth / _heading_count / _run_stages
   - verdict_persistence:  five-writer verdict CAS + sidecar merge
+
+Also absorbs the former ``test_rfc_tables.py`` (RFC-029 table / quality-gate
+suite): NFKC normalization + bidi coherence, the low_content_density /
+suspect_density gates, fence & HR stripping, degenerate duplicate-cell row
+collapsing, picture-context retention, table-aware node segmentation, and the
+zero-body contamination gate.
+
+Table-driven tests loop internally and name every offending row, so one
+collected test carries the coverage a parametrize table did.
 """
 
 from __future__ import annotations
@@ -26,13 +35,20 @@ import pytest
 from pageindex_mcp.client import _dominant_orientation
 from pageindex_mcp.converters import (
     Candidate,
+    PictureResult,
     _candidate_from_document,
     _has_structural_depth,
     _heading_count,
+    _pre_inference_normalize,
+    _repair_docling_tables,
     _run_stages,
+    decide_rtl,
+    splice_figure_markers,
 )
 from pageindex_mcp.helpers import (
+    _RFC029_MIN_SCANNED_DENSITY_FLOOR,
     _RFC029_TABLE_SEGMENT_CHAR_THRESHOLD,
+    BULK_PROFILE,
     ScriptContext,
     TreeSignals,
     _gate_low_content_density,
@@ -41,9 +57,11 @@ from pageindex_mcp.helpers import (
     _strip_toc_heading_nodes_guarded,
     _tree_depth,
     _tree_node_count,
+    classify_verdict,
     prepare_tree,
     route_and_extract_flat,
     split_oversized_leaf_nodes,
+    validate_tree,
 )
 from pageindex_mcp.job_status import JobStatus, _job_key
 from pageindex_mcp.metrics import (
@@ -58,6 +76,7 @@ from pageindex_mcp.worker import (
     process_document_job,
     reap_stale_jobs,
 )
+from tests._garble_compat import check_garble
 from tests.conftest import filler_text
 
 # ===========================================================================
@@ -85,42 +104,28 @@ class TestDensityGate:
     """Shallow non-Arabic docs use 150 chars/node; deep trees (depth>=4) and
     Arabic-script docs lower to 50; node_count < 200 always bypasses."""
 
-    def test_below_150_fires(self):
-        sig = _make_sig(node_count=200, depth=2, chars=200 * 100)
-        fired, detail = _gate_low_content_density(
-            sig,
-            [],
-            ScriptContext(dominant_script=None, had_presentation_forms=False, source="test"),
-            10,
-            None,
+    def test_density_gate_threshold_table(self):
+        """Gate 9 firing decision across the node-count bypass, the standard
+        150 chars/node threshold, and the depth>=4 relaxation to 50."""
+        ctx = ScriptContext(
+            dominant_script=None, had_presentation_forms=False, source="test"
         )
-        assert fired, "Should fire: 100 chars/node < 150 threshold"
-        assert "threshold=150.0" in detail
+        cases = [
+            # name, node_count, depth, chars, expect_fired, detail_substring
+            ("100 chars/node shallow", 200, 2, 200 * 100, True, "threshold=150.0"),
+            ("80 chars/node depth=5", 200, 5, 200 * 80, False, None),
+            ("node_count=199 bypass", 199, 2, 199, False, None),
+        ]
 
-    def test_deep_tree_above_50_passes(self):
-        """200 nodes, depth=5, 80 chars/node -> passes deep threshold even
-        though it is below the standard 150 threshold."""
-        sig = _make_sig(node_count=200, depth=5, chars=200 * 80)
-        fired, _ = _gate_low_content_density(
-            sig,
-            [],
-            ScriptContext(dominant_script=None, had_presentation_forms=False, source="test"),
-            10,
-            None,
-        )
-        assert not fired, "Deep tree 80 chars/node should pass (> 50)"
-
-    def test_node_count_bypass_below_200(self):
-        """node_count < 200 must never fire, regardless of density."""
-        sig = _make_sig(node_count=199, depth=2, chars=199)
-        fired, _ = _gate_low_content_density(
-            sig,
-            [],
-            ScriptContext(dominant_script=None, had_presentation_forms=False, source="test"),
-            10,
-            None,
-        )
-        assert not fired, "node_count < 200 must gate entirely"
+        failures = []
+        for name, node_count, depth, chars, expect_fired, detail_sub in cases:
+            sig = _make_sig(node_count=node_count, depth=depth, chars=chars)
+            fired, detail = _gate_low_content_density(sig, [], ctx, 10, None)
+            if bool(fired) is not expect_fired:
+                failures.append(f"  [{name}] expected fired={expect_fired}, got={fired}")
+            elif detail_sub and detail_sub not in detail:
+                failures.append(f"  [{name}] detail missing {detail_sub!r}: {detail!r}")
+        assert not failures, "Gate 9 density regressions:\n" + "\n".join(failures)
 
 
 # ===========================================================================
@@ -142,26 +147,23 @@ class TestTocStripGuard:
     when depth_delta > 1 AND resulting_depth < 2; observability counter
     fires above 0.10 without aborting."""
 
-    def test_low_char_loss_allows_strip(self):
-        """ToC nodes that are mostly empty (< 15% char loss) allow the strip."""
+    def test_strip_proceeds_on_low_char_loss_and_depth_delta_1(self):
+        """ToC nodes that are mostly empty (< 15% char loss) allow the strip,
+        and a depth_delta of exactly 1 (NOT > 1) never trips the depth guard."""
         real_nodes = [_real_node(f"Art {i}", "x" * 200) for i in range(50)]
         toc_nodes = [_toc_node(f"Sec {i}") for i in range(5)]
         nodes = toc_nodes + real_nodes
 
         before_count = _tree_node_count(nodes)
         result = _strip_toc_heading_nodes_guarded(nodes, doc_name="test_low_char_loss")
-
         assert _tree_node_count(result) < before_count, "Low char-loss should allow strip"
 
-    def test_depth_drop_exactly_1_allows_strip(self):
-        """depth_delta == 1 -> NOT > 1, strip always proceeds."""
-        toc = _toc_node("OnlyToC")
-        root = _real_node("Root", "Real content with enough text.", nodes=[toc])
-        nodes = [root]
-
-        assert _tree_depth(nodes) == 2
-        result = _strip_toc_heading_nodes_guarded(nodes, doc_name="test_delta1")
-        assert _tree_node_count(result) <= _tree_node_count(nodes)
+        delta1 = [
+            _real_node("Root", "Real content with enough text.", nodes=[_toc_node("OnlyToC")])
+        ]
+        assert _tree_depth(delta1) == 2
+        delta1_result = _strip_toc_heading_nodes_guarded(delta1, doc_name="test_delta1")
+        assert _tree_node_count(delta1_result) <= _tree_node_count(delta1)
 
 
 # ===========================================================================
@@ -191,7 +193,8 @@ def _make_table_node(n_data_rows: int) -> dict:
 
 
 class TestPrepareTreeOrientation:
-    """prepare_tree threads its orientation kwarg through to _segment_table_nodes."""
+    """prepare_tree threads its orientation kwarg through to _segment_table_nodes;
+    _dominant_orientation derives orientation from per-page landscape data."""
 
     def test_default_none_preserves_behavior(self):
         node = _make_table_node(n_data_rows=7)
@@ -207,12 +210,6 @@ class TestPrepareTreeOrientation:
         assert result_none == result_manual, (
             "prepare_tree(orientation=None) must match manual split+segment"
         )
-
-
-class TestDominantOrientation:
-    """_dominant_orientation derives orientation from per-page landscape data."""
-
-    def test_none_input(self):
         assert _dominant_orientation(None) is None
 
 
@@ -291,35 +288,38 @@ class TestSplitterGenericTiers:
         )
         assert _full_text(node) == text
 
-    def test_lis_guard_rejects_out_of_order_numbers(self):
-        """Numbers 5/2/8/1 are not monotonically increasing -> no split."""
+    def test_generic_numbered_split_guards(self):
+        """_split_on_generic_numbered_lines refuses a non-monotonic number run
+        (LIS guard) and collapses lines closer together than min_seg_chars."""
         body = _text_of_length(18000)
-        text = f"Preamble.\n5. {body}\n2. {body}\n8. {body}\n1. {body}"
-        node = _make_leaf(text)
-        result = _split_on_generic_numbered_lines(node, text, max_chars=100000, min_segments=3)
-        assert result is False, "Out-of-order numbers should be rejected by LIS guard"
+        out_of_order = f"Preamble.\n5. {body}\n2. {body}\n8. {body}\n1. {body}"
+        node = _make_leaf(out_of_order)
+        assert (
+            _split_on_generic_numbered_lines(
+                node, out_of_order, max_chars=100000, min_segments=3
+            )
+            is False
+        ), "Out-of-order numbers should be rejected by LIS guard"
         assert node["nodes"] == []
 
-    def test_min_seg_chars_collapses_dense_references(self):
-        """min_seg_chars=5000 collapses lines that sit closer than that."""
         short = _text_of_length(1000)
         long_body = _text_of_length(20000)
-        text = (
+        dense = (
             "Preamble.\n"
             + "".join(f"{i}. {short}\n" for i in range(1, 9))
             + f"9. {long_body}\n10. {long_body}\n11. {long_body}"
         )
-        node = _make_leaf(text)
+        dense_node = _make_leaf(dense)
         result = _split_on_generic_numbered_lines(
-            node, text, max_chars=100000, min_segments=3, min_seg_chars=5000
+            dense_node, dense, max_chars=100000, min_segments=3, min_seg_chars=5000
         )
-
         if result:
-            assert len(node["nodes"]) < 11, (
-                f"Expected < 11 children after min_seg_chars collapse, got {len(node['nodes'])}"
+            assert len(dense_node["nodes"]) < 11, (
+                f"Expected < 11 children after min_seg_chars collapse, "
+                f"got {len(dense_node['nodes'])}"
             )
         else:
-            assert node["nodes"] == []
+            assert dense_node["nodes"] == []
 
 
 # ===========================================================================
@@ -399,37 +399,36 @@ class TestReapDynamicTimeout:
     def ctx(self, mock_redis):
         return {"redis": mock_redis}
 
-    async def test_job_with_future_deadline_not_reaped(self, ctx, mock_redis):
-        now = int(time.time())
-        job_key = _job_key("job-future")
-        mock_redis.scan_iter = _make_scan_iter([job_key])
-        mock_redis.hgetall.return_value = _make_job_hash(
-            processing_started_at=str(now - 100),
-            effective_timeout_at=str(now + 3600),
-        )
-
-        await reap_stale_jobs(ctx)
-
-        mock_redis.hset.assert_not_called()
-
-    async def test_16_5x_multiplier_window_not_reaped(self, ctx, mock_redis):
-        """A scanned-PDF job with a 16.5x timeout budget is not reaped
-        within that extended window."""
+    async def test_effective_timeout_at_is_respected(self, ctx, mock_redis):
+        """A job whose effective_timeout_at is still in the future is not
+        reaped -- both for an ordinary deadline and for the 16.5x scanned-PDF
+        budget window."""
         now = int(time.time())
         effective_timeout = CHILD_TIMEOUT * 16.5
-        started = now - int(effective_timeout * 0.9)
-        deadline = started + int(effective_timeout) + REAP_GRACE
+        scanned_started = now - int(effective_timeout * 0.9)
+        scanned_deadline = scanned_started + int(effective_timeout) + REAP_GRACE
 
-        job_key = _job_key("job-scanned")
-        mock_redis.scan_iter = _make_scan_iter([job_key])
-        mock_redis.hgetall.return_value = _make_job_hash(
-            processing_started_at=str(started),
-            effective_timeout_at=str(deadline),
-        )
+        cases = [
+            ("ordinary future deadline", "job-future", str(now - 100), str(now + 3600)),
+            (
+                "16.5x scanned-pdf window",
+                "job-scanned",
+                str(scanned_started),
+                str(scanned_deadline),
+            ),
+        ]
 
-        await reap_stale_jobs(ctx)
+        for name, job_id, started, deadline in cases:
+            mock_redis.hset.reset_mock()
+            mock_redis.scan_iter = _make_scan_iter([_job_key(job_id)])
+            mock_redis.hgetall.return_value = _make_job_hash(
+                processing_started_at=started,
+                effective_timeout_at=deadline,
+            )
 
-        mock_redis.hset.assert_not_called()
+            await reap_stale_jobs(ctx)
+
+            assert not mock_redis.hset.called, f"[{name}] job was reaped before its deadline"
 
 
 # ===========================================================================
@@ -455,20 +454,18 @@ class TestFenceObservability:
     """Orphan-close and unclosed-at-EOF fences fire counters + never lose
     content; balanced fences produce no warnings."""
 
-    def test_orphan_close_fires_warning(self, caplog):
-        md = "```\nSome content here.\nMore content."
+    def test_fence_parity_warns_without_losing_content(self, caplog):
+        """An orphan closing fence increments FENCE_PARITY_WARNING and logs,
+        and an unclosed fence at EOF never drops surrounding content."""
         before = _fence_warning_count("orphan_close")
-
-        content_class, blocks = route_and_extract_flat(md)
-
+        route_and_extract_flat("```\nSome content here.\nMore content.")
         after = _fence_warning_count("orphan_close")
         assert after > before, "FENCE_PARITY_WARNING(orphan_close) must increment"
         assert "fence_parity" in caplog.text.lower() or "orphan" in caplog.text.lower()
 
-    def test_unclosed_fence_preserves_content(self):
-        md = "Before fence.\n```python\ndef hello():\n    pass\nAfter fence."
-        _, blocks = route_and_extract_flat(md)
-
+        _, blocks = route_and_extract_flat(
+            "Before fence.\n```python\ndef hello():\n    pass\nAfter fence."
+        )
         text = _all_text(blocks)
         assert "Before fence" in text
         assert "hello" in text or "pass" in text
@@ -583,29 +580,24 @@ class TestLateSuccessReapRecovery:
 
 class TestCandidateHasDepth:
     """Candidate.has_depth caches _has_structural_depth(md) at construction
-    time so the selection block reads it declaratively."""
+    time; _heading_count is the thin wrapper consolidating the repeated
+    len(_HEADING_RE.findall(md)) patterns."""
 
-    def test_multi_heading_deep_tree_has_depth_true(self):
-        md = "# Title\n\n## Section A\n\nBody A.\n\n## Section B\n\nBody B.\n\n## Section C\n\nBody C."
+    def test_has_depth_and_heading_count(self):
+        md = (
+            "# Title\n\n## Section A\n\nBody A.\n\n"
+            "## Section B\n\nBody B.\n\n## Section C\n\nBody C."
+        )
         c = _candidate_from_document(md, {}, "/fake.pdf")
         assert c.has_depth is True
         assert c.has_depth == _has_structural_depth(c.md)
 
-    def test_has_depth_default_is_false(self):
-        """Default value for has_depth is False (safe fallback for callers
-        that construct Candidate with only md=)."""
-        c = Candidate(md="# A\n\n## B\n\n## C\n\n## D")
-        assert c.has_depth is False
+        # Default value is False -- the safe fallback for callers that
+        # construct Candidate with only md=.
+        assert Candidate(md="# A\n\n## B\n\n## C\n\n## D").has_depth is False
 
-
-class TestHeadingCountHelper:
-    """_heading_count is a thin wrapper consolidating repeated
-    len(_HEADING_RE.findall(md)) patterns."""
-
-    def test_headings_only_at_line_start(self):
-        """Inline hash marks are not headings."""
-        md = "Some text with # not a heading\n# Real heading"
-        assert _heading_count(md) == 1
+        # Inline hash marks are not headings.
+        assert _heading_count("Some text with # not a heading\n# Real heading") == 1
 
 
 class TestRunStagesRegression:
@@ -795,3 +787,461 @@ class TestRegistryBackfillPropagationOnly:
 class TestSqlVerdictFilter:
     """list_docs / count_docs / stage_a_filter SQL all exclude both 'FAIL'
     and '' (empty string) verdicts."""
+
+
+# ===========================================================================
+# 11. RFC-029: NFKC normalization + bidi coherence (converters)
+# ===========================================================================
+
+
+def _t_leaf(title: str, text: str) -> dict:
+    """Return a leaf node (no children)."""
+    return {"title": title, "text": text}
+
+
+def _t_branch(title: str, text: str, children: list[dict]) -> dict:
+    """Return an internal node with the given children."""
+    return {"title": title, "text": text, "nodes": children}
+
+
+def _t_prose(n: int, prefix: str = "Paragraph text. ") -> str:
+    """Return a prose string of at least *n* characters."""
+    repeats = (n // len(prefix)) + 1
+    return (prefix * repeats)[:n]
+
+
+class TestNFKCCanonicalization:
+    """_pre_inference_normalize / decide_rtl."""
+
+    def test_presentation_forms_normalized_ascii_preserved(self):
+        """U+FB50/U+FB51 (Arabic Presentation Form-A) decompose under NFKC to
+        their canonical forms, and interleaved ASCII survives untouched."""
+        result, _ = _pre_inference_normalize("ﭐﭑ")
+        assert "ﭐ" not in result and "ﭑ" not in result
+        for ch in result:
+            assert not ("ﭐ" <= ch <= "﷿")
+
+        mixed, _ = _pre_inference_normalize("Prefix ﭐﭑ suffix")
+        assert "Prefix " in mixed
+        assert " suffix" in mixed
+        assert "ﭐ" not in mixed
+
+    def test_presentation_forms_signal_is_ratio_gated_and_pre_nfkc(self):
+        """D6 + RFC-046 D5: had_presentation_forms is captured BEFORE NFKC
+        destroys the codepoints, and is ratio-gated -- PF must dominate (>50%
+        of Arabic chars) for the signal to be True, while NFKC still runs
+        either way."""
+        import unicodedata
+
+        pf_char = "ﭐ"
+        dominant = "اب" + pf_char * 10
+        assert sum(1 for c in dominant if 0xFB50 <= ord(c) <= 0xFDFF) > 0
+        assert (
+            sum(1 for c in unicodedata.normalize("NFKC", dominant) if 0xFB50 <= ord(c) <= 0xFDFF)
+            == 0
+        ), "NFKC must decompose U+FB50"
+
+        _, rtl = _pre_inference_normalize(dominant)
+        assert rtl is not None
+        assert rtl.had_presentation_forms is True
+
+        minority = "".join(chr(c) for c in range(0x0620, 0x0640)) + pf_char
+        result, rtl_min = _pre_inference_normalize(minority)
+        assert "ﭐ" not in result, "NFKC must still decompose the PF char"
+        assert rtl_min is not None
+        assert rtl_min.had_presentation_forms is False
+
+    def test_low_arabic_ratio_line_not_flagged_reversed(self):
+        """Zone-3: _check_bidi_coherence was deleted; its sole signal was
+        decide_rtl(...).reversed.  Mostly-ASCII text with sparse Arabic must
+        not trigger detection."""
+        assert not decide_rtl("hello world foo bar baz qux مر").reversed
+
+
+# ===========================================================================
+# 12. RFC-029: low_content_density / suspect_density gates (validate_tree)
+# ===========================================================================
+
+
+def _low_density_tree(n_nodes: int = 210, chars_per_node: int = 5) -> list[dict]:
+    """Build a tree with *n_nodes* total nodes each carrying *chars_per_node* chars."""
+    leaves = [_t_leaf(f"L{i}", filler_text(chars_per_node, i)) for i in range(n_nodes - 1)]
+    branch = _t_branch("Section1", filler_text(chars_per_node, n_nodes), leaves)
+    return [{"title": "Root", "text": filler_text(chars_per_node, n_nodes + 1), "nodes": [branch]}]
+
+
+def _safe_repetitive_content(length: int) -> str:
+    """Return *length* chars of short varied words that pass all garbling checks."""
+    token_cycle = "the and for are but "
+    return (token_cycle * ((length // len(token_cycle)) + 1))[:length]
+
+
+def _varied_arabic_text(length: int) -> str:
+    """Return *length* chars of varied Arabic-script words (no repetition/digit noise)."""
+    arabic_letters = "ابتثجحخدذرزسشصضطظعغفقكلمنهوي"
+    words = []
+    for i in range(200):
+        word_len = (i % 5) + 2
+        words.append(
+            "".join(arabic_letters[(i * 3 + j * 7) % len(arabic_letters)] for j in range(word_len))
+        )
+    base = " ".join(words) + " "
+    return (base * ((length // len(base)) + 1))[:length]
+
+
+def _sparse_tree(content: str) -> list[dict]:
+    """Build a minimal valid tree (depth >= 2, nodes >= 3) with the given content."""
+    half = len(content) // 2
+    leaf_text = content[half:]
+    per_leaf = len(leaf_text) // 5
+    leaves = [_t_leaf(f"Leaf{i}", leaf_text[i * per_leaf : (i + 1) * per_leaf]) for i in range(5)]
+    return [{"title": "Root", "text": "", "nodes": [_t_branch("Section", content[:half], leaves)]}]
+
+
+def _canonical_pass_tree(index: int, repeat: int = 20) -> list[dict]:
+    """Return a small, well-distributed PASS-shape tree."""
+    children = [
+        _t_leaf(f"T{index}-Sub{j}", f"Body text for subsection {index}-{j}. " * repeat)
+        for j in range(5)
+    ]
+    section = _t_branch(
+        f"Section {index}", f"Section {index} overview paragraph. " * repeat, children
+    )
+    return [{"title": f"Document {index}", "text": "Preamble.", "nodes": [section]}]
+
+
+class TestLowContentDensityGate:
+    """validate_tree's node-count-driven low_content_density gate."""
+
+    def test_low_density_tree_fails_at_and_above_200_nodes(self):
+        """A 200+ node tree with only a few chars per node fails validation,
+        and the gate fires at exactly total_nodes == 200."""
+        ok, _reason = validate_tree(_low_density_tree(n_nodes=210, chars_per_node=5))
+        assert ok is False
+
+        ok_200, reason_200 = validate_tree(_low_density_tree(n_nodes=200, chars_per_node=1))
+        assert ok_200 is False
+        assert reason_200.startswith("low_content_density")
+
+
+class TestSuspectDensityGate:
+    """42 pages x 48 000 chars -> 1142.9 chars/page < 1200 floor."""
+
+    PAGE_COUNT = 42
+    TOTAL_CHARS = 48_000
+
+    def test_suspect_density_fires_below_floor_not_at_it(self):
+        """Below the scanned-density floor the gate fires with a chars_per_page
+        detail; exactly at the floor it must NOT fire (strictly-less-than)."""
+        tree = _sparse_tree(_safe_repetitive_content(self.TOTAL_CHARS))
+        ok, reason = validate_tree(tree, page_count=self.PAGE_COUNT)
+        assert ok is False
+        assert reason.startswith("suspect_density")
+        assert "chars_per_page=" in reason
+
+        at_floor = self.PAGE_COUNT * int(_RFC029_MIN_SCANNED_DENSITY_FLOOR)
+        _ok, at_floor_reason = validate_tree(
+            _sparse_tree(_safe_repetitive_content(at_floor)), page_count=self.PAGE_COUNT
+        )
+        assert "suspect_density" not in at_floor_reason
+
+    def test_canonical_pass_trees_never_trip_suspect_density(self):
+        """Well-formed trees with substantial content must not trip the
+        density gate even when page_count is supplied."""
+        offenders = []
+        for index in range(3):
+            _ok, reason = validate_tree(_canonical_pass_tree(index, repeat=60), page_count=5)
+            if "suspect_density" in reason:
+                offenders.append(f"  [tree {index}] {reason}")
+        assert not offenders, "canonical PASS trees tripped suspect_density:\n" + "\n".join(
+            offenders
+        )
+
+
+class TestArabicLowContentRatioGate:
+    """SCOPE REDUCTION: validate_tree's check_garble(TREE_BULK) call and the
+    later arabic_low_content_ratio check share the same expected_script and
+    flattened text, so any input tripping _is_garbled_blob at the ratio check
+    would already have been caught by check_garble first.  This calls
+    check_garble directly (the mechanism the gate delegates to)."""
+
+    def test_check_garble_flags_digit_dominated_arabic_text(self):
+        """>60% digit blob over 500 chars must be flagged garbled."""
+        total = 2000
+        arabic_count = int(total * 0.35)
+        digit_count = total - arabic_count
+        arabic_part = _varied_arabic_text(arabic_count)
+        digit_part = ("1234567890" * ((digit_count // 10) + 1))[:digit_count]
+        chunk = 5
+        parts = []
+        ai = di = 0
+        while ai < len(arabic_part) or di < len(digit_part):
+            if ai < len(arabic_part):
+                parts.append(arabic_part[ai : ai + chunk])
+                ai += chunk
+            if di < len(digit_part):
+                parts.append(digit_part[di : di + chunk])
+                di += chunk
+        blob = "".join(parts)[:total]
+
+        assert check_garble(blob, expected_script=None, profile=BULK_PROFILE) is True
+
+
+# ===========================================================================
+# 13. RFC-029/030: fence + HR handling in route_and_extract_flat
+# ===========================================================================
+
+
+def _block_texts(blocks: list[dict]) -> list[str]:
+    return [b["text"] for b in blocks if "text" in b]
+
+
+class TestFenceAndHRStripping:
+    """RFC-030 D0 superseded RFC-029 D3's fence-parity toggle: only the fence
+    delimiter lines are stripped, enclosed content falls through."""
+
+    def test_hr_and_fence_delimiters_strip_without_losing_content(self):
+        """HRs of 4+ repeated characters are stripped, fenced content and the
+        line right after a closing fence are still emitted, and plain markdown
+        gains no spurious blocks."""
+        _cc, hr_blocks = route_and_extract_flat(
+            "Before.\n\n------\n\nMiddle.\n\n======\n\nAfter.\n"
+        )
+        hr_text = " ".join(_block_texts(hr_blocks))
+        assert "------" not in hr_text and "======" not in hr_text
+        for token in ("Before.", "Middle.", "After."):
+            assert token in hr_text
+
+        _cc2, fence_blocks = route_and_extract_flat("```\nformerly hidden\n```\nVisible line.\n")
+        fence_text = " ".join(_block_texts(fence_blocks))
+        assert "formerly hidden" in fence_text
+        assert "Visible line." in fence_text
+
+        _cc3, plain_blocks = route_and_extract_flat("A single sentence.")
+        assert len(plain_blocks) == 1
+        assert plain_blocks[0]["role"] == "prose"
+        assert "A single sentence." in plain_blocks[0]["text"]
+
+
+# ===========================================================================
+# 14. RFC-029: degenerate duplicate-cell row collapsing (_repair_docling_tables)
+# ===========================================================================
+
+
+def _t_pipe_table(header_cells: list[str], data_rows: list[list[str]]) -> str:
+    """Build a minimal GFM pipe table string."""
+    n = len(header_cells)
+    header = "| " + " | ".join(header_cells) + " |"
+    sep = "| " + " | ".join("---" for _ in range(n)) + " |"
+    rows = ["| " + " | ".join(row) + " |" for row in data_rows]
+    return "\n".join([header, sep] + rows)
+
+
+def _data_lines(result: str) -> list[str]:
+    return [ln for ln in result.splitlines() if ln.startswith("|") and "---" not in ln]
+
+
+class TestDegenerateRowCollapsing:
+    """_repair_docling_tables collapses all-identical rows of >3 columns."""
+
+    def test_distinct_values_kept_identical_columns_collapsed(self):
+        """Legit rows with distinct per-column values pass through unchanged
+        (modulo whitespace normalisation); a 4-column all-identical row
+        (count == 4, strictly > 3) MUST collapse to a single cell."""
+        distinct = _t_pipe_table(
+            ["Name", "Wert", "Einheit"], [["Alpha", "1.0", "kg"], ["Beta", "2.0", "m"]]
+        )
+        distinct_rows = _data_lines(_repair_docling_tables(distinct))[1:]
+        assert len(distinct_rows) == 2
+        assert [c.strip() for c in distinct_rows[0].split("|") if c.strip()] == [
+            "Alpha",
+            "1.0",
+            "kg",
+        ]
+
+        identical = (
+            "| A | B | C | D |\n| --- | --- | --- | --- |\n"
+            "| p | q | r | s |\n| val | val | val | val |\n"
+        )
+        collapsed = _data_lines(_repair_docling_tables(identical))[2:]
+        assert [c.strip() for c in collapsed[0].split("|") if c.strip()] == ["val"]
+
+    def test_separator_normalised_and_surrounding_prose_untouched(self):
+        """``|:---:|`` alignment syntax is re-emitted as ``| --- |``, and prose
+        lines interleaved with a table are left alone while the table is
+        normalised."""
+        sep_lines = _repair_docling_tables("| Col |\n|:---:|\n| val |\n").splitlines()
+        assert next(ln for ln in sep_lines if "---" in ln) == "| --- |"
+
+        mixed = (
+            "Introduction paragraph.\n"
+            "| A | B | C | D | E |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| p | q | r | s | t |\n"
+            "| x | x | x | x | x |\n"
+            "Concluding paragraph.\n"
+        )
+        result = _repair_docling_tables(mixed)
+        lines = result.splitlines()
+        assert lines[0] == "Introduction paragraph."
+        assert lines[-1] == "Concluding paragraph."
+        collapsed = _data_lines(result)[2:]
+        assert [c.strip() for c in collapsed[0].split("|") if c.strip()] == ["x"]
+
+
+# ===========================================================================
+# 15. RFC-029 Wave 9: picture-context retention (splice_figure_markers)
+# ===========================================================================
+
+_MARKER = "<!-- image -->"
+
+
+class TestSpliceFigureMarkers:
+    """Retained-skip results keep their chart text; an empty-OCR result still
+    resolves the marker; a truly empty result leaves the raw marker neutral."""
+
+    def test_splice_figure_marker_variants(self):
+        ocr = "Revenue grew 12% YoY"
+        retained: PictureResult = {
+            "ocr_text": ocr,
+            "png_bytes": b"\x89PNG\r\n",
+            "skipped_reason": "clip_text_already_exported",
+            "page": 1,
+            "bbox": {"l": 10, "t": 20, "r": 100, "b": 80},
+        }
+        retained_out = splice_figure_markers(f"Intro.\n\n{_MARKER}\n\nTrailing.", [retained])
+        assert "[Figure: fig-0]" in retained_out
+        assert f"> [Chart text]: {ocr}" in retained_out
+
+        # Below/at threshold, empty ocr_text (Tesseract unavailable) with only
+        # png_bytes still resolves the marker without a [Chart text] block.
+        # This is the semantic of the D5b else-branch in client.py; the
+        # end-to-end path needs OpenAI + Docling + MinIO and is not run here.
+        png_only: PictureResult = {
+            "ocr_text": "",
+            "page": 1,
+            "bbox": {"l": 0, "t": 0, "r": 0, "b": 0},
+            "png_bytes": b"\xff\xd8\xff",
+        }
+        png_out = splice_figure_markers(f"Preamble.\n\n{_MARKER}\n\nPostamble.", [png_only])
+        assert "[Figure: fig-0]" in png_out
+        assert "> [Chart text]:" not in png_out
+
+        # An entirely empty PictureResult with no skip flag keeps the raw
+        # marker neutral (falls through to `return m.group(0)`).
+        empty: PictureResult = {}
+        assert _MARKER in splice_figure_markers(f"Text.\n\n{_MARKER}\n\nEnd.", [empty])
+
+
+# ===========================================================================
+# 16. RFC-029: table-aware node segmentation (_segment_table_nodes)
+# ===========================================================================
+
+_THRESHOLD = 2000  # mirrors _RFC029_TABLE_SEGMENT_CHAR_THRESHOLD default
+
+
+def _pipe_table_rows(n_data_rows: int, n_cols: int = 3, has_header: bool = True) -> str:
+    """Build a GFM pipe table with the requested number of data rows."""
+    lines: list[str] = []
+    if has_header:
+        lines.append("| " + " | ".join(f"Col{i}" for i in range(n_cols)) + " |")
+    lines.append("| " + " | ".join("---" for _ in range(n_cols)) + " |")
+    for r in range(n_data_rows):
+        lines.append("| " + " | ".join(f"r{r}c{c}" for c in range(n_cols)) + " |")
+    return "\n".join(lines)
+
+
+class TestTableSegmentationPrimary:
+    """The char threshold gates segmentation; 5 data rows is the min row count."""
+
+    def test_char_threshold_and_min_row_count(self):
+        """A node under 2000 chars total (even with a pipe table) must NOT
+        split; a node over the threshold with exactly 5 data rows (== min)
+        MUST split."""
+        short = _t_prose(700) + "\n" + _pipe_table_rows(n_data_rows=10)
+        assert len(short) < _THRESHOLD
+        short_node = _segment_table_nodes([_t_leaf("Short Section", short)])[0]
+        assert short_node.get("nodes", []) == []
+        assert short_node["text"] == short
+
+        long_text = _t_prose(2100) + "\n" + _pipe_table_rows(n_data_rows=5)
+        long_node = _segment_table_nodes([_t_leaf("Five Row Section", long_text)])[0]
+        assert len(long_node.get("nodes", [])) >= 2
+
+
+class TestTableSegmentationHeaderSynthesis:
+    def test_headerless_table_gets_synthesized_title(self):
+        """When the table has no explicit header row, a non-empty title is
+        synthesized (either the first non-separator pipe row's text, or a
+        ``Table: <parent title>`` fallback)."""
+        combined = _t_prose(2100) + "\n" + _pipe_table_rows(n_data_rows=10, has_header=False)
+        result = _segment_table_nodes([_t_leaf("Haftpflicht Abschnitt 3", combined)])
+        children = result[0].get("nodes", [])
+
+        table_children = [
+            c for c in children if any(ln.strip().startswith("|") for ln in c["text"].splitlines())
+        ]
+        assert len(table_children) >= 1
+        assert table_children[0]["title"], "table child title must not be empty"
+
+
+class TestHABShapeRegression:
+    """Representative Haftpflicht-Allgemeine-Bedingungen table-in-node shape:
+    moderate prose + 15-row table. Verifies no content is lost across split."""
+
+    def test_hab_node_splits_with_no_content_loss(self):
+        preamble = (
+            "§ 4 Versicherte Tätigkeiten\n\n"
+            "Der Versicherungsschutz umfasst die im Versicherungsschein "
+            "beschriebenen Tätigkeiten des Versicherungsnehmers. "
+            "Eingeschlossen sind auch Tätigkeiten, die zur unmittelbaren "
+            "Vorbereitung oder Durchführung der versicherten Tätigkeit "
+            "gehören, soweit sie nicht ausdrücklich ausgeschlossen sind.\n\n"
+            "Tabelle der versicherten Deckungssummen:\n"
+        )
+        extra = _t_prose(max(0, _THRESHOLD - len(preamble) - 50), prefix="Zusatztext. ")
+        combined = preamble + extra + "\n" + _pipe_table_rows(n_data_rows=15, n_cols=4)
+        node = _t_leaf("§ 4 Versicherte Tätigkeiten", combined)
+        assert len(combined) > _THRESHOLD
+
+        children = _segment_table_nodes([node])[0].get("nodes", [])
+        assert len(children) >= 2, f"HAB-shape node was not split; text len={len(combined)}"
+        joined = "\n".join(c["text"] for c in children)
+        assert joined.replace("\n", "") == combined.replace("\n", "")
+
+
+# ===========================================================================
+# 17. RFC-029: zero-body contamination gate (validate_tree / classify_verdict)
+# ===========================================================================
+
+
+class TestClassifyVerdictFailOnContamination:
+    def test_classify_verdict_returns_fail_preserving_reason(self):
+        """classify_verdict returns 'FAIL' with the full contamination reason
+        string (no promotion branch overrides a hard-FAIL gate).
+
+        The tree carries 91 non-root nodes of which 30 have an empty
+        title+body: fraction = 30/91 ~= 0.33, over the 0.30 threshold.
+        """
+        branches = []
+        for i in range(10):
+            leaves = [
+                _t_leaf(f"A{i}L{j}", f"content {i}-{j}") if j < 2 else {"title": "", "text": ""}
+                for j in range(4)
+            ]
+            branches.append({"title": "", "text": "", "nodes": leaves})
+        root_a = {"title": "Root A", "text": "section intro", "nodes": branches}
+
+        content_leaves = [_t_leaf(f"BLeaf{k}", f"paragraph {k}") for k in range(40)]
+        content_branch = _t_branch("Content Branch", "good content", content_leaves)
+        root_b = {"title": "Root B", "text": "section b", "nodes": [content_branch]}
+
+        tree = [root_a, root_b]
+        gate_result = validate_tree(tree)
+
+        verdict, reason = classify_verdict(
+            structure=tree, content_class="structured", validate_result=gate_result
+        )
+
+        assert verdict == "FAIL"
+        assert reason.startswith("empty_node_contamination")

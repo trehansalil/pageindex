@@ -156,3 +156,12 @@ def filler_text(n_chars: int, seed: int) -> str:
     # Never end on whitespace: callers assert on char counts that are measured
     # after a strip(), so a trailing space would silently shorten the fixture.
     return out[:-1] + "s" if out.endswith(" ") else out
+
+@pytest.fixture
+def fake_cache_redis(fake_redis_sync):
+    """Patch the cache module's sync Redis client with the fake.
+
+    Shared: tests/test_cache.py and tests/test_storage.py both use it.
+    """
+    with patch("pageindex_mcp.cache._redis_sync", fake_redis_sync):
+        yield fake_redis_sync

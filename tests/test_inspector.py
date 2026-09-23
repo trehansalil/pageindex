@@ -3,11 +3,11 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
-import os
 import random
+import re
 import string
-import tempfile
 from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -89,142 +89,147 @@ def _make_pdfium_mock(page_count: int):
 # ---------------------------------------------------------------------------
 
 
-class TestProbeWithPdfInspector:
-    def test_text_based_classification_returned(self, tmp_path):
-        pdf_path = str(tmp_path / "test.pdf")
-        (tmp_path / "test.pdf").write_bytes(b"%PDF-1.4 fake")
+class TestProbeConversionRoute:
+    """probe_conversion_route: classification mapping, shadow-mode routing, and
+    graceful degradation when the input is not a PDF."""
 
+    _CASES = {
+        "text_based": (
+            FakePdfResult(),
+            5,
+            {
+                "pdf_type": "text_based",
+                "confidence": 0.98,
+                "pages_needing_ocr": [],
+                "has_encoding_issues": False,
+            },
+        ),
+        "mixed": (
+            FakeMixedResult(),
+            20,
+            {
+                "pdf_type": "mixed",
+                "confidence": 0.85,
+                "pages_needing_ocr": [5, 12, 18],
+                "has_encoding_issues": True,
+            },
+        ),
+        "scanned": (
+            FakeScannedResult(),
+            10,
+            {
+                "pdf_type": "scanned",
+                "confidence": 0.91,
+                "pages_needing_ocr": [1, 2, 3],
+                "has_encoding_issues": False,
+            },
+        ),
+    }
+
+    def test_every_verdict_is_mapped_through_and_none_of_them_changes_the_route(self, tmp_path):
+        """Each pdf-inspector verdict reaches the classification dict intact,
+        and routing stays in shadow mode for all three — a scanned PDF still
+        goes to Docling with chunk_count 1."""
+        failures = []
+        for label, (fake, page_count, expected) in self._CASES.items():
+            pdf_path = tmp_path / f"{label}.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4 fake")
+            with (
+                patch("pageindex_mcp.converters.docling_conv._pdf_inspector_available", True),
+                patch("pageindex_mcp.converters.docling_conv._detect_pdf", return_value=fake),
+                patch.dict("sys.modules", {"pypdfium2": _make_pdfium_mock(page_count)}),
+                patch("pageindex_mcp.config.MAX_DOCLING_PAGES", 150),
+            ):
+                from pageindex_mcp.converters import probe_conversion_route
+
+                chunk_count, is_docling, classification, _pre = probe_conversion_route(
+                    str(pdf_path)
+                )
+            if (chunk_count, is_docling) != (1, True):
+                failures.append(
+                    f"{label}: routing changed — chunk_count={chunk_count} is_docling={is_docling}"
+                )
+            if classification is None:
+                failures.append(f"{label}: no classification returned")
+                continue
+            for key, want in expected.items():
+                got = classification.get(key)
+                if got != want:
+                    failures.append(f"{label}.{key} == {got!r}, want {want!r}")
+        assert not failures, "; ".join(failures)
+
+        # The same mapping, called directly on the function probe_conversion_route
+        # delegates to.
         with (
             patch("pageindex_mcp.converters.docling_conv._pdf_inspector_available", True),
             patch(
                 "pageindex_mcp.converters.docling_conv._detect_pdf", return_value=FakePdfResult()
             ),
-            patch.dict("sys.modules", {"pypdfium2": _make_pdfium_mock(5)}),
-            patch("pageindex_mcp.config.MAX_DOCLING_PAGES", 150),
         ):
-            from pageindex_mcp.converters import probe_conversion_route
+            from pageindex_mcp.converters import _run_pdf_inspector
 
-            chunk_count, is_docling, classification, _pre = probe_conversion_route(pdf_path)
+            direct = _run_pdf_inspector(str(tmp_path / "text_based.pdf"))
+        assert direct is not None
+        assert direct["pdf_type"] == "text_based"
+        assert direct["confidence"] == 0.98
+        assert isinstance(direct["pages_needing_ocr"], list)
 
-        assert chunk_count == 1
-        assert is_docling is True
-        assert classification is not None
-        assert classification["pdf_type"] == "text_based"
-        assert classification["confidence"] == 0.98
-        assert classification["pages_needing_ocr"] == []
-        assert classification["has_encoding_issues"] is False
-
-    def test_mixed_classification_with_encoding_issues(self, tmp_path):
-        pdf_path = str(tmp_path / "mixed.pdf")
-        (tmp_path / "mixed.pdf").write_bytes(b"%PDF-1.4 fake")
-
-        with (
-            patch("pageindex_mcp.converters.docling_conv._pdf_inspector_available", True),
-            patch(
-                "pageindex_mcp.converters.docling_conv._detect_pdf", return_value=FakeMixedResult()
-            ),
-            patch.dict("sys.modules", {"pypdfium2": _make_pdfium_mock(20)}),
-            patch("pageindex_mcp.config.MAX_DOCLING_PAGES", 150),
-        ):
-            from pageindex_mcp.converters import probe_conversion_route
-
-            _, _, classification, _pre = probe_conversion_route(pdf_path)
-
-        assert classification["pdf_type"] == "mixed"
-        assert classification["has_encoding_issues"] is True
-        assert classification["pages_needing_ocr"] == [5, 12, 18]
-
-
-# ---------------------------------------------------------------------------
-# 2. probe_conversion_route: graceful degradation without pdf-inspector
-# ---------------------------------------------------------------------------
-
-
-class TestProbeWithoutPdfInspector:
-    def test_non_pdf_returns_none_classification(self):
+    def test_non_pdf_returns_no_classification(self):
         from pageindex_mcp.converters import probe_conversion_route
 
-        chunk_count, is_docling, classification, pre_classification = probe_conversion_route("readme.md")
-        assert chunk_count == 1
-        assert is_docling is False
-        assert classification is None
-        assert pre_classification is None
+        assert probe_conversion_route("readme.md") == (1, False, None, None)
 
 
 # ---------------------------------------------------------------------------
-# 3. Shadow mode: routing unchanged regardless of classification
+# Handshake: converters_cli emits pdf_classification, the worker reads it back
 # ---------------------------------------------------------------------------
 
 
-class TestShadowModeRouting:
-    def test_scanned_pdf_still_routes_to_docling(self, tmp_path):
-        pdf_path = str(tmp_path / "scan.pdf")
-        (tmp_path / "scan.pdf").write_bytes(b"%PDF-1.4 fake")
+class TestHandshakeClassificationContract:
+    def test_every_field_the_worker_reads_is_a_field_the_inspector_emits(self, tmp_path):
+        """The classification crosses a process boundary as JSON, so nothing
+        type-checks the pairing: converters_cli writes ``pdf_classification``
+        into the handshake payload and worker/subprocess_mgr reads named
+        sub-fields back out of it.
 
+        Renaming a key on either side would silently degrade the worker to its
+        defaults (unknown type, confidence 0.0) instead of failing, so this
+        pins the envelope key on both sides and checks every sub-field the
+        consumer reads is one _run_pdf_inspector actually produces.
+        """
+        from pageindex_mcp import converters_cli
+        from pageindex_mcp.converters import _run_pdf_inspector
+        from pageindex_mcp.worker import subprocess_mgr
+
+        emitter_src = inspect.getsource(converters_cli)
+        consumer_src = inspect.getsource(subprocess_mgr)
+        assert '"pdf_classification"' in emitter_src, (
+            "converters_cli no longer emits a pdf_classification handshake field"
+        )
+        assert '"pdf_classification"' in consumer_src, (
+            "worker/subprocess_mgr no longer reads the pdf_classification handshake field"
+        )
+
+        read_keys = set(re.findall(r'pdf_class\.get\(\s*"([^"]+)"', consumer_src))
+        assert read_keys, "no pdf_class.get(\"...\") reads found in subprocess_mgr"
+
+        pdf_path = tmp_path / "scan.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4 fake")
         with (
             patch("pageindex_mcp.converters.docling_conv._pdf_inspector_available", True),
             patch(
                 "pageindex_mcp.converters.docling_conv._detect_pdf",
                 return_value=FakeScannedResult(),
             ),
-            patch.dict("sys.modules", {"pypdfium2": _make_pdfium_mock(10)}),
-            patch("pageindex_mcp.config.MAX_DOCLING_PAGES", 150),
         ):
-            from pageindex_mcp.converters import probe_conversion_route
+            produced = _run_pdf_inspector(str(pdf_path))
 
-            chunk_count, is_docling, _, _pre = probe_conversion_route(pdf_path)
-
-        assert chunk_count == 1
-        assert is_docling is True
-
-
-# ---------------------------------------------------------------------------
-# 4. Handshake emission includes classification
-# ---------------------------------------------------------------------------
-
-
-class TestHandshakeEmission:
-    def test_handshake_includes_classification_fields(self):
-        classification = {
-            "pdf_type": "text_based",
-            "confidence": 0.98,
-            "pages_needing_ocr": [],
-            "has_encoding_issues": False,
-        }
-        handshake = {
-            "handshake": True,
-            "chunk_count": 1,
-            "is_docling_route": True,
-        }
-        if classification is not None:
-            handshake["pdf_classification"] = classification
-
-        assert handshake["pdf_classification"]["pdf_type"] == "text_based"
-        assert handshake["pdf_classification"]["confidence"] == 0.98
-
-
-# ---------------------------------------------------------------------------
-# 5. Worker parses classification from handshake
-# ---------------------------------------------------------------------------
-
-
-class TestWorkerHandshakeParsing:
-    def test_parses_classification_from_handshake(self):
-        handshake = {
-            "handshake": True,
-            "chunk_count": 1,
-            "is_docling_route": True,
-            "pdf_classification": {
-                "pdf_type": "scanned",
-                "confidence": 0.91,
-                "pages_needing_ocr": [1, 2, 3],
-                "has_encoding_issues": False,
-            },
-        }
-        pdf_class = handshake.get("pdf_classification")
-        assert pdf_class is not None
-        assert pdf_class["pdf_type"] == "scanned"
-        assert pdf_class["confidence"] == 0.91
+        assert produced is not None
+        missing = sorted(read_keys - set(produced))
+        assert not missing, (
+            f"worker/subprocess_mgr reads {missing} off pdf_classification, but "
+            f"_run_pdf_inspector emits only {sorted(produced)}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -233,43 +238,11 @@ class TestWorkerHandshakeParsing:
 
 
 class TestPdfInspectorMetrics:
-    def test_classification_counter_exists(self):
-        from pageindex_mcp.metrics import PDF_INSPECTOR_CLASSIFICATIONS
-
-        assert PDF_INSPECTOR_CLASSIFICATIONS is not None
-
-    def test_counter_labels_include_pdf_type(self):
+    def test_classification_counter_is_labelled_by_pdf_type(self):
         from pageindex_mcp.metrics import PDF_INSPECTOR_CLASSIFICATIONS
 
         PDF_INSPECTOR_CLASSIFICATIONS.labels(pdf_type="text_based").inc()
         assert PDF_INSPECTOR_CLASSIFICATIONS.labels(pdf_type="text_based")._value.get() >= 1
-
-
-# ---------------------------------------------------------------------------
-# 7. _run_pdf_inspector unit tests
-# ---------------------------------------------------------------------------
-
-
-class TestRunPdfInspector:
-    def test_returns_dict_on_success(self, tmp_path):
-        pdf_path = str(tmp_path / "test.pdf")
-        (tmp_path / "test.pdf").write_bytes(b"%PDF-1.4 fake")
-
-        with (
-            patch("pageindex_mcp.converters.docling_conv._pdf_inspector_available", True),
-            patch(
-                "pageindex_mcp.converters.docling_conv._detect_pdf",
-                return_value=FakePdfResult(),
-            ),
-        ):
-            from pageindex_mcp.converters import _run_pdf_inspector
-
-            result = _run_pdf_inspector(pdf_path)
-
-        assert result is not None
-        assert result["pdf_type"] == "text_based"
-        assert result["confidence"] == 0.98
-        assert isinstance(result["pages_needing_ocr"], list)
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +290,7 @@ def _pdi_wire_index(monkeypatch, *, preclassify, validate_tree=None):
     monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
     monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
     if validate_tree is None:
-        validate_tree = lambda structure, **kw: (True, None)  # noqa: E731
+        validate_tree = lambda structure, **kw: (True, None)
     monkeypatch.setattr(_idx, "validate_tree", validate_tree)
     monkeypatch.setattr(_rec, "validate_tree", validate_tree)
     monkeypatch.setattr(_idx, "prepare_tree", lambda structure, **kw: structure)
@@ -402,44 +375,33 @@ class TestInspectorForceOcrDecisionMatrix:
         assert "ocr_lang_override" in mocks["conv_fn"].call_args.kwargs
         mocks["PDF_INSPECTOR_FORCED_OCR"].inc.assert_called_once()
 
-    async def test_confidence_below_threshold_falls_through_to_normal_path(
+    async def test_ocr_is_not_forced_unless_the_flag_the_type_and_the_confidence_all_agree(
         self, monkeypatch, pdf_file
     ):
-        mocks = await _pdi_run_index(
-            monkeypatch,
-            pdf_file,
-            preclassify=True,
-            pdf_classification={"pdf_type": "scanned", "confidence": 0.85},
-        )
-
-        # Zone-1: _script_from_filename now returns "Latn" for eng/deu filenames
-        mocks["conv_fn"].assert_called_once_with(pdf_file, expected_script="Latn")
-        mocks["PDF_INSPECTOR_FORCED_OCR"].inc.assert_not_called()
-
-    async def test_missing_confidence_key_does_not_force_ocr(self, monkeypatch, pdf_file):
-        """A classification dict without ``confidence`` defaults to 0 -> no force."""
-        mocks = await _pdi_run_index(
-            monkeypatch,
-            pdf_file,
-            preclassify=True,
-            pdf_classification={"pdf_type": "scanned"},
-        )
-
-        # Zone-1: _script_from_filename now returns "Latn" for eng/deu filenames
-        mocks["conv_fn"].assert_called_once_with(pdf_file, expected_script="Latn")
-        mocks["PDF_INSPECTOR_FORCED_OCR"].inc.assert_not_called()
-
-    async def test_preclassify_flag_off_ignores_classification(self, monkeypatch, pdf_file):
-        mocks = await _pdi_run_index(
-            monkeypatch,
-            pdf_file,
-            preclassify=False,
-            pdf_classification={"pdf_type": "scanned", "confidence": 1.0},
-        )
-
-        # Zone-1: _script_from_filename now returns "Latn" for eng/deu filenames
-        mocks["conv_fn"].assert_called_once_with(pdf_file, expected_script="Latn")
-        mocks["PDF_INSPECTOR_FORCED_OCR"].inc.assert_not_called()
+        """Each way the decision can fall through to the normal path:
+        confidence below the 0.90 threshold, a classification dict with no
+        ``confidence`` key at all (defaults to 0), and the preclassify flag
+        off with a classification that would otherwise force OCR."""
+        cases = {
+            "below_threshold": (True, {"pdf_type": "scanned", "confidence": 0.85}),
+            "missing_confidence": (True, {"pdf_type": "scanned"}),
+            "flag_off": (False, {"pdf_type": "scanned", "confidence": 1.0}),
+        }
+        failures = []
+        for label, (preclassify, classification) in cases.items():
+            mocks = await _pdi_run_index(
+                monkeypatch,
+                pdf_file,
+                preclassify=preclassify,
+                pdf_classification=classification,
+            )
+            try:
+                # Zone-1: _script_from_filename now returns "Latn" for eng/deu filenames
+                mocks["conv_fn"].assert_called_once_with(pdf_file, expected_script="Latn")
+                mocks["PDF_INSPECTOR_FORCED_OCR"].inc.assert_not_called()
+            except AssertionError as exc:
+                failures.append(f"{label}: {exc}")
+        assert not failures, "\n".join(failures)
 
 
 class TestSafetyNetsIntactAfterInspectorForcedOcr:
@@ -546,11 +508,17 @@ def _collapsed_rows_logged(caplog) -> int:
 
 
 class TestTableRepairSeparatorGuard:
-    def test_first_post_separator_degenerate_row_is_preserved(self, caplog):
-        """Row immediately after separator with all-identical cells (count >
-        threshold) is a Docling repeated-label first body row, not a merge
-        artefact -- must be preserved in normalized minimal-padding form and
-        collapsed_rows must be 0."""
+    def test_the_separator_guard_shields_exactly_one_post_separator_row(self, caplog):
+        """D0: the row immediately after a separator with all-identical cells
+        (count > threshold) is a Docling repeated-label first body row, not a
+        merge artefact — it is preserved in normalized minimal-padding form and
+        counts as zero collapsed rows.
+
+        The guard's scope is exactly that one row: a second consecutive
+        degenerate row still collapses, and the prev_was_separator flag resets
+        after the first post-separator row, so a degenerate row at position 3+
+        (after a normal row) collapses too.
+        """
         md = (
             "| A | B | C | D |\n"
             "| --- | --- | --- | --- |\n"
@@ -563,16 +531,6 @@ class TestTableRepairSeparatorGuard:
         assert "| Fee |" not in lines
         assert _collapsed_rows_logged(caplog) == 0
 
-    def test_guard_scope_is_limited_to_a_single_first_row(self):
-        """Scope-limitation verification, combining two related scenarios:
-
-        (a) when the first AND second post-separator rows are both
-            degenerate, only the first is guarded -- the second is
-            collapsed (the guard shields a single row only);
-        (b) the prev_was_separator flag resets to False after the first
-            post-separator row is processed -- a degenerate row at
-            position 3+ (after a normal row) must still be collapsed.
-        """
         md_two_consecutive = (
             "| A | B | C | D |\n"
             "| --- | --- | --- | --- |\n"
@@ -674,52 +632,66 @@ def _flat_leaf_tree(chars_per_leaf: list[int]) -> list[dict]:
 
 
 class TestInspectorClassThreading:
-    def test_empty_content_class_text_based_inspector_promotes_cat_c(self):
-        """content_class='', inspector_class='text_based': leaf_concentration
-        0.20 exceeds the default cat_c threshold (0.17) but clears the
-        widened 0.204 (0.17 * 1.2) threshold -- promote cat_c_promoted."""
-        structure = _flat_leaf_tree([20, 20, 20, 20, 20])
-        verdict, reason = classify_verdict(structure, "", None, inspector_class="text_based")
-        assert verdict == "PASS"
-        assert reason in ("structural_pass", "cat_c_promoted")
+    def test_cat_c_widening_is_conditional_on_inspector_class_and_loses_to_content_class(self):
+        """D1 threads inspector_class into classify_verdict's cat_c branch only.
 
-    def test_flat_mixed_content_class_takes_precedence_over_inspector_class(self):
-        """content_class='flat_mixed' with inspector_class='text_based':
+        Row 1 — content_class='', inspector_class='text_based': leaf_concentration
+        0.20 exceeds the default cat_c threshold (0.17) but clears the widened
+        0.204 (0.17 * 1.2), so it is promoted.
+        Row 2 — content_class='flat_mixed' with the same inspector_class:
         content_class remains the sole branch selector, so this takes the
-        flat_/cat_b branch (not cat_c) regardless of inspector_class."""
-        structure = _flat_leaf_tree([60] * 10)
-        verdict, reason = classify_verdict(
-            structure, "flat_mixed", None, inspector_class="text_based"
-        )
-        assert verdict == "PASS"
-        assert reason in ("structural_pass", "cat_b_promoted")
-
-    def test_empty_content_class_cat_c_threshold_boundary(self):
-        """Positive and negative boundary checks combined, both with
-        inspector_class=None (omitted default) -- pre-D1 behavior:
-
-        - leaf_concentration ~0.143 clears the unwidened default 0.17
-          cat_c threshold (backward compat, promoted);
-        - leaf_concentration 0.20 (above 0.17, below the widened 0.204)
-          must NOT promote -- proves D1 *widens* the threshold
-          conditionally rather than raising it unconditionally.
+        flat_/cat_b branch, not cat_c.
+        Row 3 — inspector_class omitted, leaf_concentration ~0.143: clears the
+        UNwidened 0.17 threshold (backward compat).
+        Row 4 — inspector_class omitted, leaf_concentration 0.20 (above 0.17,
+        below the widened 0.204): must NOT promote. This is what proves D1
+        *widens* the threshold conditionally rather than raising it outright.
         """
-        structure_below = _flat_leaf_tree([20] * 7)
-        verdict, reason = classify_verdict(structure_below, "", None)
-        assert verdict == "PASS"
-        assert reason in ("structural_pass", "cat_c_promoted")
-
-        structure_boundary = _flat_leaf_tree([20] * 5)
-        sig = TreeSignals.from_tree(structure_boundary, garble_threshold=0.15)
-        gate = TreeGateResult(
+        boundary = _flat_leaf_tree([20] * 5)
+        sig = TreeSignals.from_tree(boundary, garble_threshold=0.15)
+        boundary_gate = TreeGateResult(
             ok=False,
             defect=TreeDefect.DEPTH_LOW,
             detail="depth=1",
             signals=sig,
             all_defects=frozenset({TreeDefect.DEPTH_LOW}),
         )
-        verdict, reason = classify_verdict(structure_boundary, "", gate)
-        assert (verdict, reason) == ("MARGINAL", "depth=1")
+        cases = [
+            (
+                "text_based_promotes",
+                (
+                    _flat_leaf_tree([20, 20, 20, 20, 20]),
+                    "",
+                    None,
+                    {"inspector_class": "text_based"},
+                ),
+                ("PASS", ("structural_pass", "cat_c_promoted")),
+            ),
+            (
+                "content_class_wins",
+                (_flat_leaf_tree([60] * 10), "flat_mixed", None, {"inspector_class": "text_based"}),
+                ("PASS", ("structural_pass", "cat_b_promoted")),
+            ),
+            (
+                "unwidened_backward_compat",
+                (_flat_leaf_tree([20] * 7), "", None, {}),
+                ("PASS", ("structural_pass", "cat_c_promoted")),
+            ),
+            (
+                "no_inspector_class_no_widening",
+                (boundary, "", boundary_gate, {}),
+                ("MARGINAL", ("depth=1",)),
+            ),
+        ]
+        failures = []
+        for label, (structure, content_class, gate, kwargs), (want_verdict, want_reasons) in cases:
+            verdict, reason = classify_verdict(structure, content_class, gate, **kwargs)
+            if verdict != want_verdict or reason not in want_reasons:
+                failures.append(
+                    f"{label}: got ({verdict!r}, {reason!r}), want {want_verdict!r} with "
+                    f"reason in {want_reasons}"
+                )
+        assert not failures, "; ".join(failures)
 
 
 class TestInspectorClassPrecedenceProperty:
@@ -819,46 +791,36 @@ class TestFallbackTriggerSkip:
         doc.iterate_items.return_value = [(item, 0)]
         return doc
 
-    def test_landscape_page_below_threshold_is_flagged(self, monkeypatch):
-        # RFC-036 D0c: a below-threshold landscape page is only flagged when
-        # it also carries a detectable picture/graphic region (page 1,
-        # 1-indexed) -- otherwise dense numeric-table pages false-positive.
-        monkeypatch.setattr(
-            converters.pictures, "_collect_picture_regions", lambda doc: [{"page": 1, "bbox": {}}]
-        )
-        landscape_pages = [{"page_no": 0, "rotate": 0, "is_landscape": True}]
-        document = self._mock_document(200)
-        below = _landscape_pages_below_threshold(document, landscape_pages)
-        assert len(below) == 1
-        assert below[0]["page_no"] == 0
-        assert below[0]["char_count"] == 200
+    def test_a_page_is_flagged_only_when_landscape_sparse_and_carrying_a_picture(
+        self, monkeypatch
+    ):
+        """RFC-036 D0c: all three conditions must hold simultaneously.
 
-    def test_landscape_page_below_threshold_without_picture_is_not_flagged(self, monkeypatch):
-        # RFC-036 D0c: dense numeric-table pages fall below the char
-        # threshold but carry no picture region, so they no longer
-        # false-positive trigger the rasterize-rotate-reextract fallback.
-        monkeypatch.setattr(converters.pictures, "_collect_picture_regions", lambda doc: [])
-        landscape_pages = [{"page_no": 0, "rotate": 0, "is_landscape": True}]
-        document = self._mock_document(200)
-        below = _landscape_pages_below_threshold(document, landscape_pages)
-        assert below == []
-
-    def test_above_threshold_and_portrait_pages_are_not_flagged(self, monkeypatch):
-        """Combines two negative-outcome scenarios that share the same
-        picture-region mock: a landscape page above the char threshold, and
-        a portrait page below it (e.g. a legitimately sparse cover/divider
-        page) -- neither must be flagged."""
-        monkeypatch.setattr(
-            converters.pictures, "_collect_picture_regions", lambda doc: [{"page": 1, "bbox": {}}]
-        )
-
-        landscape_above = [{"page_no": 0, "rotate": 0, "is_landscape": True}]
-        document_above = self._mock_document(2000)
-        assert _landscape_pages_below_threshold(document_above, landscape_above) == []
-
-        portrait_below = [{"page_no": 0, "rotate": 0, "is_landscape": False}]
-        document_below = self._mock_document(200)
-        assert _landscape_pages_below_threshold(document_below, portrait_below) == []
+        Dropping the picture-region requirement is what made dense numeric-table
+        pages — below the char threshold but carrying no graphic — false-positive
+        into the rasterize-rotate-reextract fallback.
+        """
+        picture = [{"page": 1, "bbox": {}}]
+        landscape = [{"page_no": 0, "rotate": 0, "is_landscape": True}]
+        portrait = [{"page_no": 0, "rotate": 0, "is_landscape": False}]
+        cases = [
+            ("all_three_hold", picture, landscape, 200, True),
+            ("no_picture_region", [], landscape, 200, False),
+            ("above_char_threshold", picture, landscape, 2000, False),
+            ("portrait_page", picture, portrait, 200, False),
+        ]
+        failures = []
+        for label, regions, pages, char_count, expect_flagged in cases:
+            monkeypatch.setattr(
+                converters.pictures, "_collect_picture_regions", lambda doc, _r=regions: _r
+            )
+            below = _landscape_pages_below_threshold(self._mock_document(char_count), pages)
+            if bool(below) is not expect_flagged:
+                failures.append(f"{label}: flagged={bool(below)}, want {expect_flagged}")
+            elif expect_flagged:
+                if below[0]["page_no"] != 0 or below[0]["char_count"] != char_count:
+                    failures.append(f"{label}: flagged entry {below[0]!r}")
+        assert not failures, "; ".join(failures)
 
 
 class TestRasterizationFailureFallthrough:
@@ -1002,7 +964,9 @@ class TestRoutingReevaluationAfterFallbackReextraction:
     re-extraction with NO PictureResults must leave the document on its
     original (tree) routing path."""
 
-    async def test_picture_results_reroutes_to_flat_mixed(self, monkeypatch, pdf_file):
+    async def test_reroute_to_flat_mixed_happens_only_when_picture_results_came_back(
+        self, monkeypatch, pdf_file
+    ):
         pic_results = [{"page": 1, "skipped_reason": "landscape_fallback_picture"}]
         c, doc_id, mocks = await _rfi_run_index(
             monkeypatch,
@@ -1010,21 +974,19 @@ class TestRoutingReevaluationAfterFallbackReextraction:
             pic_results=pic_results,
             flat_return=("flat_mixed", [{"role": "prose", "text": "chart caption"}]),
         )
-
         assert isinstance(doc_id, str)
         mocks["save_flat_doc"].assert_called_once()
         mocks["save_doc"].assert_not_called()
         assert c.last_content_class == "flat_mixed"
         mocks["FLAT_DOCS_TOTAL"].labels.assert_called_once_with(content_class="flat_mixed")
 
-    async def test_no_picture_results_stays_on_original_routing_path(self, monkeypatch, pdf_file):
+        # No PictureResults: the document stays on its original (tree) route.
         c, doc_id, mocks = await _rfi_run_index(
             monkeypatch,
             pdf_file,
             pic_results=[],
             flat_return=("flat_prose", [{"role": "prose", "text": "x"}]),
         )
-
         assert isinstance(doc_id, str)
         mocks["save_doc"].assert_called_once()
         mocks["save_flat_doc"].assert_not_called()
@@ -1164,79 +1126,47 @@ async def test_VLM_C1_recovered(monkeypatch, pdf_file):
 
 
 # ---------------------------------------------------------------------------
-# VLM-C2: VLM output is also garbled — terminal rejection
+# VLM-C2 / VLM-C3 / VLM-C4: every way the VLM path ends without a recovery
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_VLM_C2_still_garbled(monkeypatch, pdf_file):
-    """Zone-5 update: VLM output still garbled persists with FAIL verdict;
-    VLM_FALLBACK_TOTAL{result=still_garbled} is incremented."""
-    mocks, vlm_mock = _wire_vlm(
-        monkeypatch,
-        validate_side_effect=[
-            TreeGateResult(ok=False, defect=TreeDefect.GARBLING),  # initial
-            TreeGateResult(ok=False, defect=TreeDefect.GARBLING),  # OCR retry
-            TreeGateResult(ok=False, defect=TreeDefect.GARBLING),  # VLM output
-        ],
-    )
-    c = _make_client()
-    monkeypatch.setattr(c, "_run_md_to_tree", AsyncMock(return_value=_tree_result()))
+async def test_VLM_C2_C3_C4_non_recovery_outcomes(monkeypatch, pdf_file):
+    """Zone-5: each non-recovery outcome persists the document with a FAIL
+    verdict rather than losing it, and labels VLM_FALLBACK_TOTAL accordingly.
 
-    with patch("pageindex_mcp.converters.vlm_extract_markdown", vlm_mock):
-        doc_id = await c.index(pdf_file)
+    C2 — VLM output is itself garbled -> result=still_garbled.
+    C3 — the VLM call raises            -> result=error.
+    C4 — the VLM is disabled (default)  -> the path is skipped entirely and the
+         counter is never touched.
+    """
+    garbled = TreeGateResult(ok=False, defect=TreeDefect.GARBLING)
+    cases = {
+        # label: (validate_side_effect, wire kwargs, expected label or None)
+        "still_garbled": ([garbled, garbled, garbled], {}, "still_garbled"),
+        "error": ([garbled, garbled], {"vlm_raises": True}, "error"),
+        "disabled": ([garbled, garbled], {"vlm_fallback": False}, None),
+    }
+    failures = []
+    for label, (side_effect, wire_kwargs, expected_label) in cases.items():
+        mocks, vlm_mock = _wire_vlm(
+            monkeypatch, validate_side_effect=list(side_effect), **wire_kwargs
+        )
+        c = _make_client()
+        monkeypatch.setattr(c, "_run_md_to_tree", AsyncMock(return_value=_tree_result()))
 
-    assert isinstance(doc_id, str) and len(doc_id) == 36
-    mocks["VLM_FALLBACK_TOTAL"].labels.assert_called_with(result="still_garbled")
+        with patch("pageindex_mcp.converters.vlm_extract_markdown", vlm_mock):
+            doc_id = await c.index(pdf_file)
 
-
-# ---------------------------------------------------------------------------
-# VLM-C3: VLM call raises — falls through to terminal rejection
-# ---------------------------------------------------------------------------
-@pytest.mark.asyncio
-async def test_VLM_C3_error_falls_through(monkeypatch, pdf_file):
-    """Zone-5 update: VLM error persists with FAIL verdict;
-    VLM_FALLBACK_TOTAL{result=error} is incremented."""
-    mocks, vlm_mock = _wire_vlm(
-        monkeypatch,
-        validate_side_effect=[
-            TreeGateResult(ok=False, defect=TreeDefect.GARBLING),  # initial
-            TreeGateResult(ok=False, defect=TreeDefect.GARBLING),  # OCR retry
-        ],
-        vlm_raises=True,
-    )
-    c = _make_client()
-    monkeypatch.setattr(c, "_run_md_to_tree", AsyncMock(return_value=_tree_result()))
-
-    with patch("pageindex_mcp.converters.vlm_extract_markdown", vlm_mock):
-        doc_id = await c.index(pdf_file)
-
-    assert isinstance(doc_id, str) and len(doc_id) == 36
-    mocks["VLM_FALLBACK_TOTAL"].labels.assert_called_with(result="error")
-
-
-# ---------------------------------------------------------------------------
-# VLM-C4: VLM disabled by default — never called
-# ---------------------------------------------------------------------------
-@pytest.mark.asyncio
-async def test_VLM_C4_disabled_by_default(monkeypatch, pdf_file):
-    """Zone-5 update: VLM disabled, garbling persists with FAIL verdict;
-    VLM path is skipped entirely."""
-    mocks, vlm_mock = _wire_vlm(
-        monkeypatch,
-        validate_side_effect=[
-            TreeGateResult(ok=False, defect=TreeDefect.GARBLING),  # initial
-            TreeGateResult(ok=False, defect=TreeDefect.GARBLING),  # OCR retry
-        ],
-        vlm_fallback=False,
-    )
-    c = _make_client()
-    monkeypatch.setattr(c, "_run_md_to_tree", AsyncMock(return_value=_tree_result()))
-
-    with patch("pageindex_mcp.converters.vlm_extract_markdown", vlm_mock):
-        doc_id = await c.index(pdf_file)
-
-    assert isinstance(doc_id, str) and len(doc_id) == 36
-    vlm_mock.assert_not_awaited()
-    mocks["VLM_FALLBACK_TOTAL"].labels.assert_not_called()
+        if not (isinstance(doc_id, str) and len(doc_id) == 36):
+            failures.append(f"{label}: doc_id {doc_id!r}")
+        try:
+            if expected_label is None:
+                vlm_mock.assert_not_awaited()
+                mocks["VLM_FALLBACK_TOTAL"].labels.assert_not_called()
+            else:
+                mocks["VLM_FALLBACK_TOTAL"].labels.assert_called_with(result=expected_label)
+        except AssertionError as exc:
+            failures.append(f"{label}: {exc}")
+    assert not failures, "\n".join(failures)
 
 
 # ---------------------------------------------------------------------------

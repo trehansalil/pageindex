@@ -6,7 +6,6 @@ and test_upload_size_limit.py (RFC-009 D4 / ISS-15 upload size limit).
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import fakeredis.aioredis
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -125,19 +124,6 @@ async def test_path_traversal_filename_is_sanitized(client):
 # ---------------------------------------------------------------------------
 
 
-async def test_single_upload_returns_job_id(client):
-    response = await client.post(
-        "/files",
-        files=[_pdf_file("invoice.pdf")],
-        headers={"X-API-Key": TEST_API_KEY},
-    )
-    assert response.status_code == 202
-    body = response.json()
-    assert len(body) == 1
-    assert body[0]["filename"] == "invoice.pdf"
-    assert "job_id" in body[0]
-
-
 async def test_multi_file_upload_returns_one_job_per_file(client):
     response = await client.post(
         "/files",
@@ -151,67 +137,42 @@ async def test_multi_file_upload_returns_one_job_per_file(client):
     assert len(job_ids) == 2
 
 
-async def test_upload_enqueues_arq_job(client, mock_arq_pool):
-    response = await client.post(
-        "/files",
-        files=[_pdf_file()],
-        headers={"X-API-Key": TEST_API_KEY},
-    )
-    assert response.status_code == 202
-    mock_arq_pool.enqueue_job.assert_awaited_once()
-    call_args = mock_arq_pool.enqueue_job.call_args
-    assert call_args[0][0] == "process_document_job"
-
-
-async def test_status_pending_after_upload(client, fake_redis):
-    response = await client.post(
-        "/files",
-        files=[_pdf_file()],
-        headers={"X-API-Key": TEST_API_KEY},
-    )
-    job_id = response.json()[0]["job_id"]
-    status_resp = await client.get(f"/status/{job_id}", headers={"X-API-Key": TEST_API_KEY})
-    assert status_resp.status_code == 200
-    assert status_resp.json()["status"] == "pending"
-
-
-async def test_status_done_when_worker_completes(client, fake_redis):
-    """Simulate worker completion by writing done status to Redis."""
-    response = await client.post(
-        "/files",
-        files=[_pdf_file()],
-        headers={"X-API-Key": TEST_API_KEY},
-    )
-    job_id = response.json()[0]["job_id"]
-
-    # Simulate worker writing done status
-    await fake_redis.hset(
-        f"pageindex:job:{job_id}", mapping={"status": "done", "doc_id": "deadbeef"}
-    )
-
-    status_resp = await client.get(f"/status/{job_id}", headers={"X-API-Key": TEST_API_KEY})
-    data = status_resp.json()
-    assert data["status"] == "done"
-    assert data["doc_id"] == "deadbeef"
-
-
-async def test_status_error_when_worker_fails(client, fake_redis):
-    """Simulate worker failure by writing error status to Redis."""
-    response = await client.post(
-        "/files",
-        files=[_pdf_file()],
-        headers={"X-API-Key": TEST_API_KEY},
-    )
-    job_id = response.json()[0]["job_id"]
-
-    await fake_redis.hset(
-        f"pageindex:job:{job_id}", mapping={"status": "error", "error": "indexing failed"}
-    )
-
-    status_resp = await client.get(f"/status/{job_id}", headers={"X-API-Key": TEST_API_KEY})
-    data = status_resp.json()
-    assert data["status"] == "error"
-    assert "indexing failed" in data["error"]
+async def test_upload_01_c3_status_poll_returns_current_status(client, fake_redis):
+    """UPLOAD-01-C3: GET /status/<job_id> returns 200 with the current state
+    read from pageindex:job:<job_id> in Redis, for every state the worker can
+    write. Table-driven: one row per worker-written state, all mismatches
+    reported together."""
+    cases = [
+        (
+            "job-done",
+            {"status": "done", "doc_id": "deadbeef"},
+            {"status": "done", "doc_id": "deadbeef"},
+        ),
+        (
+            "job-error",
+            {"status": "error", "error": "indexing failed"},
+            {"status": "error", "error": "indexing failed"},
+        ),
+        (
+            "job-processing",
+            {"status": "processing", "filename": "policy.pdf"},
+            {"status": "processing"},
+        ),
+    ]
+    failures = []
+    for job_id, written, expected in cases:
+        await fake_redis.hset(f"pageindex:job:{job_id}", mapping=written)
+        resp = await client.get(f"/status/{job_id}", headers={"X-API-Key": TEST_API_KEY})
+        if resp.status_code != 200:
+            failures.append(f"{job_id}: HTTP {resp.status_code}, expected 200")
+            continue
+        body = resp.json()
+        if body.get("job_id") != job_id:
+            failures.append(f"{job_id}: job_id echoed as {body.get('job_id')!r}")
+        for key, value in expected.items():
+            if body.get(key) != value:
+                failures.append(f"{job_id}: {key}={body.get(key)!r}, expected {value!r}")
+    assert not failures, "status poll mismatches: " + "; ".join(failures)
 
 
 async def test_unknown_job_id_returns_404(client):
@@ -283,21 +244,6 @@ async def test_upload_01_c1_valid_upload_stages_and_enqueues(client, fake_redis,
     assert state["status"] == "pending"
 
 
-async def test_upload_01_c3_status_poll_returns_current_status(client, fake_redis):
-    """UPLOAD-01-C3: GET /status/<job_id> returns 200 with the current status
-    field read from pageindex:job:<job_id> in Redis."""
-    job_id = "job-c3"
-    await fake_redis.hset(
-        f"pageindex:job:{job_id}",
-        mapping={"status": "processing", "filename": "policy.pdf"},
-    )
-    resp = await client.get(f"/status/{job_id}", headers={"X-API-Key": TEST_API_KEY})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["status"] == "processing"
-    assert body["job_id"] == job_id
-
-
 # ---------------------------------------------------------------------------
 # RFC-009 D4 (ISS-15): chunked upload with size limit (from
 # test_upload_size_limit.py)
@@ -341,17 +287,6 @@ class TestUploadSizeLimit:
         mock_arq_pool.enqueue_job.assert_not_awaited()
         assert await fake_redis.keys("pageindex:job:*") == []
 
-    async def test_upload_under_limit_succeeds(self, client):
-        small = self._pdf_bytes(1024)  # 1 KB, well under the 1 MB test limit
-        response = await client.post(
-            "/files",
-            files=[("files", ("small.pdf", small, "application/pdf"))],
-            headers={"X-API-Key": TEST_API_KEY},
-        )
-        assert response.status_code == 202
-        body = response.json()
-        assert body[0]["filename"] == "small.pdf"
-
     async def test_upload_at_boundary_succeeds(self, client, mock_arq_pool):
         limit_bytes = self.MAX_MB * 1024 * 1024
 
@@ -374,3 +309,115 @@ class TestUploadSizeLimit:
         )
         assert fail_response.status_code == 413
         mock_arq_pool.enqueue_job.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# BearerAuthMiddleware (merged from test_auth.py; RFC-008 D3/ISS-13 + RFC-011 D4)
+#
+# The MCP app's bearer-auth middleware is the sibling auth surface to the
+# upload app's X-API-Key check above, so both now live in this file.
+# ---------------------------------------------------------------------------
+
+import dataclasses  # noqa: E402
+
+from starlette.applications import Starlette  # noqa: E402
+from starlette.responses import PlainTextResponse  # noqa: E402
+from starlette.routing import Route  # noqa: E402
+
+import pageindex_mcp.auth as auth_module  # noqa: E402
+from pageindex_mcp.auth import BearerAuthMiddleware  # noqa: E402
+from pageindex_mcp.metrics import MCP_AUTH_DISABLED  # noqa: E402
+
+
+async def _ok(request):
+    return PlainTextResponse("ok")
+
+
+def _make_auth_app():
+    app = Starlette(routes=[Route("/protected", _ok)])
+    app.add_middleware(BearerAuthMiddleware)
+    return app
+
+
+@pytest.fixture(autouse=True)
+def _reset_auth_warned():
+    """Reset the module-level once-only warning flag between tests."""
+    auth_module._auth_warned = False
+    yield
+    auth_module._auth_warned = False
+
+
+@pytest.fixture
+async def client_no_token():
+    no_token_settings = dataclasses.replace(
+        auth_module.settings, mcp_bearer_token="", mcp_allow_unauthenticated=True
+    )
+    with patch.object(auth_module, "settings", no_token_settings):
+        app = _make_auth_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            yield c
+
+
+@pytest.fixture
+async def client_no_token_no_allow():
+    no_token_settings = dataclasses.replace(
+        auth_module.settings, mcp_bearer_token="", mcp_allow_unauthenticated=False
+    )
+    with patch.object(auth_module, "settings", no_token_settings):
+        app = _make_auth_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            yield c
+
+
+@pytest.fixture
+async def client_with_token():
+    with_token_settings = dataclasses.replace(
+        auth_module.settings,
+        mcp_bearer_token="secret-token",
+        mcp_allow_unauthenticated=False,
+    )
+    with patch.object(auth_module, "settings", with_token_settings):
+        app = _make_auth_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            yield c
+
+
+async def test_503_when_token_unset_and_allow_unauthenticated_unset(
+    client_no_token_no_allow,
+):
+    """RFC-011 D4: fail closed by default when no token is configured and the
+    opt-in flag is not set."""
+    response = await client_no_token_no_allow.get("/protected")
+    assert response.status_code == 503
+    assert response.json() == {"error": "auth not configured"}
+
+
+async def test_explicit_opt_in_passes_through_warns_once_and_sets_gauge(client_no_token, caplog):
+    """MCP_ALLOW_UNAUTHENTICATED=true with no token configured: requests pass
+    through, the disabled-auth gauge reads 1, and the warning is logged exactly
+    once no matter how many requests arrive."""
+    with caplog.at_level("WARNING", logger="pageindex_mcp.auth"):
+        responses = [await client_no_token.get("/protected") for _ in range(3)]
+
+    assert [r.status_code for r in responses] == [200, 200, 200]
+    assert [r.text for r in responses] == ["ok", "ok", "ok"]
+    assert MCP_AUTH_DISABLED._value.get() == 1
+    warnings = [
+        record for record in caplog.records if "MCP bearer-token auth is DISABLED" in record.message
+    ]
+    assert len(warnings) == 1
+
+
+async def test_normal_auth_flow_unchanged_when_token_set(client_with_token):
+    """Regression guard: when a bearer token is configured, an unauthenticated
+    request is refused (401), a correctly-authenticated one succeeds, and the
+    disabled-auth gauge stays at 0."""
+    no_auth_response = await client_with_token.get("/protected")
+    assert no_auth_response.status_code == 401
+
+    ok_response = await client_with_token.get(
+        "/protected", headers={"Authorization": "Bearer secret-token"}
+    )
+    assert ok_response.status_code == 200
+    assert ok_response.text == "ok"
+    assert MCP_AUTH_DISABLED._value.get() == 0

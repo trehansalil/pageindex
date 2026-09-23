@@ -15,8 +15,6 @@ Covers:
   and end-to-end flat-branch wiring (converter -> splice -> enrich)
 """
 
-import os
-import tempfile
 import types
 from dataclasses import replace
 from types import SimpleNamespace
@@ -43,43 +41,40 @@ from pageindex_mcp.picture_plane import PictureGateConfig
 class TestRouteFlatImageBlocks:
     """route_and_extract_flat emits {"role": "image"} blocks for [Figure: fig-N] markers."""
 
-    def test_figure_marker_produces_image_block(self):
-        md = "# Title\n\n[Figure: fig-0]\n\n> [Chart text]: Revenue 2024 42%\n\nMore text"
-        content_class, blocks = route_and_extract_flat(md)
-        image_blocks = [b for b in blocks if b.get("role") == "image"]
-        assert len(image_blocks) == 1
-        assert image_blocks[0]["index"] == 0
-        assert image_blocks[0]["ocr_text"] == "Revenue 2024 42%"
-
-    def test_figure_marker_with_description(self):
-        md = "[Figure: fig-1 | A pie chart showing monthly revenue]\n\n> [Chart text]: Jan 100 Feb 200"
+    def test_figure_markers_produce_indexed_image_blocks_with_ocr_and_description(self):
+        """Both marker forms: bare `[Figure: fig-N]`, and the `| description`
+        variant. Each yields one image block carrying its ordinal, its chart
+        text, and (when present) its description."""
+        md = (
+            "# Title\n\n"
+            "[Figure: fig-0]\n\n> [Chart text]: Revenue 2024 42%\n\n"
+            "More text\n\n"
+            "[Figure: fig-1 | A pie chart showing monthly revenue]\n\n"
+            "> [Chart text]: Jan 100 Feb 200"
+        )
         _, blocks = route_and_extract_flat(md)
         image_blocks = [b for b in blocks if b.get("role") == "image"]
-        assert len(image_blocks) == 1
-        assert image_blocks[0]["index"] == 1
-        assert image_blocks[0]["description"] == "A pie chart showing monthly revenue"
-        assert image_blocks[0]["ocr_text"] == "Jan 100 Feb 200"
+        assert len(image_blocks) == 2
+        assert image_blocks[0]["index"] == 0
+        assert image_blocks[0]["ocr_text"] == "Revenue 2024 42%"
+        assert "description" not in image_blocks[0]
+        assert image_blocks[1]["index"] == 1
+        assert image_blocks[1]["ocr_text"] == "Jan 100 Feb 200"
+        assert image_blocks[1]["description"] == "A pie chart showing monthly revenue"
 
 
 class TestFlatSearchTextImage:
     """_flat_search_text includes ocr_text and description from image blocks."""
 
-    def test_image_block_ocr_in_search_text(self):
+    def test_image_block_ocr_and_description_both_reach_search_text(self):
         data = {
             "blocks": [
                 {"role": "image", "index": 0, "ocr_text": "Revenue chart data"},
+                {"role": "image", "index": 1, "description": "A bar chart"},
             ]
         }
         text = _flat_search_text(data)
         assert "Revenue chart data" in text
-
-    def test_image_block_description_in_search_text(self):
-        data = {
-            "blocks": [
-                {"role": "image", "index": 0, "description": "A bar chart"},
-            ]
-        }
-        text = _flat_search_text(data)
         assert "A bar chart" in text
 
 
@@ -111,7 +106,9 @@ class TestEnrichImageBlocks:
     persists PNGs off the event loop."""
 
     @pytest.mark.asyncio
-    async def test_enriches_matching_image_block(self):
+    async def test_enriches_image_blocks_only_and_releases_crop_bytes(self):
+        """The image block gets the figure path and metadata; the prose block
+        beside it is left untouched and never persisted as a figure."""
         from pageindex_mcp.client import _enrich_image_blocks
 
         blocks = [
@@ -141,16 +138,15 @@ class TestEnrichImageBlocks:
         assert img["description"] == "A chart"
         # Finding 11: crop bytes released after persist.
         assert "png_bytes" not in pic_results[0]
-
-    @pytest.mark.asyncio
-    async def test_skips_non_image_blocks(self):
-        from pageindex_mcp.client import _enrich_image_blocks
-
-        blocks = [{"role": "prose", "text": "Hello"}]
-        with patch("pageindex_mcp.client.images.save_figure") as sf:
-            await _enrich_image_blocks(blocks, [{"png_bytes": b"x"}], "doc1")
-        sf.assert_not_called()
+        # The non-image block is skipped entirely.
         assert "figure_path" not in blocks[0]
+
+        # And with no image block at all, nothing is persisted.
+        prose_only = [{"role": "prose", "text": "Hello"}]
+        with patch("pageindex_mcp.client.images.save_figure") as sf:
+            await _enrich_image_blocks(prose_only, [{"png_bytes": b"x"}], "doc1")
+        sf.assert_not_called()
+        assert "figure_path" not in prose_only[0]
 
 
 # ---------------------------------------------------------------------------
@@ -209,52 +205,45 @@ class TestPageCoverageFilter:
             "bbox": types.SimpleNamespace(l=l, t=t, r=r, b=b, coord_origin=None),
         }
 
-    def test_page_coverage_filter_skips_large_region(self, monkeypatch):
-        """Region at 80% page area → not in crops dict (page HAS text layer)."""
-        fake_fitz = _make_fake_fitz(600.0, 800.0)
+    def test_page_coverage_filter_keeps_small_regions_and_skips_large_ones(self, monkeypatch):
+        """RFC-017 D0 / RFC-029 D5a, both sides of the 60%-of-page threshold.
+
+        Small region first (30% of the page): OCR proceeds and the crop is
+        kept. Then the large region (80%): OCR is short-circuited, but the
+        crop bytes and a ``page_coverage`` skip reason are retained.
+        """
         monkeypatch.setattr(converters.pictures, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
-        # F1: coverage skip is exempt when page has NO text layer (default);
-        # disable exemption so the coverage filter fires on the empty-text-layer
-        # fake page, preserving the pre-F1 test intent.
-        monkeypatch.setattr(converters.pictures, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", False)
-        monkeypatch.setattr(
-            converters.pictures,
-            "_GATE_CONFIG",
-            PictureGateConfig(
-                coverage_exempt_no_text_layer=False,
-            ),
-        )
-
-        region = self._make_region(0, 0, 560, 700)
-
-        with patch.dict("sys.modules", {"fitz": fake_fitz}):
-            monkeypatch.setattr(converters.pictures, "shutil", types.ModuleType("shutil"))
-            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
-
-        # D5a (RFC-029): page_coverage skip retains png_bytes + skipped_reason,
-        # no ocr_text — OCR still short-circuited.
-        assert 0 in result
-        assert result[0].get("skipped_reason") == "page_coverage"
-        assert result[0].get("png_bytes")
-        assert not result[0].get("ocr_text")
-
-    def test_page_coverage_filter_keeps_small_region(self, monkeypatch):
-        """Region at 30% page area → present in crops dict with valid PNG bytes."""
+        monkeypatch.setattr(converters.pictures, "shutil", types.ModuleType("shutil"))
         fake_fitz = _make_fake_fitz(600.0, 800.0)
-        monkeypatch.setattr(converters.pictures, "_PICTURE_PAGE_COVERAGE_THRESHOLD", 0.6)
-
-        region = self._make_region(0, 0, 300, 400)
         long_text = "Chart text with enough characters to pass the decorative gate"
 
         with patch.dict("sys.modules", {"fitz": fake_fitz}):
             monkeypatch.setattr(
                 converters.pictures, "_tesseract_ocr_image", lambda path, langs: long_text
             )
-            monkeypatch.setattr(converters.pictures, "shutil", types.ModuleType("shutil"))
-            result, _skip = _recover_picture_text("/fake.pdf", [region], ["eng"])
+            small, _skip = _recover_picture_text(
+                "/fake.pdf", [self._make_region(0, 0, 300, 400)], ["eng"]
+            )
+        assert len(small) == 1
+        assert "png_bytes" in small[0]
 
-        assert len(result) == 1
-        assert "png_bytes" in result[0]
+        # F1: the coverage skip is exempt when the page has NO text layer
+        # (the default); disable the exemption so the coverage filter fires on
+        # the empty-text-layer fake page, preserving the pre-F1 test intent.
+        monkeypatch.setattr(converters.pictures, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", False)
+        monkeypatch.setattr(
+            converters.pictures,
+            "_GATE_CONFIG",
+            PictureGateConfig(coverage_exempt_no_text_layer=False),
+        )
+        with patch.dict("sys.modules", {"fitz": fake_fitz}):
+            large, _skip = _recover_picture_text(
+                "/fake.pdf", [self._make_region(0, 0, 560, 700)], ["eng"]
+            )
+        assert 0 in large
+        assert large[0].get("skipped_reason") == "page_coverage"
+        assert large[0].get("png_bytes")
+        assert not large[0].get("ocr_text")
 
 
 # ---------------------------------------------------------------------------
@@ -323,47 +312,40 @@ class TestDecorativeGate:
             "bbox": types.SimpleNamespace(l=0, t=10, r=100, b=110, coord_origin=None),
         }
 
-    def test_short_ocr_vlm_off_drops_png(self, monkeypatch):
-        monkeypatch.setattr(
-            "pageindex_mcp.config.settings",
-            SimpleNamespace(
-                pii_corpus=False,
-                openai_base_url="https://api.openai.com/v1",
-                vlm_model="gpt-4.1",
-                vlm_describe_images=False,
-                llm_model="gpt-test",
-            ),
-        )
-        fake_fitz = _make_fake_fitz(600.0, 800.0)
-        with patch.dict("sys.modules", {"fitz": fake_fitz}):
+    def test_short_ocr_drops_the_crop_unless_vlm_can_reclassify_it(self, monkeypatch):
+        """Audit finding 12: a decorative image (short OCR text) loses its PNG
+        when VLM description is off, but keeps it for reclassification when on.
+        Either way the short text itself is discarded."""
+        failures = []
+        for vlm_describe_images in (False, True):
             monkeypatch.setattr(
-                converters.pictures, "_tesseract_ocr_image", lambda png, langs: "short"
+                "pageindex_mcp.config.settings",
+                SimpleNamespace(
+                    pii_corpus=False,
+                    openai_base_url="https://api.openai.com/v1",
+                    vlm_model="gpt-4.1",
+                    vlm_describe_images=vlm_describe_images,
+                    llm_model="gpt-test",
+                ),
             )
-            monkeypatch.setattr(converters.pictures, "shutil", types.ModuleType("shutil"))
-            out, _skip = converters._recover_picture_text("dummy.pdf", [self._region()], ["eng"])
-        assert out[0]["ocr_text"] == ""
-        assert "png_bytes" not in out[0]
-
-    def test_short_ocr_vlm_on_keeps_png_for_reclassification(self, monkeypatch):
-        monkeypatch.setattr(
-            "pageindex_mcp.config.settings",
-            SimpleNamespace(
-                pii_corpus=False,
-                openai_base_url="https://api.openai.com/v1",
-                vlm_model="gpt-4.1",
-                vlm_describe_images=True,
-                llm_model="gpt-test",
-            ),
-        )
-        fake_fitz = _make_fake_fitz(600.0, 800.0)
-        with patch.dict("sys.modules", {"fitz": fake_fitz}):
-            monkeypatch.setattr(
-                converters.pictures, "_tesseract_ocr_image", lambda png, langs: "short"
-            )
-            monkeypatch.setattr(converters.pictures, "shutil", types.ModuleType("shutil"))
-            out, _skip = converters._recover_picture_text("dummy.pdf", [self._region()], ["eng"])
-        assert out[0]["ocr_text"] == ""
-        assert out[0]["png_bytes"]
+            fake_fitz = _make_fake_fitz(600.0, 800.0)
+            with patch.dict("sys.modules", {"fitz": fake_fitz}):
+                monkeypatch.setattr(
+                    converters.pictures, "_tesseract_ocr_image", lambda png, langs: "short"
+                )
+                monkeypatch.setattr(converters.pictures, "shutil", types.ModuleType("shutil"))
+                out, _skip = converters._recover_picture_text(
+                    "dummy.pdf", [self._region()], ["eng"]
+                )
+            if out[0]["ocr_text"] != "":
+                failures.append(f"vlm={vlm_describe_images}: ocr_text {out[0]['ocr_text']!r}")
+            has_png = bool(out[0].get("png_bytes"))
+            if has_png is not vlm_describe_images:
+                failures.append(
+                    f"vlm={vlm_describe_images}: png_bytes present={has_png}, "
+                    f"want {vlm_describe_images}"
+                )
+        assert not failures, "; ".join(failures)
 
 
 # ---------------------------------------------------------------------------
@@ -541,102 +523,6 @@ class TestStandaloneImageEnrichment:
         assert "[Figure:" not in result
         assert "Middle" in result and "End" in result
 
-    @pytest.mark.asyncio
-    async def test_standalone_image_produces_synthetic_pic_result(self, monkeypatch):
-        """.jpg file → pic_results has exactly 1 entry with png_bytes == source bytes."""
-        source_bytes = b"\xff\xd8\xff\xe0FAKE_JPEG_DATA"
-        fd, jpg_path = tempfile.mkstemp(suffix=".jpg")
-        try:
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(source_bytes)
-
-            fake_settings = SimpleNamespace(
-                openai_api_key="k",
-                openai_base_url="https://api.openai.com/v1",
-                azure_api_version=None,
-                llm_model="gpt-test",
-                minio_secure=False,
-                minio_endpoint="localhost:9000",
-                minio_bucket="pageindex",
-                flat_doc_routing=True,
-                vlm_fallback=False,
-                vlm_model="gpt-4.1",
-                vlm_describe_images=False,
-                pii_corpus=False,
-                # RFC-048: the standalone-image gate reads these; the fallback
-                # is off here so these tests stay on the Tesseract-only path.
-                surya_fallback_enabled=False,
-                surya_service_url="http://localhost:8207",
-                surya_fallback_timeout_s=120.0,
-            )
-            monkeypatch.setattr(_idx, "settings", fake_settings)
-            monkeypatch.setattr(_img, "settings", fake_settings)
-            monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
-            monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
-            monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
-            monkeypatch.setattr(_idx, "validate_tree", lambda s, **kw: (False, "depth<2"))
-            monkeypatch.setattr(
-                _img,
-                "route_and_extract_flat",
-                MagicMock(return_value=("flat_prose", [{"role": "prose", "text": "x"}])),
-            )
-            monkeypatch.setattr(_idx, "save_flat_doc", MagicMock())
-            monkeypatch.setattr(_idx, "save_doc", MagicMock())
-            monkeypatch.setattr(_idx, "save_raw", MagicMock())
-            monkeypatch.setattr(_idx, "save_doc_meta", MagicMock())
-            monkeypatch.setattr(_idx, "FLAT_DOCS_TOTAL", MagicMock())
-            monkeypatch.setattr(_idx, "LOW_QUALITY_TREES", MagicMock())
-            monkeypatch.setattr(_img, "LOW_QUALITY_TREES", MagicMock())
-            monkeypatch.setattr(_idx, "ensure_tessdata", lambda langs: langs)
-            monkeypatch.setattr(_idx, "image_to_markdown", lambda path, langs: "<!-- image -->")
-
-            captured_pics = []
-            orig_splice = splice_figure_markers
-
-            def spy_splice(md, pics):
-                captured_pics.extend(pics)
-                return orig_splice(md, pics)
-
-            monkeypatch.setattr(_idx, "splice_figure_markers", spy_splice)
-
-            c = CustomPageIndexClient(api_key="test-key")
-
-            async def _fake_tree(md_path):
-                return {
-                    "structure": [{"node_id": "n1", "text": "x", "nodes": []}],
-                    "doc_description": "",
-                }
-
-            monkeypatch.setattr(c, "_run_md_to_tree", _fake_tree)
-
-            await c.index(jpg_path)
-
-            assert len(captured_pics) == 1
-            assert captured_pics[0]["png_bytes"] == source_bytes
-            assert captured_pics[0]["ocr_text"] == ""
-            assert captured_pics[0]["page"] == 1
-            assert captured_pics[0]["bbox"] == {"l": 0, "t": 0, "r": 0, "b": 0}
-        finally:
-            if os.path.exists(jpg_path):
-                os.unlink(jpg_path)
-
-    @staticmethod
-    def _fake_settings():
-        return SimpleNamespace(
-            openai_api_key="k",
-            openai_base_url="https://api.openai.com/v1",
-            azure_api_version=None,
-            llm_model="gpt-test",
-            minio_secure=False,
-            minio_endpoint="localhost:9000",
-            minio_bucket="pageindex",
-            flat_doc_routing=True,
-            vlm_fallback=False,
-            vlm_model="gpt-4.1",
-            vlm_describe_images=False,
-            pii_corpus=False,
-        )
-
 
 def _make_fake_fitz_with_text(page_width: float, page_height: float, clip_text: str):
     """Build a fake fitz module whose page.get_text(...) returns ``clip_text``,
@@ -726,313 +612,163 @@ class TestTextLayerProbe:
 
 
 # ---------------------------------------------------------------------------
-# RFC-020 Task 4.1 / F4: independent PictureResult copies (standalone path)
+# The standalone-image branch end to end (RFC-017 D1, RFC-020 F4, Zone-8)
 # ---------------------------------------------------------------------------
 
-
-class TestIndependentPictureResults:
-    """RFC-020 F4: the standalone-image branch must build pic_results with a
-    list comprehension (independent dict copies), never ``[PictureResult(...)] * N``
-    (shared references) — mutating one entry must not affect the others."""
-
-    def test_pic_results_not_shared_references(self):
-        marker_count = 3
-        img_bytes = b"fake-png"
-        pic_results = [
-            PictureResult(
-                ocr_text="",
-                page=1,
-                bbox={"l": 0, "t": 0, "r": 0, "b": 0},
-                png_bytes=img_bytes,
-            )
-            for _ in range(max(1, marker_count))
-        ]
-
-        pic_results[0].pop("png_bytes")
-
-        assert "png_bytes" not in pic_results[0]
-        assert "png_bytes" in pic_results[1]
-        assert "png_bytes" in pic_results[2]
+_STANDALONE_JPEG = b"\xff\xd8\xff\xe0FAKE_JPEG_DATA"
+_STANDALONE_OCR = "OCR recovered text from standalone image"
 
 
-# ---------------------------------------------------------------------------
-# Zone-8: Standalone image splice_picture_text_for_tree regression tests
-# ---------------------------------------------------------------------------
+def _standalone_env(mp, *, md="<!-- image -->", ocr_text=None, splice_enabled=True):
+    """Wire client.index() down to the standalone-image branch and capture what
+    the branch produces: the PictureResults handed to the splice, the langs
+    handed to ensure_tessdata, and the markdown handed to md_to_tree."""
+    fake_settings = SimpleNamespace(
+        openai_api_key="k",
+        openai_base_url="https://api.openai.com/v1",
+        azure_api_version=None,
+        llm_model="gpt-test",
+        minio_secure=False,
+        minio_endpoint="localhost:9000",
+        minio_bucket="pageindex",
+        flat_doc_routing=True,
+        vlm_fallback=False,
+        vlm_model="gpt-4.1",
+        vlm_describe_images=False,
+        pii_corpus=False,
+        # RFC-048: the standalone-image gate reads these; the fallback is off
+        # here so these tests stay on the Tesseract-only path.
+        surya_fallback_enabled=False,
+        surya_service_url="http://localhost:8207",
+        surya_fallback_timeout_s=120.0,
+    )
+    mp.setattr(_idx, "settings", fake_settings)
+    mp.setattr(_img, "settings", fake_settings)
+    mp.setattr(_idx, "hash_cache_get", lambda filename: None)
+    mp.setattr(_idx, "list_processed_docs", lambda: [])
+    mp.setattr(_idx, "hash_cache_set", MagicMock())
+    mp.setattr(_idx, "validate_tree", lambda s, **kw: (False, "depth<2"))
+    mp.setattr(_idx, "prepare_tree", lambda s, **kw: s)
+    mp.setattr(
+        _img,
+        "route_and_extract_flat",
+        MagicMock(return_value=("flat_prose", [{"role": "prose", "text": "x"}])),
+    )
+    for name in ("save_flat_doc", "save_doc", "save_raw", "save_doc_meta",
+                 "FLAT_DOCS_TOTAL", "LOW_QUALITY_TREES"):
+        mp.setattr(_idx, name, MagicMock())
+    mp.setattr(_img, "LOW_QUALITY_TREES", MagicMock())
+    mp.setattr(_idx, "image_to_markdown", lambda path, langs: md)
+    if ocr_text is not None:
+        mp.setattr(_idx, "_tesseract_ocr_image", lambda path, langs: ocr_text)
+    # ocr_text=None leaves the real _tesseract_ocr_image in place: on these
+    # fake JPEG bytes it returns "" through its own failure path, which is
+    # what the synthetic-PictureResult assertions below expect.
+    mp.setattr(_img, "TREE_PATH_PICTURE_SPLICE_ENABLED", splice_enabled)
+    mp.setattr(_idx, "TREE_PATH_PICTURE_SPLICE_ENABLED", splice_enabled)
+
+    captured = SimpleNamespace(pics=[], langs=[], md=[])
+
+    orig_splice = splice_figure_markers
+
+    def spy_splice(md_in, pics):
+        captured.pics.extend(pics)
+        return orig_splice(md_in, pics)
+
+    def spy_ensure(langs):
+        captured.langs.append(list(langs))
+        return langs
+
+    mp.setattr(_idx, "splice_figure_markers", spy_splice)
+    mp.setattr(_idx, "ensure_tessdata", spy_ensure)
+    return captured
 
 
-class TestStandaloneImageSplice:
-    """Zone-8: standalone image path calls splice_picture_text_for_tree before
-    md_to_tree so OCR-recovered text appears in the tree, not just in
-    pic_results metadata."""
+def _capturing_client(mp, captured):
+    import pathlib as _pl
+
+    async def _fake_tree(md_path):
+        content = _pl.Path(md_path).read_text(encoding="utf-8")
+        captured.md.append(content)
+        return {
+            "structure": [{"node_id": "n1", "text": content, "nodes": []}],
+            "doc_description": "",
+        }
+
+    c = CustomPageIndexClient(api_key="test-key")
+    mp.setattr(c, "_run_md_to_tree", _fake_tree)
+    return c
+
+
+class TestStandaloneImageBranch:
+    @pytest.mark.asyncio
+    async def test_branch_builds_one_independent_synthetic_pic_result_per_marker(
+        self, monkeypatch, tmp_path
+    ):
+        """RFC-017 D1: a standalone image yields one synthetic PictureResult per
+        surviving ``<!-- image -->`` marker, each carrying the source bytes.
+
+        RFC-020 F4: they must be built by a list comprehension (independent
+        dicts), never ``[PictureResult(...)] * N`` — popping one entry's crop
+        bytes must not empty the others.
+
+        Zone-8: the OCR langs come from detect_ocr_langs(filename), so an
+        Arabic filename selects 'ara' rather than a hardcoded list.
+        """
+        img = tmp_path / "قرار_وزاري.jpg"
+        img.write_bytes(_STANDALONE_JPEG)
+        captured = _standalone_env(
+            monkeypatch,
+            md="<!-- image -->\n\nmiddle\n\n<!-- image -->\n\nend\n\n<!-- image -->",
+        )
+        c = _capturing_client(monkeypatch, captured)
+
+        await c.index(str(img))
+
+        assert captured.langs, "ensure_tessdata was never called"
+        assert "ara" in captured.langs[0], (
+            f"expected 'ara' in langs for an Arabic filename, got {captured.langs[0]}"
+        )
+        assert len(captured.pics) == 3
+        for i, pr in enumerate(captured.pics):
+            assert pr["png_bytes"] == _STANDALONE_JPEG, i
+            assert pr["ocr_text"] == "", i
+            assert pr["page"] == 1, i
+            assert pr["bbox"] == {"l": 0, "t": 0, "r": 0, "b": 0}, i
+
+        captured.pics[0].pop("png_bytes")
+        assert "png_bytes" not in captured.pics[0]
+        assert all("png_bytes" in pr for pr in captured.pics[1:]), (
+            "the synthetic PictureResults share one dict — `[PictureResult(...)] * N` is back"
+        )
 
     @pytest.mark.asyncio
-    async def test_standalone_image_splices_ocr_text_into_tree_markers(self, monkeypatch):
-        """Given a .jpg with OCR text in pic_results, the splice inserts
-        [Chart text] blocks after <!-- image --> markers so md_to_tree sees
-        the recovered text."""
-        from pageindex_mcp.converters import splice_picture_text_for_tree
+    async def test_ocr_text_reaches_md_to_tree_only_when_the_splice_flag_is_on(
+        self, monkeypatch, tmp_path
+    ):
+        """Zone-8: the standalone path calls splice_picture_text_for_tree before
+        md_to_tree so OCR-recovered text lands in the tree rather than only in
+        pic_results metadata — and TREE_PATH_PICTURE_SPLICE_ENABLED=false skips
+        it. Both bindings of the flag (images.py's, and the copy indexer.py
+        imported at module load) are set, since either alone leaves the other live.
+        """
+        failures = []
+        for label, enabled in (("enabled", True), ("disabled", False)):
+            img = tmp_path / f"{label}.jpg"
+            img.write_bytes(_STANDALONE_JPEG)
+            with pytest.MonkeyPatch.context() as mp:
+                captured = _standalone_env(
+                    mp, ocr_text=_STANDALONE_OCR, splice_enabled=enabled
+                )
+                c = _capturing_client(mp, captured)
+                await c.index(str(img))
 
-        source_bytes = b"\xff\xd8\xff\xe0FAKE_JPEG_DATA"
-        fd, jpg_path = tempfile.mkstemp(suffix=".jpg")
-        try:
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(source_bytes)
-
-            fake_settings = SimpleNamespace(
-                openai_api_key="k",
-                openai_base_url="https://api.openai.com/v1",
-                azure_api_version=None,
-                llm_model="gpt-test",
-                minio_secure=False,
-                minio_endpoint="localhost:9000",
-                minio_bucket="pageindex",
-                flat_doc_routing=True,
-                vlm_fallback=False,
-                vlm_model="gpt-4.1",
-                vlm_describe_images=False,
-                pii_corpus=False,
-                # RFC-048: the standalone-image gate reads these; the fallback
-                # is off here so these tests stay on the Tesseract-only path.
-                surya_fallback_enabled=False,
-                surya_service_url="http://localhost:8207",
-                surya_fallback_timeout_s=120.0,
-            )
-            monkeypatch.setattr(_idx, "settings", fake_settings)
-            monkeypatch.setattr(_img, "settings", fake_settings)
-            monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
-            monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
-            monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
-            monkeypatch.setattr(_idx, "validate_tree", lambda s, **kw: (False, "depth<2"))
-            monkeypatch.setattr(_idx, "prepare_tree", lambda s, **kw: s)
-            monkeypatch.setattr(
-                _img,
-                "route_and_extract_flat",
-                MagicMock(return_value=("flat_prose", [{"role": "prose", "text": "x"}])),
-            )
-            monkeypatch.setattr(_idx, "save_flat_doc", MagicMock())
-            monkeypatch.setattr(_idx, "save_doc", MagicMock())
-            monkeypatch.setattr(_idx, "save_raw", MagicMock())
-            monkeypatch.setattr(_idx, "save_doc_meta", MagicMock())
-            monkeypatch.setattr(_idx, "FLAT_DOCS_TOTAL", MagicMock())
-            monkeypatch.setattr(_idx, "LOW_QUALITY_TREES", MagicMock())
-            monkeypatch.setattr(_img, "LOW_QUALITY_TREES", MagicMock())
-            monkeypatch.setattr(_idx, "ensure_tessdata", lambda langs: langs)
-            # Return markdown with an image marker and some OCR text
-            monkeypatch.setattr(_idx, "image_to_markdown", lambda path, langs: "<!-- image -->")
-            # _tesseract_ocr_image returns substantial OCR text
-            monkeypatch.setattr(
-                _idx,
-                "_tesseract_ocr_image",
-                lambda path, langs: "OCR recovered text from standalone image",
-            )
-
-            # Enable the splice
-            monkeypatch.setattr(_img, "TREE_PATH_PICTURE_SPLICE_ENABLED", True)
-
-            # Capture the md content passed to _run_md_to_tree
-            captured_md = []
-
-            async def _fake_tree(md_path):
-                import pathlib
-
-                content = pathlib.Path(md_path).read_text(encoding="utf-8")
-                captured_md.append(content)
-                return {
-                    "structure": [{"node_id": "n1", "text": content, "nodes": []}],
-                    "doc_description": "",
-                }
-
-            c = CustomPageIndexClient(api_key="test-key")
-            monkeypatch.setattr(c, "_run_md_to_tree", _fake_tree)
-
-            await c.index(jpg_path)
-
-            # The markdown passed to md_to_tree must contain the spliced OCR text
-            assert len(captured_md) >= 1
-            assert "[Chart text]:" in captured_md[0]
-            assert "OCR recovered text from standalone image" in captured_md[0]
-        finally:
-            if os.path.exists(jpg_path):
-                os.unlink(jpg_path)
-
-    @pytest.mark.asyncio
-    async def test_standalone_image_splice_disabled_skips_splice(self, monkeypatch):
-        """When TREE_PATH_PICTURE_SPLICE_ENABLED=false, the splice is skipped
-        and md_to_tree sees raw markers without [Chart text] blocks."""
-        source_bytes = b"\xff\xd8\xff\xe0FAKE_JPEG_DATA"
-        fd, jpg_path = tempfile.mkstemp(suffix=".jpg")
-        try:
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(source_bytes)
-
-            fake_settings = SimpleNamespace(
-                openai_api_key="k",
-                openai_base_url="https://api.openai.com/v1",
-                azure_api_version=None,
-                llm_model="gpt-test",
-                minio_secure=False,
-                minio_endpoint="localhost:9000",
-                minio_bucket="pageindex",
-                flat_doc_routing=True,
-                vlm_fallback=False,
-                vlm_model="gpt-4.1",
-                vlm_describe_images=False,
-                pii_corpus=False,
-                # RFC-048: the standalone-image gate reads these; the fallback
-                # is off here so these tests stay on the Tesseract-only path.
-                surya_fallback_enabled=False,
-                surya_service_url="http://localhost:8207",
-                surya_fallback_timeout_s=120.0,
-            )
-            monkeypatch.setattr(_idx, "settings", fake_settings)
-            monkeypatch.setattr(_img, "settings", fake_settings)
-            monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
-            monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
-            monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
-            monkeypatch.setattr(_idx, "validate_tree", lambda s, **kw: (False, "depth<2"))
-            monkeypatch.setattr(_idx, "prepare_tree", lambda s, **kw: s)
-            monkeypatch.setattr(
-                _img,
-                "route_and_extract_flat",
-                MagicMock(return_value=("flat_prose", [{"role": "prose", "text": "x"}])),
-            )
-            monkeypatch.setattr(_idx, "save_flat_doc", MagicMock())
-            monkeypatch.setattr(_idx, "save_doc", MagicMock())
-            monkeypatch.setattr(_idx, "save_raw", MagicMock())
-            monkeypatch.setattr(_idx, "save_doc_meta", MagicMock())
-            monkeypatch.setattr(_idx, "FLAT_DOCS_TOTAL", MagicMock())
-            monkeypatch.setattr(_idx, "LOW_QUALITY_TREES", MagicMock())
-            monkeypatch.setattr(_img, "LOW_QUALITY_TREES", MagicMock())
-            monkeypatch.setattr(_idx, "ensure_tessdata", lambda langs: langs)
-            monkeypatch.setattr(_idx, "image_to_markdown", lambda path, langs: "<!-- image -->")
-            monkeypatch.setattr(
-                _idx,
-                "_tesseract_ocr_image",
-                lambda path, langs: "OCR recovered text from standalone image",
-            )
-
-            # Disable the splice -- must patch BOTH the images module (canonical
-            # source) AND the indexer module (which imported the name at module
-            # load time, creating a separate binding).
-            monkeypatch.setattr(_img, "TREE_PATH_PICTURE_SPLICE_ENABLED", False)
-            monkeypatch.setattr(_idx, "TREE_PATH_PICTURE_SPLICE_ENABLED", False)
-
-            captured_md = []
-
-            async def _fake_tree(md_path):
-                import pathlib
-
-                content = pathlib.Path(md_path).read_text(encoding="utf-8")
-                captured_md.append(content)
-                return {
-                    "structure": [{"node_id": "n1", "text": content, "nodes": []}],
-                    "doc_description": "",
-                }
-
-            c = CustomPageIndexClient(api_key="test-key")
-            monkeypatch.setattr(c, "_run_md_to_tree", _fake_tree)
-
-            await c.index(jpg_path)
-
-            assert len(captured_md) >= 1
-            assert "[Chart text]:" not in captured_md[0]
-        finally:
-            if os.path.exists(jpg_path):
-                os.unlink(jpg_path)
-
-
-# ---------------------------------------------------------------------------
-# Zone-8: detect_ocr_langs(filename) regression test for standalone images
-# ---------------------------------------------------------------------------
-
-
-class TestStandaloneImageDetectOcrLangs:
-    """Zone-8: standalone image path calls detect_ocr_langs(filename) instead
-    of hardcoded list. Arabic filenames must include 'ara' in the langs."""
-
-    @pytest.mark.asyncio
-    async def test_arabic_filename_includes_ara_lang(self, monkeypatch):
-        """Given a filename containing Arabic characters, ensure the langs
-        passed to ensure_tessdata include 'ara'."""
-        source_bytes = b"\xff\xd8\xff\xe0FAKE_JPEG_DATA"
-        # Create a temp file with Arabic characters in the name
-        import tempfile as _tf
-
-        tmp_dir = _tf.mkdtemp()
-        arabic_path = os.path.join(tmp_dir, "قرار_وزاري.jpg")
-        try:
-            with open(arabic_path, "wb") as fh:
-                fh.write(source_bytes)
-
-            fake_settings = SimpleNamespace(
-                openai_api_key="k",
-                openai_base_url="https://api.openai.com/v1",
-                azure_api_version=None,
-                llm_model="gpt-test",
-                minio_secure=False,
-                minio_endpoint="localhost:9000",
-                minio_bucket="pageindex",
-                flat_doc_routing=True,
-                vlm_fallback=False,
-                vlm_model="gpt-4.1",
-                vlm_describe_images=False,
-                pii_corpus=False,
-                # RFC-048: the standalone-image gate reads these; the fallback
-                # is off here so these tests stay on the Tesseract-only path.
-                surya_fallback_enabled=False,
-                surya_service_url="http://localhost:8207",
-                surya_fallback_timeout_s=120.0,
-            )
-            monkeypatch.setattr(_idx, "settings", fake_settings)
-            monkeypatch.setattr(_img, "settings", fake_settings)
-            monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
-            monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
-            monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
-            monkeypatch.setattr(_idx, "validate_tree", lambda s, **kw: (False, "depth<2"))
-            monkeypatch.setattr(_idx, "prepare_tree", lambda s, **kw: s)
-            monkeypatch.setattr(
-                _img,
-                "route_and_extract_flat",
-                MagicMock(return_value=("flat_prose", [{"role": "prose", "text": "x"}])),
-            )
-            monkeypatch.setattr(_idx, "save_flat_doc", MagicMock())
-            monkeypatch.setattr(_idx, "save_doc", MagicMock())
-            monkeypatch.setattr(_idx, "save_raw", MagicMock())
-            monkeypatch.setattr(_idx, "save_doc_meta", MagicMock())
-            monkeypatch.setattr(_idx, "FLAT_DOCS_TOTAL", MagicMock())
-            monkeypatch.setattr(_idx, "LOW_QUALITY_TREES", MagicMock())
-            monkeypatch.setattr(_img, "LOW_QUALITY_TREES", MagicMock())
-
-            # Capture what langs are passed to ensure_tessdata
-            captured_langs = []
-            orig_ensure = lambda langs: langs
-
-            def spy_ensure(langs):
-                captured_langs.append(list(langs))
-                return langs
-
-            monkeypatch.setattr(_idx, "ensure_tessdata", spy_ensure)
-            monkeypatch.setattr(_idx, "image_to_markdown", lambda path, langs: "<!-- image -->")
-            monkeypatch.setattr(_idx, "_tesseract_ocr_image", lambda path, langs: "")
-
-            c = CustomPageIndexClient(api_key="test-key")
-
-            async def _fake_tree(md_path):
-                return {
-                    "structure": [{"node_id": "n1", "text": "x", "nodes": []}],
-                    "doc_description": "",
-                }
-
-            monkeypatch.setattr(c, "_run_md_to_tree", _fake_tree)
-
-            await c.index(arabic_path)
-
-            # ensure_tessdata was called with langs that include 'ara'
-            assert len(captured_langs) >= 1
-            assert "ara" in captured_langs[0], (
-                f"Expected 'ara' in langs for Arabic filename, got {captured_langs[0]}"
-            )
-        finally:
-            import shutil
-
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            if not captured.md:
+                failures.append(f"{label}: md_to_tree was never called")
+                continue
+            spliced = "[Chart text]:" in captured.md[0] and _STANDALONE_OCR in captured.md[0]
+            if spliced is not enabled:
+                failures.append(
+                    f"{label}: spliced={spliced}, want {enabled} — md was {captured.md[0]!r}"
+                )
+        assert not failures, "; ".join(failures)

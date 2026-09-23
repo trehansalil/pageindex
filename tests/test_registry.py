@@ -6,7 +6,6 @@ from __future__ import annotations
 import copy
 import dataclasses
 import inspect
-import json
 import logging
 import os
 import warnings
@@ -22,10 +21,8 @@ from pageindex_mcp import registry
 from pageindex_mcp import registry_backfill as rb
 from pageindex_mcp.registry_backfill import backfill as _bf
 from pageindex_mcp.worker.registry_mirror import (
-    _enqueue_verdict_retry,
     _upsert_registry_row,
 )
-
 
 # --- from test_registry.py ---
 
@@ -92,39 +89,6 @@ def fake_redis_client():
 # ---------------------------------------------------------------------------
 
 
-async def test_reads_return_none_when_pool_absent(no_pool):
-    assert await registry.list_docs() is None
-    assert await registry.count_docs() is None
-    assert await registry.stage_b_candidates("anything", 10) is None
-    assert await registry.stage_a_filter("anything") is None
-
-
-async def test_delete_doc_passes_statement_timeout():
-    conn = AsyncMock()
-    conn.execute = AsyncMock(return_value="DELETE 1")
-    conn.transaction = MagicMock(
-        return_value=AsyncMock(
-            __aenter__=AsyncMock(return_value=None),
-            __aexit__=AsyncMock(return_value=False),
-        )
-    )
-    pool = _mock_pool()
-    pool.acquire = MagicMock(
-        return_value=AsyncMock(
-            __aenter__=AsyncMock(return_value=conn),
-            __aexit__=AsyncMock(return_value=False),
-        )
-    )
-    with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
-        await registry.delete_doc("test-doc-id")
-    assert conn.execute.await_count == 2
-    set_timeout_call = conn.execute.await_args_list[0]
-    assert "statement_timeout" in set_timeout_call.args[0]
-    delete_call = conn.execute.await_args_list[1]
-    assert "timeout" in delete_call.kwargs
-    assert delete_call.kwargs["timeout"] > 0
-
-
 # ---------------------------------------------------------------------------
 # Unit — upsert_doc payload mapping
 # ---------------------------------------------------------------------------
@@ -182,38 +146,9 @@ async def test_list_docs_maps_rows_to_legacy_shape():
     pool.fetch.assert_awaited_once_with(registry._LIST_SQL, 5, 0)
 
 
-async def test_count_docs_returns_none_on_error():
-    pool = _mock_pool()
-    pool.fetchval.side_effect = RuntimeError("connection reset")
-    with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
-        assert await registry.count_docs() is None
-
-
 # ---------------------------------------------------------------------------
 # Unit — Stage B recency fallback and error degradation
 # ---------------------------------------------------------------------------
-
-
-async def test_stage_b_falls_back_to_recency_on_no_match():
-    pool = _mock_pool()
-    recent = [
-        {
-            "doc_id": "r1",
-            "doc_name": "recent.pdf",
-            "source_url": "",
-            "processed_at": "2026-07-10",
-            "content_class": "",
-        },
-    ]
-    # First fetch (ts_rank) → empty; second fetch (recency fallback) → recent.
-    pool.fetch.side_effect = [[], recent]
-    with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
-        rows = await registry.stage_b_candidates("zzzznomatch", 200)
-
-    assert rows is not None
-    assert [r["doc_id"] for r in rows] == ["r1"]
-    assert pool.fetch.await_count == 2
-    assert pool.fetch.await_args_list[1].args == (registry._STAGE_B_FALLBACK_SQL, 200)
 
 
 # ---------------------------------------------------------------------------
@@ -221,39 +156,9 @@ async def test_stage_b_falls_back_to_recency_on_no_match():
 # ---------------------------------------------------------------------------
 
 
-async def test_stage_a_is_noop_when_facets_unpopulated():
-    """Pre-Tier-1: all facet sets empty → transparent pass-through (None)."""
-    pool = _mock_pool()
-    with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
-        assert await registry.stage_a_filter("huk coburg policy") is None
-    pool.fetch.assert_not_awaited()
-
-
-async def test_stage_a_does_not_substring_match():
-    """'huk' inside a longer token must NOT match the 'huk' facet value."""
-    registry.refresh_known_facets({"product": {"huk"}})
-    pool = _mock_pool()
-    with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
-        # 'hukcoburg' is a single token; 'huk' is not a standalone word here.
-        assert await registry.stage_a_filter("hukcoburg terms") is None
-    pool.fetch.assert_not_awaited()
-
-
-def test_refresh_known_facets_casefolds_and_ignores_unknown_columns():
-    registry.refresh_known_facets({"product": {"HUK", "Allianz"}, "not_a_column": {"x"}})
-    assert registry._KNOWN_FACETS["product"] == {"huk", "allianz"}
-    assert "not_a_column" not in registry._KNOWN_FACETS
-
-
 # ---------------------------------------------------------------------------
 # Unit — Redis registry_complete flag helpers
 # ---------------------------------------------------------------------------
-
-
-async def test_is_registry_complete_swallows_redis_error():
-    r = AsyncMock()
-    r.get.side_effect = ConnectionError("redis down")
-    assert await registry.is_registry_complete(r) is False
 
 
 # ---------------------------------------------------------------------------
@@ -369,53 +274,15 @@ async def test_delete_doc_is_idempotent(reg):
 # ── RFC-014 D2 — migration SQL shape ────────────────────────────────────────
 
 
-def test_migrate_verdict_sql_is_idempotent():
-    """RFC-014 D2: migration DDL uses IF NOT EXISTS so it's re-runnable."""
-    sql = registry._MIGRATE_VERDICT_SQL
-    assert "ADD COLUMN IF NOT EXISTS verdict" in sql
-    assert "ADD COLUMN IF NOT EXISTS pipeline_version" in sql
-    assert "ADD COLUMN IF NOT EXISTS permanent_marginal" in sql
-
-
 # ---------------------------------------------------------------------------
 # Zone-4 Phase 3: upsert_doc RETURNING with CAS guards (contract)
 # ---------------------------------------------------------------------------
 
 
-def test_upsert_sql_has_returning_clause():
-    """Zone-4 Phase 3: _UPSERT_SQL must include RETURNING with the verdict
-    columns so the caller knows the winning values after CAS resolution."""
-    from pageindex_mcp.registry.queries import _UPSERT_SQL
-
-    sql = _UPSERT_SQL
-    assert "RETURNING" in sql
-    assert "doc_id" in sql.split("RETURNING")[1]
-    assert "verdict" in sql.split("RETURNING")[1]
-    assert "pipeline_version" in sql.split("RETURNING")[1]
-    assert "permanent_marginal" in sql.split("RETURNING")[1]
-    assert "verdict_computed_at" in sql.split("RETURNING")[1]
-
-
-def test_upsert_sql_has_verdict_cas_guard():
-    """RFC-037 D1: verdict columns are guarded by a max-priority-wins CASE."""
-    from pageindex_mcp.registry.queries import _UPSERT_SQL
-
-    sql = _UPSERT_SQL
-    assert "EXCLUDED.verdict = 'PASS' THEN 3" in sql
-    assert "doc_registry.verdict = 'PASS' THEN 3" in sql
-
-
-def test_upsert_sql_has_processed_at_cas_guard():
-    """Zone-4: descriptor columns sha256/node_count guarded by processed_at CAS."""
-    from pageindex_mcp.registry.queries import _UPSERT_SQL
-
-    sql = _UPSERT_SQL
-    assert "EXCLUDED.processed_at >= COALESCE(doc_registry.processed_at" in sql
-
-
 async def test_upsert_doc_uses_fetchrow_not_execute():
-    """Zone-4 Phase 3: upsert_doc must use fetchrow (not execute) so it can
-    return the RETURNING row as a dict."""
+    """Zone-4 Phase 3: upsert_doc uses fetchrow (not execute) so it can return
+    the RETURNING row as a plain dict, degrades to None when fetchrow returns
+    nothing, and is what the deprecated upsert_verdict wrapper delegates to."""
     pool = _mock_pool()
     pool.fetchrow = AsyncMock(
         return_value={
@@ -430,25 +297,18 @@ async def test_upsert_doc_uses_fetchrow_not_execute():
         result = await registry.upsert_doc({"doc_id": "fr-1", "verdict": "PASS"})
 
     pool.fetchrow.assert_awaited_once()
-    assert result is not None
+    pool.execute.assert_not_awaited()
+    # Zone-4 Phase 3 contract: a plain dict, not an asyncpg Record.
+    assert isinstance(result, dict)
     assert result["doc_id"] == "fr-1"
     assert result["verdict"] == "PASS"
 
-
-async def test_upsert_doc_returns_none_when_fetchrow_returns_none():
-    """upsert_doc returns None when fetchrow returns None (edge case)."""
-    pool = _mock_pool()
+    # Edge case: fetchrow returning nothing degrades to None, never raises.
     pool.fetchrow = AsyncMock(return_value=None)
     with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
-        result = await registry.upsert_doc({"doc_id": "none-1"})
+        assert await registry.upsert_doc({"doc_id": "none-1"}) is None
 
-    assert result is None
-
-
-async def test_upsert_verdict_deprecated_wrapper_delegates_to_upsert_doc():
-    """Zone-4 Phase 3: upsert_verdict is a thin deprecated wrapper that
-    delegates to upsert_doc with a minimal meta dict."""
-    pool = _mock_pool()
+    # upsert_verdict is a thin deprecated wrapper that delegates here.
     pool.fetchrow = AsyncMock(
         return_value={
             "doc_id": "dep-1",
@@ -460,15 +320,13 @@ async def test_upsert_verdict_deprecated_wrapper_delegates_to_upsert_doc():
     )
     with (
         patch("pageindex_mcp.registry.schema.get_pool", return_value=pool),
-        warnings.catch_warnings(record=True) as w,
+        warnings.catch_warnings(record=True) as caught,
     ):
         warnings.simplefilter("always")
-        result = await registry.upsert_verdict("dep-1", {"verdict": "PASS", "pipeline_version": 2})
+        wrapped = await registry.upsert_verdict("dep-1", {"verdict": "PASS", "pipeline_version": 2})
 
-    assert result is not None
-    assert result["doc_id"] == "dep-1"
-    # DeprecationWarning emitted
-    assert any(issubclass(warning.category, DeprecationWarning) for warning in w)
+    assert wrapped is not None and wrapped["doc_id"] == "dep-1"
+    assert any(issubclass(w.category, DeprecationWarning) for w in caught)
 
 
 # ---------------------------------------------------------------------------
@@ -476,90 +334,9 @@ async def test_upsert_verdict_deprecated_wrapper_delegates_to_upsert_doc():
 # ---------------------------------------------------------------------------
 
 
-def test_settings_no_registry_verdict_authority_field():
-    """Zone-4 Phase 3 contract: the registry_verdict_authority field must
-    NOT exist on Settings.  Postgres is unconditionally the sole verdict
-    authority; no mode flag remains."""
-    from pageindex_mcp.config import Settings
-
-    field_names = {f.name for f in dataclasses.fields(Settings)}
-    assert "registry_verdict_authority" not in field_names, (
-        "registry_verdict_authority must be removed from Settings (Zone-4 Phase 3)"
-    )
-
-
-def test_settings_has_no_verdict_authority_env_var():
-    """Zone-4 Phase 3 contract: no environment variable loading path for
-    REGISTRY_VERDICT_AUTHORITY should exist in config module."""
-    import pageindex_mcp.config as config_mod
-
-    source = inspect.getsource(config_mod)
-    # The string should not appear in any executable line (comments are OK).
-    # Filter out comment lines.
-    executable_lines = [
-        line for line in source.splitlines() if line.strip() and not line.strip().startswith("#")
-    ]
-    for line in executable_lines:
-        assert "REGISTRY_VERDICT_AUTHORITY" not in line, (
-            f"Found REGISTRY_VERDICT_AUTHORITY in executable config line: {line.strip()}"
-        )
-
-
 # ---------------------------------------------------------------------------
 # Zone-4 Phase 3: upsert_doc returns dict not Record (contract)
 # ---------------------------------------------------------------------------
-
-
-async def test_upsert_doc_returns_dict_type():
-    """Zone-4 Phase 3 contract: upsert_doc must return a plain dict (not an
-    asyncpg Record) so callers can use it as a regular dict without conversion."""
-    pool = _mock_pool()
-    # Simulate an asyncpg Record-like object that supports dict()
-    mock_row = MagicMock()
-    mock_row.__iter__ = MagicMock(
-        return_value=iter(
-            [
-                ("doc_id", "dt-1"),
-                ("verdict", "PASS"),
-                ("pipeline_version", 3),
-                ("permanent_marginal", False),
-                ("verdict_computed_at", "2026-08-01"),
-            ]
-        )
-    )
-    mock_row.keys = MagicMock(
-        return_value=[
-            "doc_id",
-            "verdict",
-            "pipeline_version",
-            "permanent_marginal",
-            "verdict_computed_at",
-        ]
-    )
-    mock_row.__getitem__ = lambda self, k: {
-        "doc_id": "dt-1",
-        "verdict": "PASS",
-        "pipeline_version": 3,
-        "permanent_marginal": False,
-        "verdict_computed_at": "2026-08-01",
-    }[k]
-
-    # dict(mock_row) needs to work -- simulate by making fetchrow return
-    # something that dict() can convert
-    pool.fetchrow = AsyncMock(
-        return_value={
-            "doc_id": "dt-1",
-            "verdict": "PASS",
-            "pipeline_version": 3,
-            "permanent_marginal": False,
-            "verdict_computed_at": "2026-08-01",
-        }
-    )
-    with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
-        result = await registry.upsert_doc({"doc_id": "dt-1", "verdict": "PASS"})
-
-    assert isinstance(result, dict)
-    assert result["doc_id"] == "dt-1"
 
 
 # ---------------------------------------------------------------------------
@@ -567,134 +344,9 @@ async def test_upsert_doc_returns_dict_type():
 # ---------------------------------------------------------------------------
 
 
-class TestForceVerdictOverrideWiring:
-    """Wiring test: force_verdict_override is popped from verdict_fields in
-    _upsert_registry_row and passed as a kwarg to upsert_doc.  It must NOT
-    be persisted as a column value in the meta dict sent to Postgres."""
-
-    @pytest.mark.asyncio
-    async def test_force_override_popped_and_passed_to_upsert_doc(self):
-        """force_verdict_override=True in verdict_fields is popped and
-        forwarded as kwarg to upsert_doc."""
-        mock_upsert = AsyncMock(
-            return_value={
-                "doc_id": "w1",
-                "verdict": "FAIL",
-                "pipeline_version": 5,
-                "permanent_marginal": False,
-                "verdict_computed_at": "2026-08-25T00:00:00Z",
-            }
-        )
-        mock_fields = {
-            "doc_id": "w1",
-            "verdict": "FAIL",
-            "pipeline_version": 5,
-            "content_class": "flat_prose",
-        }
-
-        with (
-            patch(
-                "pageindex_mcp.worker.registry_mirror.settings",
-                MagicMock(registry_enabled=True, postgres_dsn="postgresql://x"),
-            ),
-            patch("pageindex_mcp.registry.get_pool", return_value=MagicMock()),
-            patch("pageindex_mcp.registry.upsert_doc", mock_upsert),
-            patch(
-                "pageindex_mcp.worker.registry_mirror.read_registry_fields",
-                return_value=mock_fields,
-            ),
-            patch("pageindex_mcp.storage.verdict.save_doc_meta"),
-            patch(
-                "pageindex_mcp.worker.registry_mirror.REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP",
-                MagicMock(),
-            ),
-            patch(
-                "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis", AsyncMock()
-            ),
-        ):
-            await _upsert_registry_row(
-                "w1",
-                "flat_prose",
-                verdict_fields={"verdict": "FAIL", "force_verdict_override": True},
-            )
-
-        mock_upsert.assert_awaited_once()
-        call_kwargs = mock_upsert.await_args.kwargs
-        assert call_kwargs.get("force_verdict_override") is True
-        # The meta dict (positional arg) must NOT contain force_verdict_override
-        meta_arg = mock_upsert.await_args.args[0]
-        assert "force_verdict_override" not in meta_arg
-
-    @pytest.mark.asyncio
-    async def test_default_override_false_when_not_in_fields(self):
-        """When verdict_fields lacks force_verdict_override, default is False."""
-        mock_upsert = AsyncMock(
-            return_value={
-                "doc_id": "w2",
-                "verdict": "PASS",
-                "pipeline_version": 4,
-                "permanent_marginal": False,
-                "verdict_computed_at": "2026-08-25T00:00:00Z",
-            }
-        )
-        mock_fields = {
-            "doc_id": "w2",
-            "verdict": "PASS",
-            "pipeline_version": 4,
-            "content_class": "flat_prose",
-        }
-
-        with (
-            patch(
-                "pageindex_mcp.worker.registry_mirror.settings",
-                MagicMock(registry_enabled=True, postgres_dsn="postgresql://x"),
-            ),
-            patch("pageindex_mcp.registry.get_pool", return_value=MagicMock()),
-            patch("pageindex_mcp.registry.upsert_doc", mock_upsert),
-            patch(
-                "pageindex_mcp.worker.registry_mirror.read_registry_fields",
-                return_value=mock_fields,
-            ),
-            patch("pageindex_mcp.storage.verdict.save_doc_meta"),
-            patch(
-                "pageindex_mcp.worker.registry_mirror.REGISTRY_LAST_WRITE_SUCCESS_TIMESTAMP",
-                MagicMock(),
-            ),
-            patch(
-                "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis", AsyncMock()
-            ),
-        ):
-            await _upsert_registry_row(
-                "w2",
-                "flat_prose",
-                verdict_fields={"verdict": "PASS"},
-            )
-
-        call_kwargs = mock_upsert.await_args.kwargs
-        assert call_kwargs.get("force_verdict_override") is False
-
-
 # ---------------------------------------------------------------------------
 # Wiring: force_verdict_override import verification
 # ---------------------------------------------------------------------------
-
-
-def test_force_verdict_override_importable_from_queries():
-    """The force_verdict_override parameter must exist on upsert_doc."""
-    from pageindex_mcp.registry.queries import upsert_doc
-
-    sig = inspect.signature(upsert_doc)
-    assert "force_verdict_override" in sig.parameters
-    param = sig.parameters["force_verdict_override"]
-    assert param.default is False
-
-
-def test_verdict_downgrade_enabled_in_pipeline_config():
-    """VERDICT_DOWNGRADE_ENABLED must be a field on PipelineConfig."""
-    from pageindex_mcp.config import PipelineConfig
-
-    field_names = {f.name for f in dataclasses.fields(PipelineConfig)}
-    assert "verdict_downgrade_enabled" in field_names
 
 
 # --- from test_registry_mirror.py ---
@@ -722,112 +374,9 @@ _MIRROR_REGISTRY_ENABLED = _mirror_settings(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_upsert_single_linear_path_reads_minio_then_upserts():
-    """_upsert_registry_row reads MinIO fields, then does ONE upsert_doc call
-    (the single linear Postgres-authoritative path)."""
-    minio_fields = {"doc_id": "doc-1", "doc_name": "test.pdf", "sha256": "abc"}
-    winning_row = {"doc_id": "doc-1", "verdict": "PASS", "pipeline_version": 3}
-
-    with (
-        patch("pageindex_mcp.worker.registry_mirror.settings", _MIRROR_REGISTRY_ENABLED),
-        patch("pageindex_mcp.registry.get_pool", return_value=object()),
-        patch(
-            "pageindex_mcp.registry.upsert_doc",
-            AsyncMock(return_value=winning_row),
-        ) as mock_upsert,
-        patch(
-            "pageindex_mcp.worker.registry_mirror.read_registry_fields",
-            return_value=minio_fields,
-        ) as mock_read,
-        patch(
-            "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
-            AsyncMock(),
-        ),
-        patch("pageindex_mcp.storage.verdict.save_doc_meta") as mock_save_meta,
-    ):
-        await _upsert_registry_row("doc-1", "flat_table")
-
-    # Two reads (MinIO): one to build the upsert payload, one from the
-    # RFC-042 D3 CAS guard (_cas_filter_sidecar_meta) before the sidecar
-    # backfill -- both against the same doc_id/content_class.
-    assert mock_read.call_count == 2
-    for call in mock_read.call_args_list:
-        assert call.args == ("doc-1", "flat_table")
-    mock_upsert.assert_awaited_once()
-    # upsert receives the MinIO-read fields dict
-    upserted = mock_upsert.await_args[0][0]
-    assert upserted["doc_id"] == "doc-1"
-    assert upserted["sha256"] == "abc"
-
-
 # ---------------------------------------------------------------------------
 # Regression: backward compat with verdict_fields=None
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_upsert_registry_row_verdict_fields_none_backward_compat():
-    """preprocess_client.py calls _upsert_registry_row(doc_id, content_class)
-    without verdict_fields. This must not raise and must still upsert the
-    MinIO-read fields."""
-    minio_fields = {"doc_id": "batch-1", "doc_name": "batch.pdf"}
-
-    with (
-        patch("pageindex_mcp.worker.registry_mirror.settings", _MIRROR_REGISTRY_ENABLED),
-        patch("pageindex_mcp.registry.get_pool", return_value=object()),
-        patch(
-            "pageindex_mcp.registry.upsert_doc",
-            AsyncMock(return_value=None),
-        ) as mock_upsert,
-        patch(
-            "pageindex_mcp.worker.registry_mirror.read_registry_fields",
-            return_value=minio_fields,
-        ),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
-            AsyncMock(),
-        ),
-    ):
-        # verdict_fields not passed (defaults to None)
-        await _upsert_registry_row("batch-1", None)
-
-    mock_upsert.assert_awaited_once()
-    upserted = mock_upsert.await_args[0][0]
-    assert upserted["doc_id"] == "batch-1"
-    # No verdict fields overlay
-    assert "verdict" not in upserted
-
-
-@pytest.mark.asyncio
-async def test_upsert_registry_row_verdict_fields_overlay():
-    """When verdict_fields is provided, it overlays on top of MinIO-read fields
-    so job-context data takes precedence over stale artifact data."""
-    minio_fields = {"doc_id": "vf-1", "doc_name": "test.pdf", "verdict": "MARGINAL"}
-    verdict_fields = {"verdict": "PASS", "pipeline_version": 5, "verdict_computed_at": "2026-08-01"}
-
-    with (
-        patch("pageindex_mcp.worker.registry_mirror.settings", _MIRROR_REGISTRY_ENABLED),
-        patch("pageindex_mcp.registry.get_pool", return_value=object()),
-        patch(
-            "pageindex_mcp.registry.upsert_doc",
-            AsyncMock(return_value=None),
-        ) as mock_upsert,
-        patch(
-            "pageindex_mcp.worker.registry_mirror.read_registry_fields",
-            return_value=minio_fields,
-        ),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
-            AsyncMock(),
-        ),
-    ):
-        await _upsert_registry_row("vf-1", None, verdict_fields=verdict_fields)
-
-    upserted = mock_upsert.await_args[0][0]
-    assert upserted["verdict"] == "PASS"  # overlay wins
-    assert upserted["pipeline_version"] == 5
-    assert upserted["verdict_computed_at"] == "2026-08-01"
 
 
 # ---------------------------------------------------------------------------
@@ -835,123 +384,9 @@ async def test_upsert_registry_row_verdict_fields_overlay():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_upsert_registry_row_pool_not_ready_enqueues_verdict_retry():
-    """When get_pool() returns None and verdict_fields is provided,
-    _enqueue_verdict_retry is called to preserve the verdict for later replay."""
-    with (
-        patch("pageindex_mcp.worker.registry_mirror.settings", _MIRROR_REGISTRY_ENABLED),
-        patch("pageindex_mcp.registry.get_pool", return_value=None),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._enqueue_verdict_retry",
-            AsyncMock(),
-        ) as mock_enqueue,
-    ):
-        await _upsert_registry_row("doc-retry", None, verdict_fields={"verdict": "PASS"})
-
-    mock_enqueue.assert_awaited_once_with("doc-retry", {"verdict": "PASS"})
-
-
-@pytest.mark.asyncio
-async def test_upsert_registry_row_pool_not_ready_no_verdict_fields_no_enqueue():
-    """When get_pool() returns None and verdict_fields is None (batch CLI path),
-    nothing is enqueued."""
-    with (
-        patch("pageindex_mcp.worker.registry_mirror.settings", _MIRROR_REGISTRY_ENABLED),
-        patch("pageindex_mcp.registry.get_pool", return_value=None),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._enqueue_verdict_retry",
-            AsyncMock(),
-        ) as mock_enqueue,
-    ):
-        await _upsert_registry_row("doc-noretry", None)
-
-    mock_enqueue.assert_not_awaited()
-
-
 # ---------------------------------------------------------------------------
 # Contract: registry_fields kwarg skips MinIO re-read (Zone-7)
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_upsert_registry_row_registry_fields_skips_minio_read():
-    """Zone-7: when registry_fields is provided, _upsert_registry_row must NOT
-    call read_registry_fields (no MinIO re-read). upsert_doc receives the
-    registry_fields values directly."""
-    registry_fields = {
-        "doc_name": "test.pdf",
-        "source_url": "http://x",
-        "processed_at": "2026-08-26T00:00:00Z",
-        "sha256": "abc123",
-        "doc_description": "desc",
-        "product": "",
-        "tier": "",
-        "doc_family": "",
-        "effective_date": "",
-        "node_count": 5,
-    }
-
-    with (
-        patch("pageindex_mcp.worker.registry_mirror.settings", _MIRROR_REGISTRY_ENABLED),
-        patch("pageindex_mcp.registry.get_pool", return_value=object()),
-        patch(
-            "pageindex_mcp.registry.upsert_doc",
-            AsyncMock(return_value=None),
-        ) as mock_upsert,
-        patch(
-            "pageindex_mcp.worker.registry_mirror.read_registry_fields",
-            return_value={"doc_id": "SHOULD-NOT-BE-CALLED"},
-        ) as mock_read,
-        patch(
-            "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
-            AsyncMock(),
-        ),
-    ):
-        await _upsert_registry_row(
-            "rf-1",
-            None,
-            registry_fields=registry_fields,
-        )
-
-    # read_registry_fields must NOT be called when registry_fields is provided
-    mock_read.assert_not_called()
-    mock_upsert.assert_awaited_once()
-    upserted = mock_upsert.await_args[0][0]
-    assert upserted["doc_id"] == "rf-1"
-    assert upserted["sha256"] == "abc123"
-    assert upserted["doc_name"] == "test.pdf"
-    assert upserted["node_count"] == 5
-
-
-@pytest.mark.asyncio
-async def test_upsert_registry_row_registry_fields_none_falls_back_to_minio():
-    """Zone-7 backward compat: when registry_fields is None (older child binary
-    or batch CLI), read_registry_fields IS called."""
-    minio_fields = {"doc_id": "compat-1", "doc_name": "old.pdf", "sha256": "def"}
-
-    with (
-        patch("pageindex_mcp.worker.registry_mirror.settings", _MIRROR_REGISTRY_ENABLED),
-        patch("pageindex_mcp.registry.get_pool", return_value=object()),
-        patch(
-            "pageindex_mcp.registry.upsert_doc",
-            AsyncMock(return_value=None),
-        ) as mock_upsert,
-        patch(
-            "pageindex_mcp.worker.registry_mirror.read_registry_fields",
-            return_value=minio_fields,
-        ) as mock_read,
-        patch(
-            "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
-            AsyncMock(),
-        ),
-    ):
-        await _upsert_registry_row("compat-1", None, registry_fields=None)
-
-    mock_read.assert_called_once_with("compat-1", None)
-    mock_upsert.assert_awaited_once()
-    upserted = mock_upsert.await_args[0][0]
-    assert upserted["doc_id"] == "compat-1"
 
 
 # ---------------------------------------------------------------------------
@@ -959,82 +394,9 @@ async def test_upsert_registry_row_registry_fields_none_falls_back_to_minio():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_upsert_registry_row_verdict_fields_override_registry_fields():
-    """Zone-7: when both registry_fields and verdict_fields are provided,
-    verdict_fields values must override any overlapping keys in
-    registry_fields (overlay semantics preserved)."""
-    registry_fields = {
-        "doc_name": "test.pdf",
-        "source_url": "http://x",
-        "processed_at": "2026-08-26T00:00:00Z",
-        "sha256": "abc123",
-        "doc_description": "",
-        "product": "",
-        "tier": "",
-        "doc_family": "",
-        "effective_date": "",
-        "node_count": 5,
-    }
-    verdict_fields = {
-        "verdict": "PASS",
-        "pipeline_version": 5,
-        "verdict_computed_at": "2026-08-26T01:00:00Z",
-        "node_count": 10,  # overlapping key -- verdict_fields should win
-    }
-
-    with (
-        patch("pageindex_mcp.worker.registry_mirror.settings", _MIRROR_REGISTRY_ENABLED),
-        patch("pageindex_mcp.registry.get_pool", return_value=object()),
-        patch(
-            "pageindex_mcp.registry.upsert_doc",
-            AsyncMock(return_value=None),
-        ) as mock_upsert,
-        patch(
-            "pageindex_mcp.worker.registry_mirror.read_registry_fields",
-            return_value={"should": "not-be-called"},
-        ) as mock_read,
-        patch(
-            "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
-            AsyncMock(),
-        ),
-    ):
-        await _upsert_registry_row(
-            "overlay-1",
-            None,
-            verdict_fields=verdict_fields,
-            registry_fields=registry_fields,
-        )
-
-    mock_read.assert_not_called()
-    mock_upsert.assert_awaited_once()
-    upserted = mock_upsert.await_args[0][0]
-    # verdict_fields overlay wins over registry_fields for overlapping keys
-    assert upserted["verdict"] == "PASS"
-    assert upserted["pipeline_version"] == 5
-    assert upserted["node_count"] == 10  # verdict_fields value wins
-    # registry_fields base values still present
-    assert upserted["sha256"] == "abc123"
-    assert upserted["doc_name"] == "test.pdf"
-
-
 # ---------------------------------------------------------------------------
 # Contract: registry disabled -> early return, no upsert
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_upsert_registry_row_registry_disabled_noop():
-    """When registry_enabled is False, _upsert_registry_row returns immediately."""
-    disabled = _mirror_settings(registry_enabled=False, postgres_dsn="")
-
-    with (
-        patch("pageindex_mcp.worker.registry_mirror.settings", disabled),
-        patch("pageindex_mcp.registry.upsert_doc", AsyncMock()) as mock_upsert,
-    ):
-        await _upsert_registry_row("doc-x", None)
-
-    mock_upsert.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -1042,87 +404,9 @@ async def test_upsert_registry_row_registry_disabled_noop():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_upsert_registry_row_disabled_logs_degraded_consistency(caplog):
-    """When registry_enabled is False, _upsert_registry_row must log a message
-    containing 'degraded consistency' so operators can detect that the effective
-    consistency model changed (sidecar-only, no Postgres authority)."""
-    disabled = _mirror_settings(registry_enabled=False, postgres_dsn="")
-
-    with (
-        patch("pageindex_mcp.worker.registry_mirror.settings", disabled),
-        caplog.at_level(logging.INFO, logger="pageindex_mcp.worker.registry_mirror"),
-    ):
-        await _upsert_registry_row("doc-degraded", None)
-
-    degraded_msgs = [r.message for r in caplog.records if "degraded consistency" in r.message]
-    assert len(degraded_msgs) >= 1, (
-        f"Expected 'degraded consistency' log but got: {[r.message for r in caplog.records]}"
-    )
-    # The message should mention the doc_id for traceability
-    assert "doc-degraded" in degraded_msgs[0]
-
-
-@pytest.mark.asyncio
-async def test_upsert_registry_row_pool_not_ready_logs_degraded_consistency(caplog):
-    """When registry is enabled but pool is not ready, _upsert_registry_row must
-    also log 'degraded consistency'."""
-    with (
-        patch("pageindex_mcp.worker.registry_mirror.settings", _MIRROR_REGISTRY_ENABLED),
-        patch("pageindex_mcp.registry.get_pool", return_value=None),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._enqueue_verdict_retry",
-            AsyncMock(),
-        ),
-        caplog.at_level(logging.INFO, logger="pageindex_mcp.worker.registry_mirror"),
-    ):
-        await _upsert_registry_row("doc-pooldown", None)
-
-    degraded_msgs = [r.message for r in caplog.records if "degraded consistency" in r.message]
-    assert len(degraded_msgs) >= 1, (
-        f"Expected 'degraded consistency' log but got: {[r.message for r in caplog.records]}"
-    )
-
-
 # ---------------------------------------------------------------------------
 # Contract: best-effort sidecar backfill with winning row
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_upsert_registry_row_backfills_sidecar_with_winning_row():
-    """After a successful upsert, save_doc_meta is called with the winning row
-    dict returned by upsert_doc (best-effort sidecar convergence)."""
-    winning = {"doc_id": "bf-1", "verdict": "PASS", "pipeline_version": 4}
-    save_calls = []
-
-    def _capture_save(doc_id, meta):
-        save_calls.append((doc_id, meta))
-
-    with (
-        patch("pageindex_mcp.worker.registry_mirror.settings", _MIRROR_REGISTRY_ENABLED),
-        patch("pageindex_mcp.registry.get_pool", return_value=object()),
-        patch(
-            "pageindex_mcp.registry.upsert_doc",
-            AsyncMock(return_value=winning),
-        ),
-        patch(
-            "pageindex_mcp.worker.registry_mirror.read_registry_fields",
-            return_value={"doc_id": "bf-1"},
-        ),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
-            AsyncMock(),
-        ),
-        # save_doc_meta is lazily imported from ..storage inside the function;
-        # patching the storage module's attribute catches both direct and
-        # asyncio.to_thread calls.
-        patch("pageindex_mcp.storage.save_doc_meta", _capture_save),
-    ):
-        await _upsert_registry_row("bf-1", None)
-
-    assert len(save_calls) == 1
-    assert save_calls[0] == ("bf-1", winning)
 
 
 # ---------------------------------------------------------------------------
@@ -1130,105 +414,14 @@ async def test_upsert_registry_row_backfills_sidecar_with_winning_row():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_upsert_registry_row_sidecar_backfill_failure_swallowed():
-    """Zone-4 Phase 3 contract: save_doc_meta failure during best-effort
-    sidecar backfill must be swallowed (logged, never raised) so the
-    caller's job status is not affected by a MinIO hiccup."""
-    winning = {"doc_id": "sw-1", "verdict": "PASS", "pipeline_version": 4}
-
-    def _exploding_save(doc_id, meta):
-        raise RuntimeError("MinIO unreachable during sidecar backfill")
-
-    with (
-        patch("pageindex_mcp.worker.registry_mirror.settings", _MIRROR_REGISTRY_ENABLED),
-        patch("pageindex_mcp.registry.get_pool", return_value=object()),
-        patch(
-            "pageindex_mcp.registry.upsert_doc",
-            AsyncMock(return_value=winning),
-        ),
-        patch(
-            "pageindex_mcp.worker.registry_mirror.read_registry_fields",
-            return_value={"doc_id": "sw-1"},
-        ),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._mirror_registry_write_failure_to_redis",
-            AsyncMock(),
-        ),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
-            AsyncMock(),
-        ),
-        patch("pageindex_mcp.storage.save_doc_meta", _exploding_save),
-    ):
-        # Must NOT raise — the exception is caught inside _upsert_registry_row
-        await _upsert_registry_row("sw-1", None)
-
-
 # ---------------------------------------------------------------------------
 # Contract: upsert_doc exception triggers metric mirror + failure mirror
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_upsert_registry_row_upsert_failure_mirrors_to_redis():
-    """Zone-4 Phase 3 contract: when upsert_doc raises, the function must
-    call _mirror_registry_write_failure_to_redis and NOT propagate the
-    exception to the caller."""
-    with (
-        patch("pageindex_mcp.worker.registry_mirror.settings", _MIRROR_REGISTRY_ENABLED),
-        patch("pageindex_mcp.registry.get_pool", return_value=object()),
-        patch(
-            "pageindex_mcp.registry.upsert_doc",
-            AsyncMock(side_effect=RuntimeError("Postgres connection refused")),
-        ),
-        patch(
-            "pageindex_mcp.worker.registry_mirror.read_registry_fields",
-            return_value={"doc_id": "fail-1"},
-        ),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._mirror_registry_write_failure_to_redis",
-            AsyncMock(),
-        ) as mock_fail_mirror,
-        patch(
-            "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
-            AsyncMock(),
-        ),
-    ):
-        # Must NOT raise
-        await _upsert_registry_row("fail-1", None)
-
-    mock_fail_mirror.assert_awaited_once()
-
-
 # ---------------------------------------------------------------------------
 # Contract: no MinIO read when both fields=None and verdict_fields=None
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_upsert_registry_row_no_minio_no_verdict_skips_upsert():
-    """When read_registry_fields returns None and no verdict_fields are
-    provided, no upsert is attempted (nothing to write)."""
-    with (
-        patch("pageindex_mcp.worker.registry_mirror.settings", _MIRROR_REGISTRY_ENABLED),
-        patch("pageindex_mcp.registry.get_pool", return_value=object()),
-        patch(
-            "pageindex_mcp.registry.upsert_doc",
-            AsyncMock(),
-        ) as mock_upsert,
-        patch(
-            "pageindex_mcp.worker.registry_mirror.read_registry_fields",
-            return_value=None,
-        ),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
-            AsyncMock(),
-        ),
-    ):
-        await _upsert_registry_row("empty-1", None)
-
-    mock_upsert.assert_not_awaited()
 
 
 # --- from test_dual_write_consistency.py ---
@@ -1253,113 +446,9 @@ def _read_src(relpath: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-class TestTreeResultRegistryFieldsStash:
-    """_persist_tree_result must stash last_registry_fields on the client
-    instance so converters_cli can surface them in stdout JSON."""
-
-    def test_last_registry_fields_set_after_tree_persist(self):
-        """The _persist_tree_result method sets self.last_registry_fields
-        with the correct keys mirroring _REGISTRY_FIELDS."""
-        src = _read_src("client/indexer.py")
-        expected_keys = {
-            "doc_name",
-            "source_url",
-            "processed_at",
-            "sha256",
-            "doc_description",
-            "product",
-            "tier",
-            "doc_family",
-            "effective_date",
-            "node_count",
-        }
-        persist_tree_idx = src.index("def _persist_tree_result")
-        # Find next top-level async def (same indent level)
-        next_def = src.find("\n    async def ", persist_tree_idx + 10)
-        if next_def == -1:
-            next_def = len(src)
-        tree_src = src[persist_tree_idx:next_def]
-        assert "last_registry_fields" in tree_src
-        for key in expected_keys:
-            assert f'"{key}"' in tree_src, (
-                f"Missing key {key!r} in _persist_tree_result registry stash"
-            )
-
-    def test_tree_stash_includes_dynamic_node_count(self):
-        """The tree path must compute node_count via _tree_node_count(structure)
-        not hardcode 0 (unlike the flat path which correctly uses 0)."""
-        src = _read_src("client/indexer.py")
-        persist_tree_idx = src.index("def _persist_tree_result")
-        next_def = src.find("\n    async def ", persist_tree_idx + 10)
-        if next_def == -1:
-            next_def = len(src)
-        tree_src = src[persist_tree_idx:next_def]
-        # Between last_registry_fields and the closing brace, _tree_node_count
-        # should appear (not a hardcoded 0).
-        rf_idx = tree_src.index("last_registry_fields")
-        rf_block = tree_src[rf_idx : rf_idx + 600]
-        assert "_tree_node_count" in rf_block
-
-    def test_tree_stash_verdict_fields_also_set(self):
-        """_persist_tree_result must also set last_verdict_fields (Zone-7
-        existing contract)."""
-        src = _read_src("client/indexer.py")
-        persist_tree_idx = src.index("def _persist_tree_result")
-        next_def = src.find("\n    async def ", persist_tree_idx + 10)
-        if next_def == -1:
-            next_def = len(src)
-        tree_src = src[persist_tree_idx:next_def]
-        assert "last_verdict_fields" in tree_src
-
-
 # ---------------------------------------------------------------------------
 # 2. CONTRACT: last_registry_fields stash in _persist_flat_result
 # ---------------------------------------------------------------------------
-
-
-class TestFlatResultRegistryFieldsStash:
-    """_persist_flat_result must stash last_registry_fields with node_count=0
-    (flat docs have no tree structure)."""
-
-    def test_flat_stash_keys_match_contract(self):
-        """Flat result stash must contain the registry field keys plus
-        content_class (flat-specific)."""
-        src = _read_src("client/indexer.py")
-        persist_flat_idx = src.index("def _persist_flat_result")
-        next_def = src.find("\n    async def ", persist_flat_idx + 10)
-        if next_def == -1:
-            next_def = len(src)
-        flat_src = src[persist_flat_idx:next_def]
-        assert "last_registry_fields" in flat_src
-        expected_keys = {
-            "doc_name",
-            "source_url",
-            "processed_at",
-            "sha256",
-            "content_class",
-            "doc_description",
-            "product",
-            "tier",
-            "doc_family",
-            "effective_date",
-            "node_count",
-        }
-        for key in expected_keys:
-            assert f'"{key}"' in flat_src, (
-                f"Missing key {key!r} in _persist_flat_result registry stash"
-            )
-
-    def test_flat_stash_node_count_is_zero(self):
-        """Flat docs have no tree: node_count must be hardcoded 0."""
-        src = _read_src("client/indexer.py")
-        persist_flat_idx = src.index("def _persist_flat_result")
-        next_def = src.find("\n    async def ", persist_flat_idx + 10)
-        if next_def == -1:
-            next_def = len(src)
-        flat_src = src[persist_flat_idx:next_def]
-        rf_idx = flat_src.index("last_registry_fields")
-        block = flat_src[rf_idx : rf_idx + 600]
-        assert '"node_count": 0' in block
 
 
 # ---------------------------------------------------------------------------
@@ -1367,66 +456,10 @@ class TestFlatResultRegistryFieldsStash:
 # ---------------------------------------------------------------------------
 
 
-class TestConvertersCliDualWriteFields:
-    """converters_cli surfaces verdict_fields via getattr pattern;
-    last_registry_fields stashed in indexer for future surfacing."""
-
-    def test_verdict_fields_surfaced_via_getattr(self):
-        """converters_cli must use getattr() for last_verdict_fields."""
-        src = _read_src("converters_cli.py")
-        assert 'getattr(client, "last_verdict_fields"' in src
-
-    def test_verdict_fields_added_to_payload_when_truthy(self):
-        """verdict_fields is conditionally added to the payload dict."""
-        src = _read_src("converters_cli.py")
-        assert 'payload["verdict_fields"]' in src
-
-    def test_content_class_surfaced_via_getattr(self):
-        """content_class is surfaced the same way."""
-        src = _read_src("converters_cli.py")
-        assert 'getattr(client, "last_content_class"' in src
-
-    def test_indexer_stashes_last_registry_fields_both_paths(self):
-        """The indexer stashes last_registry_fields on both persist paths."""
-        src = _read_src("client/indexer.py")
-        tree_idx = src.index("def _persist_tree_result")
-        flat_idx = src.index("def _persist_flat_result")
-        assert "last_registry_fields" in src[tree_idx:]
-        assert "last_registry_fields" in src[flat_idx:]
-
-
 # ---------------------------------------------------------------------------
 # 4. WIRING: worker/job.py extracts registry_fields and passes to
 #    _upsert_registry_row
 # ---------------------------------------------------------------------------
-
-
-class TestJobVerdictFieldsWiring:
-    """process_document_job must extract verdict_fields from the subprocess
-    result dict and pass it as a kwarg to _upsert_registry_row."""
-
-    def test_verdict_fields_extracted_from_result(self):
-        """The job handler must call result.get('verdict_fields')."""
-        src = _read_src("worker/job.py")
-        assert 'result.get("verdict_fields")' in src
-
-    def test_verdict_fields_passed_as_kwarg_to_upsert(self):
-        """_upsert_registry_row must be called with verdict_fields= kwarg."""
-        src = _read_src("worker/job.py")
-        assert "verdict_fields=verdict_fields" in src
-
-    def test_upsert_registry_row_imported_from_registry_mirror(self):
-        """The job handler must import _upsert_registry_row from registry_mirror."""
-        src = _read_src("worker/job.py")
-        assert "from .registry_mirror import _upsert_registry_row" in src
-
-    def test_registry_mirror_accepts_registry_fields_kwarg(self):
-        """_upsert_registry_row signature must accept registry_fields kwarg
-        (ready for when job.py wires it from the child result)."""
-        src = _read_src("worker/registry_mirror.py")
-        fn_idx = src.index("async def _upsert_registry_row")
-        sig_block = src[fn_idx : fn_idx + 300]
-        assert "registry_fields" in sig_block
 
 
 # ---------------------------------------------------------------------------
@@ -1445,161 +478,6 @@ _DW_REGISTRY_ENABLED = _dw_settings(
     registry_enabled=True,
     postgres_dsn="postgresql://user:pass@localhost:5432/pageindex",
 )
-
-
-class TestRegistryMirrorSkipMinioReread:
-    """When registry_fields is supplied, _upsert_registry_row must skip the
-    read_registry_fields MinIO re-read entirely."""
-
-    @pytest.mark.asyncio
-    async def test_registry_fields_supplied_skips_minio_read(self):
-        """When registry_fields dict is passed, read_registry_fields is
-        never called (no MinIO round-trip)."""
-        registry_fields = {
-            "doc_name": "test.pdf",
-            "sha256": "abc",
-            "node_count": 5,
-        }
-
-        with (
-            patch("pageindex_mcp.worker.registry_mirror.settings", _DW_REGISTRY_ENABLED),
-            patch("pageindex_mcp.registry.get_pool", return_value=object()),
-            patch(
-                "pageindex_mcp.registry.upsert_doc",
-                AsyncMock(return_value=None),
-            ) as mock_upsert,
-            patch(
-                "pageindex_mcp.worker.registry_mirror.read_registry_fields",
-            ) as mock_read,
-            patch(
-                "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
-                AsyncMock(),
-            ),
-        ):
-            await _upsert_registry_row(
-                "doc-1",
-                None,
-                registry_fields=registry_fields,
-            )
-
-        mock_read.assert_not_called()
-        mock_upsert.assert_awaited_once()
-        upserted = mock_upsert.await_args[0][0]
-        assert upserted["doc_name"] == "test.pdf"
-        assert upserted["doc_id"] == "doc-1"
-
-    @pytest.mark.asyncio
-    async def test_registry_fields_none_falls_back_to_minio_read(self):
-        """When registry_fields is None (backward compat), read_registry_fields
-        is called to populate the fields from MinIO."""
-        minio_fields = {"doc_id": "doc-2", "doc_name": "fallback.pdf"}
-
-        with (
-            patch("pageindex_mcp.worker.registry_mirror.settings", _DW_REGISTRY_ENABLED),
-            patch("pageindex_mcp.registry.get_pool", return_value=object()),
-            patch(
-                "pageindex_mcp.registry.upsert_doc",
-                AsyncMock(return_value=None),
-            ),
-            patch(
-                "pageindex_mcp.worker.registry_mirror.read_registry_fields",
-                return_value=minio_fields,
-            ) as mock_read,
-            patch(
-                "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
-                AsyncMock(),
-            ),
-        ):
-            await _upsert_registry_row("doc-2", None, registry_fields=None)
-
-        mock_read.assert_called_once_with("doc-2", None)
-
-    @pytest.mark.asyncio
-    async def test_registry_fields_content_class_backfilled(self):
-        """When registry_fields lacks content_class but the arg is provided,
-        it is backfilled into the fields dict."""
-        registry_fields = {"doc_name": "test.pdf", "sha256": "abc"}
-
-        with (
-            patch("pageindex_mcp.worker.registry_mirror.settings", _DW_REGISTRY_ENABLED),
-            patch("pageindex_mcp.registry.get_pool", return_value=object()),
-            patch(
-                "pageindex_mcp.registry.upsert_doc",
-                AsyncMock(return_value=None),
-            ) as mock_upsert,
-            patch(
-                "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
-                AsyncMock(),
-            ),
-        ):
-            await _upsert_registry_row(
-                "doc-cc",
-                "flat_table",
-                registry_fields=registry_fields,
-            )
-
-        upserted = mock_upsert.await_args[0][0]
-        assert upserted["content_class"] == "flat_table"
-
-    @pytest.mark.asyncio
-    async def test_verdict_fields_overlay_with_registry_fields(self):
-        """When both registry_fields and verdict_fields are supplied,
-        verdict_fields overlay takes precedence."""
-        registry_fields = {"doc_name": "test.pdf", "sha256": "abc", "node_count": 5}
-        verdict_fields = {"verdict": "PASS", "pipeline_version": 7}
-
-        with (
-            patch("pageindex_mcp.worker.registry_mirror.settings", _DW_REGISTRY_ENABLED),
-            patch("pageindex_mcp.registry.get_pool", return_value=object()),
-            patch(
-                "pageindex_mcp.registry.upsert_doc",
-                AsyncMock(return_value=None),
-            ) as mock_upsert,
-            patch(
-                "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
-                AsyncMock(),
-            ),
-        ):
-            await _upsert_registry_row(
-                "doc-both",
-                None,
-                verdict_fields=verdict_fields,
-                registry_fields=registry_fields,
-            )
-
-        upserted = mock_upsert.await_args[0][0]
-        assert upserted["doc_name"] == "test.pdf"
-        assert upserted["verdict"] == "PASS"
-        assert upserted["pipeline_version"] == 7
-
-    @pytest.mark.asyncio
-    async def test_registry_fields_is_copied_not_mutated(self):
-        """The supplied registry_fields dict must be copied before mutation
-        (doc_id insertion, content_class backfill) so the caller's dict is
-        not modified."""
-        registry_fields = {"doc_name": "test.pdf", "sha256": "abc"}
-        original_keys = set(registry_fields.keys())
-
-        with (
-            patch("pageindex_mcp.worker.registry_mirror.settings", _DW_REGISTRY_ENABLED),
-            patch("pageindex_mcp.registry.get_pool", return_value=object()),
-            patch(
-                "pageindex_mcp.registry.upsert_doc",
-                AsyncMock(return_value=None),
-            ),
-            patch(
-                "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
-                AsyncMock(),
-            ),
-        ):
-            await _upsert_registry_row(
-                "doc-copy",
-                "flat_table",
-                registry_fields=registry_fields,
-            )
-
-        # Original dict must NOT have been mutated
-        assert set(registry_fields.keys()) == original_keys
 
 
 # ---------------------------------------------------------------------------
@@ -1719,128 +597,6 @@ class TestDeleteDocCascadeOrdering:
 # ---------------------------------------------------------------------------
 
 
-class TestCleanupAgeGuard:
-    """_delete_stale_rows must have an age guard that protects freshly-ingested
-    rows from being deleted as stale."""
-
-    @pytest.mark.asyncio
-    async def test_fresh_rows_protected_by_age_guard(self):
-        """Rows with processed_at within the grace period must NOT be deleted."""
-        from pageindex_mcp.registry_backfill.cleanup import _delete_stale_rows
-
-        now_iso = datetime.now(UTC).isoformat()
-        # 10 rows: 1 fresh stale candidate, 9 in MinIO
-        registry_rows = {
-            "fresh-stale": now_iso,  # just ingested -- should be age-protected
-            **{f"minio-{i}": "2026-01-01T00:00:00+00:00" for i in range(9)},
-        }
-        minio_ids = {f"minio-{i}" for i in range(9)}
-        mock_delete = AsyncMock()
-
-        with (
-            patch(
-                "pageindex_mcp.registry.list_all_doc_ids_with_timestamps",
-                AsyncMock(return_value=registry_rows),
-            ),
-            patch("pageindex_mcp.registry.delete_doc", mock_delete),
-        ):
-            await _delete_stale_rows(minio_ids, grace_minutes=10)
-
-        # fresh-stale is within the grace period -- not deleted
-        mock_delete.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_old_rows_deleted_as_stale(self):
-        """Rows with processed_at older than the grace period must be deleted."""
-        from pageindex_mcp.registry_backfill.cleanup import _delete_stale_rows
-
-        # 10 rows: 1 old stale candidate, 9 in MinIO
-        registry_rows = {
-            "old-stale": "2020-01-01T00:00:00+00:00",  # very old
-            **{f"minio-{i}": "2026-01-01T00:00:00+00:00" for i in range(9)},
-        }
-        minio_ids = {f"minio-{i}" for i in range(9)}
-        mock_delete = AsyncMock()
-
-        with (
-            patch(
-                "pageindex_mcp.registry.list_all_doc_ids_with_timestamps",
-                AsyncMock(return_value=registry_rows),
-            ),
-            patch("pageindex_mcp.registry.delete_doc", mock_delete),
-        ):
-            await _delete_stale_rows(minio_ids, grace_minutes=10)
-
-        mock_delete.assert_awaited_once()
-        deleted_id = mock_delete.await_args[0][0]
-        assert deleted_id == "old-stale"
-
-    @pytest.mark.asyncio
-    async def test_safety_threshold_prevents_mass_deletion(self):
-        """When stale candidates exceed 50% of total registry, deletion
-        is refused entirely."""
-        from pageindex_mcp.registry_backfill.cleanup import _delete_stale_rows
-
-        # 4 rows: 3 stale (75%), 1 in MinIO -- exceeds 50% threshold
-        registry_rows = {
-            "stale-1": "2020-01-01T00:00:00+00:00",
-            "stale-2": "2020-01-01T00:00:00+00:00",
-            "stale-3": "2020-01-01T00:00:00+00:00",
-            "good-1": "2020-01-01T00:00:00+00:00",
-        }
-        minio_ids = {"good-1"}
-        mock_delete = AsyncMock()
-
-        with (
-            patch(
-                "pageindex_mcp.registry.list_all_doc_ids_with_timestamps",
-                AsyncMock(return_value=registry_rows),
-            ),
-            patch("pageindex_mcp.registry.delete_doc", mock_delete),
-        ):
-            await _delete_stale_rows(minio_ids, grace_minutes=10)
-
-        # 3/4 = 75% > 50% threshold -- no deletions
-        mock_delete.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_empty_stale_set_is_noop(self):
-        """When all registry rows have MinIO counterparts, nothing is deleted."""
-        from pageindex_mcp.registry_backfill.cleanup import _delete_stale_rows
-
-        registry_rows = {"doc-1": "2026-01-01T00:00:00+00:00"}
-        mock_delete = AsyncMock()
-
-        with (
-            patch(
-                "pageindex_mcp.registry.list_all_doc_ids_with_timestamps",
-                AsyncMock(return_value=registry_rows),
-            ),
-            patch("pageindex_mcp.registry.delete_doc", mock_delete),
-        ):
-            await _delete_stale_rows({"doc-1"}, grace_minutes=10)
-
-        mock_delete.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_none_registry_rows_is_noop(self):
-        """When list_all_doc_ids_with_timestamps returns None, nothing happens."""
-        from pageindex_mcp.registry_backfill.cleanup import _delete_stale_rows
-
-        mock_delete = AsyncMock()
-
-        with (
-            patch(
-                "pageindex_mcp.registry.list_all_doc_ids_with_timestamps",
-                AsyncMock(return_value=None),
-            ),
-            patch("pageindex_mcp.registry.delete_doc", mock_delete),
-        ):
-            await _delete_stale_rows(set(), grace_minutes=10)
-
-        mock_delete.assert_not_awaited()
-
-
 # ---------------------------------------------------------------------------
 # 9. EXHAUSTIVENESS: HR2 cascade store coverage
 # ---------------------------------------------------------------------------
@@ -1857,7 +613,7 @@ class TestHR2CascadeStoreCoverage:
         return src[fn_idx:]
 
     def test_uploads_store_covered(self):
-        assert f"uploads/" in self._get_delete_doc_src()
+        assert "uploads/" in self._get_delete_doc_src()
 
     def test_processed_json_store_covered(self):
         assert "processed/" in self._get_delete_doc_src()
@@ -1889,133 +645,9 @@ class TestHR2CascadeStoreCoverage:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_upsert_failure_enqueues_verdict_retry():
-    """Regression: when upsert_doc raises inside _upsert_registry_row,
-    verdict_fields must be enqueued via _enqueue_verdict_retry (not silently
-    dropped). This closes the silent verdict loss gap on transient Postgres
-    errors."""
-    verdict = {"verdict": "PASS", "pipeline_version": 7}
-
-    with (
-        patch("pageindex_mcp.worker.registry_mirror.settings", _MIRROR_REGISTRY_ENABLED),
-        patch("pageindex_mcp.registry.get_pool", return_value=object()),
-        patch(
-            "pageindex_mcp.registry.upsert_doc",
-            AsyncMock(side_effect=RuntimeError("connection refused")),
-        ),
-        patch(
-            "pageindex_mcp.worker.registry_mirror.read_registry_fields",
-            return_value={"doc_id": "retry-1"},
-        ),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._mirror_registry_write_failure_to_redis",
-            AsyncMock(),
-        ),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
-            AsyncMock(),
-        ),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._enqueue_verdict_retry",
-            AsyncMock(),
-        ) as mock_enqueue,
-    ):
-        await _upsert_registry_row("retry-1", None, verdict_fields=verdict)
-
-    mock_enqueue.assert_awaited_once_with("retry-1", verdict)
-
-
-@pytest.mark.asyncio
-async def test_upsert_failure_no_verdict_fields_no_enqueue():
-    """When upsert_doc raises but verdict_fields is None, no retry is
-    enqueued (nothing to retry)."""
-    with (
-        patch("pageindex_mcp.worker.registry_mirror.settings", _MIRROR_REGISTRY_ENABLED),
-        patch("pageindex_mcp.registry.get_pool", return_value=object()),
-        patch(
-            "pageindex_mcp.registry.upsert_doc",
-            AsyncMock(side_effect=RuntimeError("connection refused")),
-        ),
-        patch(
-            "pageindex_mcp.worker.registry_mirror.read_registry_fields",
-            return_value={"doc_id": "retry-2"},
-        ),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._mirror_registry_write_failure_to_redis",
-            AsyncMock(),
-        ),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
-            AsyncMock(),
-        ),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._enqueue_verdict_retry",
-            AsyncMock(),
-        ) as mock_enqueue,
-    ):
-        await _upsert_registry_row("retry-2", None)
-
-    mock_enqueue.assert_not_awaited()
-
-
 # ---------------------------------------------------------------------------
 # Zone-5: Wiring — REGISTRY_CONSISTENCY_DEGRADED metric fires on disabled/pool-None
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_registry_disabled_increments_consistency_degraded_metric():
-    """Wiring: when registry_enabled=false, REGISTRY_CONSISTENCY_DEGRADED must
-    be incremented AND _mirror_bridged_incr('registry_consistency_degraded')
-    must be called."""
-    disabled = _mirror_settings(registry_enabled=False, postgres_dsn="")
-
-    mock_gauge = MagicMock()
-
-    with (
-        patch("pageindex_mcp.worker.registry_mirror.settings", disabled),
-        patch(
-            "pageindex_mcp.worker.registry_mirror.REGISTRY_CONSISTENCY_DEGRADED",
-            mock_gauge,
-        ),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._mirror_bridged_incr",
-            AsyncMock(),
-        ) as mock_bridged,
-    ):
-        await _upsert_registry_row("degraded-metric-1", None)
-
-    mock_gauge.inc.assert_called_once()
-    mock_bridged.assert_awaited_once_with("registry_consistency_degraded")
-
-
-@pytest.mark.asyncio
-async def test_pool_none_increments_consistency_degraded_metric():
-    """Wiring: when pool=None, REGISTRY_CONSISTENCY_DEGRADED must be incremented
-    AND _mirror_bridged_incr('registry_consistency_degraded') must fire."""
-    mock_gauge = MagicMock()
-
-    with (
-        patch("pageindex_mcp.worker.registry_mirror.settings", _MIRROR_REGISTRY_ENABLED),
-        patch("pageindex_mcp.registry.get_pool", return_value=None),
-        patch(
-            "pageindex_mcp.worker.registry_mirror.REGISTRY_CONSISTENCY_DEGRADED",
-            mock_gauge,
-        ),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._mirror_bridged_incr",
-            AsyncMock(),
-        ) as mock_bridged,
-        patch(
-            "pageindex_mcp.worker.registry_mirror._enqueue_verdict_retry",
-            AsyncMock(),
-        ),
-    ):
-        await _upsert_registry_row("degraded-metric-2", None)
-
-    mock_gauge.inc.assert_called_once()
-    mock_bridged.assert_awaited_once_with("registry_consistency_degraded")
 
 
 # ---------------------------------------------------------------------------
@@ -2025,8 +657,10 @@ async def test_pool_none_increments_consistency_degraded_metric():
 
 @pytest.mark.asyncio
 async def test_successful_upsert_stamps_postgres_authoritative_in_sidecar():
-    """Contract: after successful Postgres upsert, the winning dict passed to
-    save_doc_meta must contain consistency_regime='postgres-authoritative'."""
+    """Contract: _upsert_registry_row takes ONE linear path -- read the MinIO
+    registry fields, do ONE upsert_doc, then backfill the sidecar with the
+    winning row stamped consistency_regime='postgres-authoritative'.  The
+    backfill itself is best-effort and swallows a save_doc_meta failure."""
     winning = {"doc_id": "regime-1", "verdict": "PASS", "pipeline_version": 4}
     save_calls = []
 
@@ -2039,96 +673,63 @@ async def test_successful_upsert_stamps_postgres_authoritative_in_sidecar():
         patch(
             "pageindex_mcp.registry.upsert_doc",
             AsyncMock(return_value=winning),
-        ),
+        ) as mock_upsert,
         patch(
             "pageindex_mcp.worker.registry_mirror.read_registry_fields",
-            return_value={"doc_id": "regime-1"},
-        ),
+            return_value={"doc_id": "regime-1", "sha256": "abc"},
+        ) as mock_read,
         patch(
             "pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis",
             AsyncMock(),
         ),
         patch("pageindex_mcp.storage.save_doc_meta", _capture_save),
     ):
-        await _upsert_registry_row("regime-1", None)
+        await _upsert_registry_row("regime-1", "flat_table")
+
+    # The single linear Postgres-authoritative path: read MinIO, ONE upsert_doc.
+    # Two reads, both for the same doc_id/content_class -- one to build the
+    # upsert payload, one from the RFC-042 D3 CAS guard
+    # (_cas_filter_sidecar_meta) before the sidecar backfill.
+    assert mock_read.call_count == 2
+    assert all(call.args == ("regime-1", "flat_table") for call in mock_read.call_args_list)
+    mock_upsert.assert_awaited_once()
+    assert mock_upsert.await_args[0][0]["sha256"] == "abc"
 
     assert len(save_calls) == 1
-    _, meta = save_calls[0]
+    doc_id, meta = save_calls[0]
+    # Best-effort sidecar convergence: the winning row dict returned by
+    # upsert_doc is what gets written back, under the same doc_id.
+    assert doc_id == "regime-1"
+    assert {k: meta[k] for k in winning} == winning
     assert meta["consistency_regime"] == "postgres-authoritative"
+
+    # Zone-4 Phase 3 contract: the sidecar backfill is best-effort -- a
+    # save_doc_meta failure is logged and swallowed, never raised, so a MinIO
+    # hiccup cannot fail the caller's job.
+    def _exploding_save(doc_id, meta):
+        raise RuntimeError("MinIO unreachable during sidecar backfill")
+
+    with (
+        patch("pageindex_mcp.worker.registry_mirror.settings", _MIRROR_REGISTRY_ENABLED),
+        patch("pageindex_mcp.registry.get_pool", return_value=object()),
+        patch("pageindex_mcp.registry.upsert_doc", AsyncMock(return_value=winning)),
+        patch(
+            "pageindex_mcp.worker.registry_mirror.read_registry_fields",
+            return_value={"doc_id": "regime-1"},
+        ),
+        patch(
+            "pageindex_mcp.worker.registry_mirror._mirror_registry_write_failure_to_redis",
+            AsyncMock(),
+        ),
+        patch("pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis", AsyncMock()),
+        patch("pageindex_mcp.storage.save_doc_meta", _exploding_save),
+    ):
+        await _upsert_registry_row("regime-1", None)  # must NOT raise
 
 
 # ---------------------------------------------------------------------------
 # Zone-5: Contract — pool not ready stamps 'sidecar-only' in sidecar
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_pool_not_ready_stamps_sidecar_only_consistency_regime():
-    """Contract: when pool is not ready, save_doc_meta is called with
-    consistency_regime='sidecar-only' (best-effort)."""
-    save_calls = []
-
-    def _capture_save(doc_id, meta):
-        save_calls.append((doc_id, dict(meta)))
-
-    with (
-        patch("pageindex_mcp.worker.registry_mirror.settings", _MIRROR_REGISTRY_ENABLED),
-        patch("pageindex_mcp.registry.get_pool", return_value=None),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._enqueue_verdict_retry",
-            AsyncMock(),
-        ),
-        patch(
-            "pageindex_mcp.worker.registry_mirror.REGISTRY_CONSISTENCY_DEGRADED",
-            MagicMock(),
-        ),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._mirror_bridged_incr",
-            AsyncMock(),
-        ),
-        # RFC-042 D3 CAS guard (_cas_filter_sidecar_meta) reads MinIO before
-        # stamping the sidecar even during degradation; no prior sidecar
-        # state exists here, so it should pass the meta through unchanged.
-        patch(
-            "pageindex_mcp.worker.registry_mirror.read_registry_fields",
-            return_value=None,
-        ),
-        patch("pageindex_mcp.storage.save_doc_meta", _capture_save),
-    ):
-        await _upsert_registry_row("sidecar-1", None, verdict_fields={"verdict": "PASS"})
-
-    assert len(save_calls) == 1
-    _, meta = save_calls[0]
-    assert meta["consistency_regime"] == "sidecar-only"
-
-
-@pytest.mark.asyncio
-async def test_registry_disabled_stamps_sidecar_only_consistency_regime():
-    """Contract: when registry_enabled=false, save_doc_meta is called with
-    consistency_regime='sidecar-only' (best-effort)."""
-    disabled = _mirror_settings(registry_enabled=False, postgres_dsn="")
-    save_calls = []
-
-    def _capture_save(doc_id, meta):
-        save_calls.append((doc_id, dict(meta)))
-
-    with (
-        patch("pageindex_mcp.worker.registry_mirror.settings", disabled),
-        patch(
-            "pageindex_mcp.worker.registry_mirror.REGISTRY_CONSISTENCY_DEGRADED",
-            MagicMock(),
-        ),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._mirror_bridged_incr",
-            AsyncMock(),
-        ),
-        patch("pageindex_mcp.storage.save_doc_meta", _capture_save),
-    ):
-        await _upsert_registry_row("sidecar-2", None)
-
-    assert len(save_calls) == 1
-    _, meta = save_calls[0]
-    assert meta["consistency_regime"] == "sidecar-only"
 
 
 # ---------------------------------------------------------------------------
@@ -2189,36 +790,888 @@ async def test_delete_doc_statement_timeout_precedes_delete_with_correct_value()
 # ---------------------------------------------------------------------------
 
 
-def test_registry_consistency_degraded_defined_in_definitions():
-    """Wiring: REGISTRY_CONSISTENCY_DEGRADED must be defined in
-    metrics.definitions."""
+def test_registry_consistency_degraded_metric_wiring():
+    """Wiring: REGISTRY_CONSISTENCY_DEGRADED is defined in metrics.definitions,
+    re-exported (identically) from metrics/__init__, and registered in
+    metrics.sync._BRIDGED_METRICS under 'registry_consistency_degraded'."""
+    from pageindex_mcp.metrics import REGISTRY_CONSISTENCY_DEGRADED as reexported
     from pageindex_mcp.metrics.definitions import REGISTRY_CONSISTENCY_DEGRADED as gauge
+    from pageindex_mcp.metrics.sync import _BRIDGED_METRICS
 
     assert gauge is not None
     assert gauge._name == "pageindex_registry_consistency_degraded_total"
+    assert reexported is gauge, "metrics/__init__ must re-export the same object"
+    assert "registry_consistency_degraded" in _BRIDGED_METRICS
+    assert _BRIDGED_METRICS["registry_consistency_degraded"] is gauge
 
 
-def test_registry_consistency_degraded_reexported_from_metrics_init():
-    """Wiring: REGISTRY_CONSISTENCY_DEGRADED must be re-exported from
-    metrics/__init__.py."""
-    from pageindex_mcp.metrics import REGISTRY_CONSISTENCY_DEGRADED as gauge
+# ---------------------------------------------------------------------------
+# Consolidated (test-budget reduction): table-driven replacements.
+# Each test below loops over the rows the former per-row tests covered,
+# collects EVERY mismatch, and asserts once naming the offending rows.
+# ---------------------------------------------------------------------------
 
-    assert gauge is not None
-    from pageindex_mcp.metrics.definitions import (
-        REGISTRY_CONSISTENCY_DEGRADED as original,
+
+async def test_registry_reads_degrade_to_none():
+    """Every read coroutine degrades to None instead of raising: pool absent
+    (RFC-006 fallback guards), Postgres error, and Redis error."""
+    failures = []
+
+    with patch("pageindex_mcp.registry.schema.get_pool", return_value=None):
+        for name, coro in (
+            ("list_docs", registry.list_docs()),
+            ("count_docs", registry.count_docs()),
+            ("stage_b_candidates", registry.stage_b_candidates("anything", 10)),
+            ("stage_a_filter", registry.stage_a_filter("anything")),
+        ):
+            if await coro is not None:
+                failures.append(f"{name}(no pool) did not return None")
+
+    # count_docs swallows a Postgres-side error and still degrades to None.
+    pool = _mock_pool()
+    pool.fetchval.side_effect = RuntimeError("connection reset")
+    with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
+        if await registry.count_docs() is not None:
+            failures.append("count_docs(fetchval raises) did not return None")
+
+    # is_registry_complete swallows a Redis error and degrades to False.
+    r = AsyncMock()
+    r.get.side_effect = ConnectionError("redis down")
+    if await registry.is_registry_complete(r) is not False:
+        failures.append("is_registry_complete(redis down) did not return False")
+
+    assert not failures, failures
+
+
+async def test_stage_a_facet_resolution_and_stage_b_fallback():
+    """Stage A resolves facets by exact case-folded token only: unpopulated
+    facets pass through (None), a substring hit never matches, and
+    refresh_known_facets casefolds values while dropping unknown columns.
+    Stage B then degrades a no-match ts_rank query to a recency fallback."""
+    failures = []
+    pool = _mock_pool()
+
+    # 1. Facet sets empty -> transparent pass-through, no SQL issued.
+    with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
+        if await registry.stage_a_filter("huk coburg policy") is not None:
+            failures.append("unpopulated facets: expected None pass-through")
+    if pool.fetch.await_count:
+        failures.append("unpopulated facets: fetch was issued")
+
+    # 2. 'huk' inside 'hukcoburg' is not a standalone token -> no match.
+    registry.refresh_known_facets({"product": {"huk"}})
+    with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool):
+        if await registry.stage_a_filter("hukcoburg terms") is not None:
+            failures.append("substring 'hukcoburg': expected None (no facet match)")
+    if pool.fetch.await_count:
+        failures.append("substring match: fetch was issued")
+
+    # 3. refresh_known_facets casefolds and ignores unknown columns.
+    registry.refresh_known_facets({"product": {"HUK", "Allianz"}, "not_a_column": {"x"}})
+    if registry._KNOWN_FACETS.get("product") != {"huk", "allianz"}:
+        failures.append(f"casefold: got {registry._KNOWN_FACETS.get('product')!r}")
+    if "not_a_column" in registry._KNOWN_FACETS:
+        failures.append("unknown column 'not_a_column' was retained")
+
+    # 4. Stage B: a ts_rank query that matches nothing falls back to a second
+    # recency query rather than returning an empty candidate set.
+    recent = [
+        {
+            "doc_id": "r1",
+            "doc_name": "recent.pdf",
+            "source_url": "",
+            "processed_at": "2026-07-10",
+            "content_class": "",
+        },
+    ]
+    pool_b = _mock_pool()
+    pool_b.fetch.side_effect = [[], recent]
+    with patch("pageindex_mcp.registry.schema.get_pool", return_value=pool_b):
+        rows = await registry.stage_b_candidates("zzzznomatch", 200)
+    if rows is None or [r["doc_id"] for r in rows] != ["r1"]:
+        failures.append(f"stage B recency fallback returned {rows!r}")
+    if pool_b.fetch.await_count != 2:
+        failures.append(f"stage B issued {pool_b.fetch.await_count} queries, expected 2")
+    elif pool_b.fetch.await_args_list[1].args != (registry._STAGE_B_FALLBACK_SQL, 200):
+        failures.append(f"stage B fallback SQL/args = {pool_b.fetch.await_args_list[1].args!r}")
+
+    assert not failures, failures
+
+
+def test_registry_sql_contract():
+    """RFC-014 D2 / RFC-037 D1 / Zone-4: the registry DDL and upsert SQL must
+    carry the idempotent-migration, RETURNING and CAS-guard clauses."""
+    from pageindex_mcp.registry.queries import _UPSERT_SQL
+
+    migrate = registry._MIGRATE_VERDICT_SQL
+    returning = _UPSERT_SQL.split("RETURNING")[1] if "RETURNING" in _UPSERT_SQL else ""
+
+    checks = [
+        # (row name, haystack, needle)
+        ("migrate: verdict IF NOT EXISTS", migrate, "ADD COLUMN IF NOT EXISTS verdict"),
+        (
+            "migrate: pipeline_version IF NOT EXISTS",
+            migrate,
+            "ADD COLUMN IF NOT EXISTS pipeline_version",
+        ),
+        (
+            "migrate: permanent_marginal IF NOT EXISTS",
+            migrate,
+            "ADD COLUMN IF NOT EXISTS permanent_marginal",
+        ),
+        ("upsert: has RETURNING", _UPSERT_SQL, "RETURNING"),
+        ("upsert RETURNING: doc_id", returning, "doc_id"),
+        ("upsert RETURNING: verdict", returning, "verdict"),
+        ("upsert RETURNING: pipeline_version", returning, "pipeline_version"),
+        ("upsert RETURNING: permanent_marginal", returning, "permanent_marginal"),
+        ("upsert RETURNING: verdict_computed_at", returning, "verdict_computed_at"),
+        ("verdict CAS: EXCLUDED PASS priority", _UPSERT_SQL, "EXCLUDED.verdict = 'PASS' THEN 3"),
+        (
+            "verdict CAS: incumbent PASS priority",
+            _UPSERT_SQL,
+            "doc_registry.verdict = 'PASS' THEN 3",
+        ),
+        (
+            "processed_at CAS guard",
+            _UPSERT_SQL,
+            "EXCLUDED.processed_at >= COALESCE(doc_registry.processed_at",
+        ),
+    ]
+    missing = [name for name, hay, needle in checks if needle not in hay]
+    assert not missing, f"missing SQL clauses: {missing}"
+
+
+def test_settings_carry_no_verdict_authority_mode_flag():
+    """Zone-4 Phase 3 contract: Postgres is unconditionally the sole verdict
+    authority — neither the Settings field nor its env-var loading path may
+    exist.  Also pins the two config knobs that DO have to exist."""
+    import pageindex_mcp.config as config_mod
+    from pageindex_mcp.config import PipelineConfig, Settings
+    from pageindex_mcp.registry.queries import upsert_doc
+
+    failures = []
+
+    if "registry_verdict_authority" in {f.name for f in dataclasses.fields(Settings)}:
+        failures.append("registry_verdict_authority must be removed from Settings")
+
+    executable_lines = [
+        line
+        for line in inspect.getsource(config_mod).splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    for line in executable_lines:
+        if "REGISTRY_VERDICT_AUTHORITY" in line:
+            failures.append(f"REGISTRY_VERDICT_AUTHORITY in executable line: {line.strip()}")
+
+    sig = inspect.signature(upsert_doc)
+    if "force_verdict_override" not in sig.parameters:
+        failures.append("upsert_doc lacks force_verdict_override parameter")
+    elif sig.parameters["force_verdict_override"].default is not False:
+        failures.append("force_verdict_override default is not False")
+
+    if "verdict_downgrade_enabled" not in {f.name for f in dataclasses.fields(PipelineConfig)}:
+        failures.append("PipelineConfig lacks verdict_downgrade_enabled")
+
+    assert not failures, failures
+
+
+def _mirror_patches(
+    *,
+    settings_obj=None,
+    pool=object(),
+    upsert_mock=None,
+    read_mock=None,
+    save_mock=None,
+    extra=(),
+):
+    """The standard _upsert_registry_row harness, as a reusable patch stack."""
+    stack = [
+        patch(
+            "pageindex_mcp.worker.registry_mirror.settings",
+            settings_obj if settings_obj is not None else _MIRROR_REGISTRY_ENABLED,
+        ),
+        patch("pageindex_mcp.registry.get_pool", return_value=pool),
+        patch("pageindex_mcp.worker.registry_mirror._mirror_registry_metric_to_redis", AsyncMock()),
+    ]
+    if upsert_mock is not None:
+        stack.append(patch("pageindex_mcp.registry.upsert_doc", upsert_mock))
+    if read_mock is not None:
+        stack.append(patch("pageindex_mcp.worker.registry_mirror.read_registry_fields", read_mock))
+    if save_mock is not None:
+        stack.append(patch("pageindex_mcp.storage.save_doc_meta", save_mock))
+    stack.extend(extra)
+    return stack
+
+
+async def _run_mirror(doc_id, content_class, *, minio_fields, upsert_return=None, **kwargs):
+    """Drive _upsert_registry_row once; return (upserted_dict, read_mock)."""
+    import contextlib
+
+    mock_upsert = AsyncMock(return_value=upsert_return)
+    mock_read = MagicMock(return_value=minio_fields)
+    with contextlib.ExitStack() as es:
+        for p in _mirror_patches(upsert_mock=mock_upsert, read_mock=mock_read):
+            es.enter_context(p)
+        await _upsert_registry_row(doc_id, content_class, **kwargs)
+    upserted = mock_upsert.await_args[0][0] if mock_upsert.await_args else None
+    return upserted, mock_read
+
+
+@pytest.mark.asyncio
+async def test_upsert_registry_row_field_source_matrix():
+    """Zone-7 / RFC-014: the payload _upsert_registry_row sends to upsert_doc is
+    assembled from (MinIO read | registry_fields) with verdict_fields overlaid
+    on top, and registry_fields suppresses the MinIO re-read entirely.
+
+    Replaces the former one-test-per-combination suite; every row is checked
+    and every mismatch is reported by row name.
+    """
+    base_rf = {
+        "doc_name": "test.pdf",
+        "source_url": "http://x",
+        "processed_at": "2026-08-26T00:00:00Z",
+        "sha256": "abc123",
+        "doc_description": "desc",
+        "product": "",
+        "tier": "",
+        "doc_family": "",
+        "effective_date": "",
+        "node_count": 5,
+    }
+    vf = {"verdict": "PASS", "pipeline_version": 5, "verdict_computed_at": "2026-08-26T01:00:00Z"}
+
+    failures = []
+
+    # Row 1: no registry_fields, no verdict_fields -> MinIO read is the source.
+    upserted, read = await _run_mirror(
+        "compat-1",
+        None,
+        minio_fields={"doc_id": "compat-1", "doc_name": "old.pdf", "sha256": "def"},
+    )
+    if read.call_args_list != [(("compat-1", None),)]:
+        failures.append(
+            f"minio-only: expected one read('compat-1', None), got {read.call_args_list}"
+        )
+    if upserted.get("sha256") != "def" or upserted.get("doc_id") != "compat-1":
+        failures.append(f"minio-only: bad payload {upserted!r}")
+    if "verdict" in upserted:
+        failures.append("minio-only: verdict leaked into payload")
+
+    # Row 2: verdict_fields only -> overlay wins over stale MinIO artifact data.
+    upserted, _ = await _run_mirror(
+        "vf-1",
+        None,
+        minio_fields={"doc_id": "vf-1", "doc_name": "test.pdf", "verdict": "MARGINAL"},
+        verdict_fields=dict(vf),
+    )
+    for key, want in vf.items():
+        if upserted.get(key) != want:
+            failures.append(f"verdict-overlay: {key}={upserted.get(key)!r}, want {want!r}")
+
+    # Row 3: registry_fields supplied -> no MinIO round-trip at all.
+    upserted, read = await _run_mirror(
+        "rf-1", None, minio_fields={"doc_id": "SHOULD-NOT-BE-CALLED"}, registry_fields=dict(base_rf)
+    )
+    if read.called:
+        failures.append("registry_fields: read_registry_fields was called (MinIO re-read)")
+    for key, want in (
+        ("doc_id", "rf-1"),
+        ("sha256", "abc123"),
+        ("doc_name", "test.pdf"),
+        ("node_count", 5),
+    ):
+        if upserted.get(key) != want:
+            failures.append(f"registry_fields: {key}={upserted.get(key)!r}, want {want!r}")
+
+    # Row 4: both supplied -> verdict_fields overlay beats registry_fields.
+    upserted, read = await _run_mirror(
+        "overlay-1",
+        None,
+        minio_fields={"should": "not-be-called"},
+        registry_fields=dict(base_rf),
+        verdict_fields={**vf, "node_count": 10},
+    )
+    if read.called:
+        failures.append("both: read_registry_fields was called")
+    for key, want in (
+        ("verdict", "PASS"),
+        ("pipeline_version", 5),
+        ("node_count", 10),
+        ("sha256", "abc123"),
+    ):
+        if upserted.get(key) != want:
+            failures.append(f"both: {key}={upserted.get(key)!r}, want {want!r}")
+
+    # Row 5: content_class arg is backfilled into a registry_fields dict that
+    # lacks it -- and the caller's dict is copied, never mutated in place.
+    caller_dict = {"doc_name": "test.pdf", "sha256": "abc"}
+    original_keys = set(caller_dict)
+    upserted, _ = await _run_mirror(
+        "doc-cc", "flat_table", minio_fields=None, registry_fields=caller_dict
+    )
+    if upserted.get("content_class") != "flat_table":
+        failures.append(f"content_class backfill: got {upserted.get('content_class')!r}")
+    if set(caller_dict) != original_keys:
+        failures.append(f"caller's registry_fields was mutated: {set(caller_dict) - original_keys}")
+
+    # Row 6: nothing to write (MinIO read returns None, no verdict_fields) ->
+    # no upsert is attempted at all.
+    upserted, _ = await _run_mirror("empty-1", None, minio_fields=None)
+    if upserted is not None:
+        failures.append(f"no-source: upsert_doc was awaited with {upserted!r}")
+
+    assert not failures, failures
+
+
+@pytest.mark.asyncio
+async def test_force_verdict_override_wiring_matrix():
+    """force_verdict_override is popped out of verdict_fields and forwarded as a
+    kwarg to upsert_doc (never persisted as a column), defaulting to False."""
+    import contextlib
+
+    failures = []
+    for row, verdict_fields, expected in (
+        ("explicit True", {"verdict": "FAIL", "force_verdict_override": True}, True),
+        ("absent", {"verdict": "PASS"}, False),
+    ):
+        mock_upsert = AsyncMock(return_value=None)
+        with contextlib.ExitStack() as es:
+            for p in _mirror_patches(
+                pool=MagicMock(),
+                upsert_mock=mock_upsert,
+                read_mock=MagicMock(return_value={"doc_id": "w1", "content_class": "flat_prose"}),
+                save_mock=MagicMock(),
+            ):
+                es.enter_context(p)
+            await _upsert_registry_row("w1", "flat_prose", verdict_fields=dict(verdict_fields))
+
+        kwargs = mock_upsert.await_args.kwargs
+        if kwargs.get("force_verdict_override") is not expected:
+            failures.append(
+                f"{row}: kwarg={kwargs.get('force_verdict_override')!r}, want {expected!r}"
+            )
+        if "force_verdict_override" in mock_upsert.await_args.args[0]:
+            failures.append(f"{row}: force_verdict_override persisted into the meta dict")
+
+    assert not failures, failures
+
+
+@pytest.mark.asyncio
+async def test_upsert_registry_row_degraded_paths(caplog):
+    """Both degraded modes (registry disabled, pool not ready) must: skip the
+    Postgres upsert, log 'degraded consistency' naming the doc, increment
+    REGISTRY_CONSISTENCY_DEGRADED, mirror the bridged counter, and stamp the
+    sidecar consistency_regime as 'sidecar-only'."""
+    import contextlib
+
+    disabled = _mirror_settings(registry_enabled=False, postgres_dsn="")
+    failures = []
+
+    for row, settings_obj, pool in (
+        ("registry disabled", disabled, object()),
+        ("pool not ready", _MIRROR_REGISTRY_ENABLED, None),
+    ):
+        mock_upsert = AsyncMock()
+        mock_gauge = MagicMock()
+        mock_bridged = AsyncMock()
+        saves = []
+        caplog.clear()
+        with contextlib.ExitStack() as es:
+            for p in _mirror_patches(
+                settings_obj=settings_obj,
+                pool=pool,
+                upsert_mock=mock_upsert,
+                read_mock=MagicMock(return_value=None),
+                save_mock=lambda doc_id, meta: saves.append((doc_id, dict(meta))),
+                extra=[
+                    patch(
+                        "pageindex_mcp.worker.registry_mirror.REGISTRY_CONSISTENCY_DEGRADED",
+                        mock_gauge,
+                    ),
+                    patch(
+                        "pageindex_mcp.worker.registry_mirror._mirror_bridged_incr", mock_bridged
+                    ),
+                    patch(
+                        "pageindex_mcp.worker.registry_mirror._enqueue_verdict_retry", AsyncMock()
+                    ),
+                    caplog.at_level(logging.INFO, logger="pageindex_mcp.worker.registry_mirror"),
+                ],
+            ):
+                es.enter_context(p)
+            await _upsert_registry_row("doc-degraded", None, verdict_fields={"verdict": "PASS"})
+
+        if mock_upsert.await_count:
+            failures.append(f"{row}: upsert_doc was awaited despite degradation")
+        degraded = [r.message for r in caplog.records if "degraded consistency" in r.message]
+        if not degraded:
+            failures.append(
+                f"{row}: no 'degraded consistency' log; got {[r.message for r in caplog.records]}"
+            )
+        elif "doc-degraded" not in degraded[0]:
+            failures.append(f"{row}: degraded log omits the doc_id: {degraded[0]!r}")
+        if mock_gauge.inc.call_count != 1:
+            failures.append(
+                f"{row}: REGISTRY_CONSISTENCY_DEGRADED.inc called {mock_gauge.inc.call_count}x"
+            )
+        if mock_bridged.await_args_list != [(("registry_consistency_degraded",),)]:
+            failures.append(f"{row}: bridged incr calls = {mock_bridged.await_args_list}")
+        if len(saves) != 1 or saves[0][1].get("consistency_regime") != "sidecar-only":
+            failures.append(f"{row}: sidecar regime stamp = {saves!r}")
+
+    # The degraded sidecar stamp is itself best-effort: a save_doc_meta blow-up
+    # (e.g. MinIO unreachable while Postgres is already down) must be swallowed,
+    # never raised to the caller.
+    def _exploding_save(doc_id, meta):
+        raise RuntimeError("MinIO unreachable during degraded sidecar stamp")
+
+    with contextlib.ExitStack() as es:
+        for p in _mirror_patches(
+            settings_obj=disabled,
+            read_mock=MagicMock(return_value=None),
+            save_mock=_exploding_save,
+            extra=[
+                patch(
+                    "pageindex_mcp.worker.registry_mirror.REGISTRY_CONSISTENCY_DEGRADED",
+                    MagicMock(),
+                ),
+                patch("pageindex_mcp.worker.registry_mirror._mirror_bridged_incr", AsyncMock()),
+            ],
+        ):
+            es.enter_context(p)
+        # Must NOT raise.
+        await _upsert_registry_row("doc-degraded", None, verdict_fields={"verdict": "PASS"})
+
+    assert not failures, failures
+
+
+@pytest.mark.asyncio
+async def test_upsert_registry_row_pool_not_ready_enqueue_matrix():
+    """Pool not ready: verdict_fields are preserved for later replay via
+    _enqueue_verdict_retry; with nothing to retry (batch CLI path) no key is
+    written."""
+    import contextlib
+
+    failures = []
+    for row, verdict_fields, expected_calls in (
+        ("verdict present", {"verdict": "PASS"}, [(("doc-retry", {"verdict": "PASS"}),)]),
+        ("verdict absent", None, []),
+    ):
+        mock_enqueue = AsyncMock()
+        with contextlib.ExitStack() as es:
+            for p in _mirror_patches(
+                pool=None,
+                read_mock=MagicMock(return_value=None),
+                save_mock=MagicMock(),
+                extra=[
+                    patch(
+                        "pageindex_mcp.worker.registry_mirror._enqueue_verdict_retry", mock_enqueue
+                    )
+                ],
+            ):
+                es.enter_context(p)
+            await _upsert_registry_row("doc-retry", None, verdict_fields=verdict_fields)
+        if mock_enqueue.await_args_list != expected_calls:
+            failures.append(f"{row}: enqueue calls = {mock_enqueue.await_args_list}")
+
+    assert not failures, failures
+
+
+@pytest.mark.asyncio
+async def test_upsert_failure_mirrors_to_redis_and_enqueues_verdict_retry():
+    """Zone-5 regression: when upsert_doc raises, _upsert_registry_row must not
+    propagate, must mirror the write failure to Redis, and must enqueue the
+    verdict for replay — but only when there IS a verdict to replay."""
+    import contextlib
+
+    failures = []
+    for row, verdict_fields, expected_calls in (
+        (
+            "verdict present",
+            {"verdict": "PASS", "pipeline_version": 7},
+            [(("retry-1", {"verdict": "PASS", "pipeline_version": 7}),)],
+        ),
+        ("verdict absent", None, []),
+    ):
+        mock_enqueue = AsyncMock()
+        mock_fail_mirror = AsyncMock()
+        with contextlib.ExitStack() as es:
+            for p in _mirror_patches(
+                upsert_mock=AsyncMock(side_effect=RuntimeError("connection refused")),
+                read_mock=MagicMock(return_value={"doc_id": "retry-1"}),
+                extra=[
+                    patch(
+                        "pageindex_mcp.worker.registry_mirror._mirror_registry_write_failure_to_redis",
+                        mock_fail_mirror,
+                    ),
+                    patch(
+                        "pageindex_mcp.worker.registry_mirror._enqueue_verdict_retry", mock_enqueue
+                    ),
+                ],
+            ):
+                es.enter_context(p)
+            # Must NOT raise.
+            await _upsert_registry_row("retry-1", None, verdict_fields=verdict_fields)
+
+        if mock_fail_mirror.await_count != 1:
+            failures.append(f"{row}: write-failure mirror awaited {mock_fail_mirror.await_count}x")
+        if mock_enqueue.await_args_list != expected_calls:
+            failures.append(f"{row}: enqueue calls = {mock_enqueue.await_args_list}")
+
+    assert not failures, failures
+
+
+def test_indexer_registry_fields_stash_contract():
+    """Dual-write contract: _persist_tree_result and _persist_flat_result both
+    stash last_registry_fields (plus last_verdict_fields on the tree path), the
+    tree path computes node_count dynamically and the flat path pins it to 0."""
+    src = _read_src("client/indexer.py")
+
+    def _block(anchor: str) -> str:
+        idx = src.index(anchor)
+        nxt = src.find("\n    async def ", idx + 10)
+        return src[idx : nxt if nxt != -1 else len(src)]
+
+    common_keys = [
+        "doc_name",
+        "source_url",
+        "processed_at",
+        "sha256",
+        "doc_description",
+        "product",
+        "tier",
+        "doc_family",
+        "effective_date",
+        "node_count",
+    ]
+    tree_src = _block("def _persist_tree_result")
+    flat_src = _block("def _persist_flat_result")
+
+    failures = []
+    for path_name, block, keys in (
+        ("tree", tree_src, common_keys),
+        ("flat", flat_src, [*common_keys, "content_class"]),
+    ):
+        if "last_registry_fields" not in block:
+            failures.append(f"{path_name}: last_registry_fields not stashed")
+            continue
+        for key in keys:
+            if f'"{key}"' not in block:
+                failures.append(f"{path_name}: missing registry key {key!r}")
+
+    if "last_verdict_fields" not in tree_src:
+        failures.append("tree: last_verdict_fields not stashed")
+    tree_stash = tree_src[tree_src.index("last_registry_fields") :][:600]
+    if "_tree_node_count" not in tree_stash:
+        failures.append("tree: node_count is not computed via _tree_node_count")
+    flat_stash = flat_src[flat_src.index("last_registry_fields") :][:600]
+    if '"node_count": 0' not in flat_stash:
+        failures.append("flat: node_count is not hardcoded to 0")
+
+    assert not failures, failures
+
+
+def test_dual_write_wiring_source_contract():
+    """Wiring exhaustiveness: converters_cli surfaces the child's verdict /
+    content-class stashes via getattr, and worker/job.py extracts verdict_fields
+    from the child result and forwards it to _upsert_registry_row, which accepts
+    a registry_fields kwarg."""
+    cli_src = _read_src("converters_cli.py")
+    job_src = _read_src("worker/job.py")
+    mirror_src = _read_src("worker/registry_mirror.py")
+    mirror_sig = mirror_src[mirror_src.index("async def _upsert_registry_row") :][:300]
+
+    checks = [
+        (
+            "converters_cli: verdict_fields getattr",
+            cli_src,
+            'getattr(client, "last_verdict_fields"',
+        ),
+        ("converters_cli: verdict_fields payload", cli_src, 'payload["verdict_fields"]'),
+        ("converters_cli: content_class getattr", cli_src, 'getattr(client, "last_content_class"'),
+        ("job.py: extracts verdict_fields", job_src, 'result.get("verdict_fields")'),
+        ("job.py: forwards verdict_fields kwarg", job_src, "verdict_fields=verdict_fields"),
+        (
+            "job.py: imports _upsert_registry_row",
+            job_src,
+            "from .registry_mirror import _upsert_registry_row",
+        ),
+        ("registry_mirror: registry_fields kwarg", mirror_sig, "registry_fields"),
+    ]
+    missing = [name for name, hay, needle in checks if needle not in hay]
+    assert not missing, f"missing wiring: {missing}"
+
+
+@pytest.mark.asyncio
+async def test_delete_stale_rows_guard_matrix():
+    """_delete_stale_rows guards: rows younger than the grace period are
+    age-protected, genuinely old orphans are deleted, a stale fraction above
+    the 50% safety threshold refuses every deletion, and both "nothing stale"
+    and "registry unreadable" are no-ops."""
+    from pageindex_mcp.registry_backfill.cleanup import _delete_stale_rows
+
+    now_iso = datetime.now(UTC).isoformat()
+    old = "2020-01-01T00:00:00+00:00"
+    recent = "2026-01-01T00:00:00+00:00"
+    in_minio_9 = {f"minio-{i}": recent for i in range(9)}
+
+    rows = [
+        # (name, registry_rows, minio_ids, expected deleted doc_ids)
+        ("fresh row age-protected", {"fresh-stale": now_iso, **in_minio_9}, set(in_minio_9), []),
+        ("old orphan deleted", {"old-stale": old, **in_minio_9}, set(in_minio_9), ["old-stale"]),
+        (
+            "75% stale exceeds safety threshold",
+            {"stale-1": old, "stale-2": old, "stale-3": old, "good-1": old},
+            {"good-1"},
+            [],
+        ),
+        ("no stale candidates", {"doc-1": recent}, {"doc-1"}, []),
+        ("registry unreadable", None, set(), []),
+    ]
+
+    failures = []
+    for name, registry_rows, minio_ids, expected in rows:
+        mock_delete = AsyncMock()
+        with (
+            patch(
+                "pageindex_mcp.registry.list_all_doc_ids_with_timestamps",
+                AsyncMock(return_value=registry_rows),
+            ),
+            patch("pageindex_mcp.registry.delete_doc", mock_delete),
+        ):
+            await _delete_stale_rows(minio_ids, grace_minutes=10)
+        deleted = [c.args[0] for c in mock_delete.await_args_list]
+        if deleted != expected:
+            failures.append(f"{name}: deleted {deleted!r}, expected {expected!r}")
+
+    assert not failures, failures
+
+
+# ---------------------------------------------------------------------------
+# --- from test_rfc_registry.py (RFC-026 design properties) ---
+# ---------------------------------------------------------------------------
+
+
+def _rfc026_structure_with_chars(n_chars):
+    """3 non-empty text parts joined by 2 newlines -> flat_text_len = n_chars."""
+    text_budget = n_chars - 2
+    dominant = max(text_budget - 2, 1)
+    return [
+        {"node_id": "1", "title": "", "text": "x" * dominant, "nodes": []},
+        {"node_id": "2", "title": "", "text": "x", "nodes": []},
+        {"node_id": "3", "title": "", "text": "x", "nodes": []},
+    ]
+
+
+def test_classify_verdict_zero_content_fail_floor():
+    """RFC-026 D0 (Design Property 1): node_count == 0 or total_chars == 0 is a
+    hard ("FAIL", "zero_content") floor that fires BEFORE the
+    image_enrichment_promoted branch, whatever content_class /
+    image_enrichment_ratio say.  A document with real content never trips it."""
+    from pageindex_mcp.helpers import classify_verdict
+
+    empty_nodes = [
+        {
+            "node_id": "1",
+            "title": "",
+            "text": "",
+            "nodes": [{"node_id": "2", "title": "", "text": "", "nodes": []}],
+        },
+    ]
+    real_content = [
+        {"node_id": "n1", "title": "Section A", "text": "y" * 50, "nodes": []},
+        {"node_id": "n2", "title": "Section B", "text": "z" * 50, "nodes": []},
+        {"node_id": "n3", "title": "Section C", "text": "w" * 50, "nodes": []},
+    ]
+
+    failures = []
+    for name, structure, content_class, ratio, expected in (
+        ("node_count == 0", [], "flat_prose", 0.9, ("FAIL", "zero_content")),
+        ("total_chars == 0", empty_nodes, "flat_prose", 0.9, ("FAIL", "zero_content")),
+        ("beats image-enrichment branch", [], "flat_prose", 1.0, ("FAIL", "zero_content")),
+    ):
+        got = classify_verdict(structure, content_class, None, image_enrichment_ratio=ratio)
+        if got != expected:
+            failures.append(f"{name}: got {got!r}, expected {expected!r}")
+
+    _, reason = classify_verdict(real_content, "", None)
+    if reason == "zero_content":
+        failures.append("control: a document with real content reported zero_content")
+
+    assert not failures, failures
+
+
+def test_classify_verdict_image_enrichment_volume_floor(monkeypatch):
+    """RFC-026 D1 (Design Property 2): on the image_enrichment_promoted branch
+    the rescue fires only at total_chars >= MIN_IMAGE_PROMOTED_CHARS
+    (boundary-inclusive).  Below the floor the doc falls through to the
+    structural gates and FAILs.  The floor is env-overridable."""
+    from pageindex_mcp.config import reset_pipeline_config
+    from pageindex_mcp.helpers import classify_verdict
+
+    rows = [
+        # (name, env floor, n_chars, content_class, expected verdict, rescue fired?)
+        ("default floor, one below", None, 499, "flat_prose", "FAIL", False),
+        ("default floor, exactly at", None, 500, "flat_prose", "PASS", True),
+        ("env floor 100, above", "100", 150, "flat_mixed", "PASS", True),
+        ("env floor 100, below", "100", 50, "flat_mixed", "FAIL", False),
+    ]
+
+    failures = []
+    try:
+        for name, env_floor, n_chars, content_class, want_verdict, want_rescue in rows:
+            if env_floor is None:
+                monkeypatch.delenv("MIN_IMAGE_PROMOTED_CHARS", raising=False)
+            else:
+                monkeypatch.setenv("MIN_IMAGE_PROMOTED_CHARS", env_floor)
+            reset_pipeline_config()
+
+            verdict, reason = classify_verdict(
+                _rfc026_structure_with_chars(n_chars),
+                content_class,
+                None,
+                image_enrichment_ratio=0.85,
+            )
+            if verdict != want_verdict:
+                failures.append(f"{name}: verdict {verdict!r}, expected {want_verdict!r}")
+            rescued = reason == "image_enrichment_promoted"
+            if rescued is not want_rescue:
+                failures.append(f"{name}: reason {reason!r} (rescue fired={rescued})")
+    finally:
+        monkeypatch.delenv("MIN_IMAGE_PROMOTED_CHARS", raising=False)
+        reset_pipeline_config()
+
+    assert not failures, failures
+
+
+def test_page_rotation_detection_and_transform(tmp_path, monkeypatch):
+    """RFC-026 D2 (Design Property 3): an explicit non-zero /Rotate is
+    authoritative; the aspect-ratio landscape heuristic is consulted only when
+    /Rotate == 0.  _normalize_pdf_page_rotation then bakes the heuristic
+    rotation into a corrected copy -- but only behind the enabled gate, and
+    never for a page whose explicit /Rotate is already effective."""
+    fitz = pytest.importorskip("fitz")
+
+    from pageindex_mcp import converters
+    from pageindex_mcp.converters import (
+        _normalize_pdf_page_rotation,
+        _page_rotation_correction_info,
     )
 
-    assert gauge is original
+    def _make_pdf(name, width, height, rotate=0):
+        doc = fitz.open()
+        page = doc.new_page(width=width, height=height)
+        if rotate:
+            page.set_rotation(rotate)
+        path = str(tmp_path / name)
+        doc.save(path)
+        doc.close()
+        return path
+
+    rows = [
+        # (name, width, height, /Rotate, expected rotate, expected likely_landscape)
+        ("explicit /Rotate=90", 600, 800, 90, 90, False),
+        ("wide page, /Rotate=0 -> aspect heuristic", 800, 600, 0, 0, True),
+        ("tall page, /Rotate=0 -> aspect heuristic", 600, 800, 0, 0, False),
+        ("explicit /Rotate=180 beats aspect", 800, 600, 180, 180, False),
+    ]
+
+    failures = []
+    for i, (name, w, h, rot, want_rot, want_landscape) in enumerate(rows):
+        path = _make_pdf(f"rot{i}.pdf", width=w, height=h, rotate=rot)
+        doc = fitz.open(path)
+        try:
+            result = _page_rotation_correction_info(doc[0])
+        finally:
+            doc.close()
+        if result["rotate"] != want_rot:
+            failures.append(f"{name}: rotate={result['rotate']}, expected {want_rot}")
+        if result["likely_landscape"] is not want_landscape:
+            failures.append(
+                f"{name}: likely_landscape={result['likely_landscape']}, expected {want_landscape}"
+            )
+
+    # Transform layer: gate enabled + wide page with /Rotate=0 -> a corrected
+    # copy with /Rotate=90 baked in.
+    monkeypatch.setattr(converters.pictures, "_PAGE_ROTATION_DETECTION_ENABLED", True)
+    src = _make_pdf("wide_no_rotate.pdf", width=800, height=600, rotate=0)
+    out = _normalize_pdf_page_rotation(src)
+    if out == src:
+        failures.append("gate enabled: expected a rewritten copy, got the original path")
+    else:
+        fixed = fitz.open(out)
+        try:
+            if fixed[0].rotation != 90:
+                failures.append(f"gate enabled: baked rotation {fixed[0].rotation}, expected 90")
+        finally:
+            fixed.close()
+            os.unlink(out)
+
+    # An explicit /Rotate=180 is already the effective rotation -> no rewrite.
+    explicit = _make_pdf("disagree_transform.pdf", width=800, height=600, rotate=180)
+    if _normalize_pdf_page_rotation(explicit) != explicit:
+        failures.append("explicit /Rotate=180: page was rewritten to the aspect-implied rotation")
+
+    # Gate disabled -> transform skipped entirely.
+    monkeypatch.setattr(converters.pictures, "_PAGE_ROTATION_DETECTION_ENABLED", False)
+    needs_fix = _make_pdf("needs_fix.pdf", width=800, height=600, rotate=0)
+    if _normalize_pdf_page_rotation(needs_fix) != needs_fix:
+        failures.append("gate disabled: transform still ran")
+
+    assert not failures, failures
 
 
-def test_registry_consistency_degraded_in_bridged_metrics():
-    """Wiring: REGISTRY_CONSISTENCY_DEGRADED must be registered in
-    _BRIDGED_METRICS in metrics.sync under the key
-    'registry_consistency_degraded'."""
-    from pageindex_mcp.metrics.sync import _BRIDGED_METRICS
+def test_validate_tree_garble_priority_over_structure():
+    """RFC-026 D5 (Design Property 6): validate_tree() reports 'garbling'
+    whenever the content is garbled, never letting a structural early-exit
+    (node_count<3 / depth<2) or the per-node 'node_garbling' reason shadow it.
+    A clean thin tree still reports its structural reason."""
+    from pageindex_mcp.helpers import validate_tree
 
-    assert "registry_consistency_degraded" in _BRIDGED_METRICS
+    garbled = " ".join(["xkjqz"] * 40)
+    clean = "This is a perfectly ordinary section of legible English prose text here."
 
-    from pageindex_mcp.metrics.definitions import REGISTRY_CONSISTENCY_DEGRADED
+    rows = [
+        (
+            "garbled + node_count<3",
+            [{"node_id": "1", "title": "Root", "text": garbled, "nodes": []}],
+            "garbling",
+        ),
+        (
+            "garbled + depth<2",
+            [
+                {"node_id": "1", "title": "S1", "text": garbled, "nodes": []},
+                {"node_id": "2", "title": "S2", "text": garbled, "nodes": []},
+                {"node_id": "3", "title": "S3", "text": garbled, "nodes": []},
+            ],
+            "garbling",
+        ),
+        (
+            "bulk garbling beats per-node node_garbling",
+            [
+                {
+                    "node_id": "1",
+                    "title": "Root",
+                    "text": garbled,
+                    "nodes": [{"node_id": "1.1", "title": "Child", "text": garbled, "nodes": []}],
+                },
+                {"node_id": "2", "title": "S2", "text": garbled, "nodes": []},
+                {"node_id": "3", "title": "S3", "text": garbled, "nodes": []},
+            ],
+            "garbling",
+        ),
+        (
+            "control: clean thin tree keeps its structural reason",
+            [{"node_id": "1", "title": "Root", "text": clean, "nodes": []}],
+            "node_count<3",
+        ),
+    ]
 
-    assert _BRIDGED_METRICS["registry_consistency_degraded"] is REGISTRY_CONSISTENCY_DEGRADED
+    failures = []
+    for name, structure, expected_reason in rows:
+        ok, reason = validate_tree(structure)
+        if ok is not False:
+            failures.append(f"{name}: validate_tree returned ok={ok!r}, expected False")
+        if reason != expected_reason:
+            failures.append(f"{name}: reason {reason!r}, expected {expected_reason!r}")
+
+    assert not failures, failures

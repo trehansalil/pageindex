@@ -1,32 +1,51 @@
 # ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
 from __future__ import annotations
 
-"""Tree validation, structural hardening, and helper utility tests."""
+"""Tree validation, structural hardening, reorder detection, and helper utilities.
 
+Consolidates the former ``test_rfc_reorder.py`` (RFC-015 reorder detection:
+D5a/D5b oversized-leaf splitting, D8 sparse mojibake, D9 table forward-fill,
+D10 preamble synthesis) into this file, grouped by the production function
+each test exercises rather than by originating RFC.
+
+Table-driven tests loop internally and report *every* offending row, so one
+collected test carries the same coverage a parametrize table did.
+"""
+
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from pageindex_mcp import helpers
 from pageindex_mcp.helpers import (
+    _OVERSIZED_ORDINAL_RE,
     BULK_PROFILE,
+    FLAT_MARKDOWN_PROFILE,
+    _flat_parse_table,
     _flatten_tree_text,
+    _forward_fill_leading_column,
     _garble_ratio,
+    _has_heading_markers,
+    _ordinal_value,
+    _synthesize_preamble_node,
     flat_doc_view,
     route_and_extract_flat,
+    split_oversized_leaf_nodes,
     validate_tree,
 )
+from pageindex_mcp.helpers.garble import _garble_prongs
 from pageindex_mcp.helpers.tree_validation import (
     TreeSignals,
     _node_char_count,
     _node_text_parts,
     _tree_max_leaf_ratio,
 )
-
 from tests._garble_compat import check_garble
 
-
-# --- from test_validate_tree_contract.py ---
+# ===========================================================================
+# validate_tree
+# ===========================================================================
 
 
 def _nested_ok_tree():
@@ -43,55 +62,83 @@ def _nested_ok_tree():
     ]
 
 
-def test_validate_tree_rejects_single_node():
-    """WORKER-01-C2: a 1-node tree fails with reason node_count<3."""
-    ok, reason = validate_tree([{"title": "Only", "text": "lonely node"}])
-    assert ok is False
-    assert reason == "node_count<3"
+def test_validate_tree_contract_table():
+    """WORKER-01-C2: validate_tree's (ok, reason) contract across every gate.
 
-
-def test_validate_tree_rejects_flat_siblings_depth():
-    """WORKER-01-C2: three flat siblings (no nesting) fail with reason depth<2."""
-    flat = [
-        {"title": "A", "text": "alpha"},
-        {"title": "B", "text": "bravo"},
-        {"title": "C", "text": "charlie"},
-    ]
-    ok, reason = validate_tree(flat)
-    assert ok is False
-    assert reason == "depth<2"
-
-
-def test_validate_tree_rejects_garbling_nul_byte():
-    """WORKER-01-C2: a node whose text contains a NUL ("\\x00") fails as garbling.
-
-    This is the validated German-insurance failure mode (PyPDF2 byte garbling).
+    Covers the node-count floor, the depth floor, the garbling gate (the
+    validated German-insurance PyPDF2 NUL-byte failure mode) and the happy
+    path.  Reports every offending row in one failure.
     """
-    garbled = [
+    cases = [
+        (
+            "single node",
+            [{"title": "Only", "text": "lonely node"}],
+            (False, "node_count<3"),
+        ),
+        (
+            "flat siblings",
+            [
+                {"title": "A", "text": "alpha"},
+                {"title": "B", "text": "bravo"},
+                {"title": "C", "text": "charlie"},
+            ],
+            (False, "depth<2"),
+        ),
+        (
+            "nul byte garbling",
+            [
+                {
+                    "title": "Root",
+                    "text": "ok",
+                    "nodes": [
+                        {"title": "Bad", "text": "corrupt\x00bytes here"},
+                        {"title": "Good", "text": "this one is fine"},
+                    ],
+                }
+            ],
+            (False, "garbling"),
+        ),
+        ("well-formed nested", _nested_ok_tree(), (True, "")),
+    ]
+
+    failures = []
+    for name, tree, expected in cases:
+        got = tuple(validate_tree(tree))
+        if got != expected:
+            failures.append(f"  [{name}] expected={expected}, got={got}")
+    assert not failures, "validate_tree contract violations:\n" + "\n".join(failures)
+
+
+def test_reordered_mojibake_tree_still_fails_validate():
+    """HR5 (RFC-015 D8): adding the mojibake OR must not let any
+    previously-rejected tree pass.  A mojibake tree is still rejected by
+    validate_tree via the garbling reason."""
+    moji = "كtابcجديدxمادةyنص عربي سليم شروط التأمين بوليصة تغطية " * 5
+    # depth>=2 and node_count>=3 so the ONLY remaining gate is garbling.
+    tree = [
         {
-            "title": "Root",
-            "text": "ok",
+            "node_id": "1",
+            "title": "root",
+            "text": "",
+            "start_index": 1,
             "nodes": [
-                {"title": "Bad", "text": "corrupt\x00bytes here"},
-                {"title": "Good", "text": "this one is fine"},
+                {"node_id": "1a", "title": "a", "text": moji, "start_index": 2},
+                {"node_id": "1b", "title": "b", "text": "more text", "start_index": 3},
             ],
         }
     ]
-    ok, reason = validate_tree(garbled)
+    ok, reason = validate_tree(tree)
     assert ok is False
     assert reason == "garbling"
 
 
-def test_validate_tree_accepts_wellformed_nested_tree():
-    """WORKER-01-C2: a nested tree of >=3 nodes with depth>=2 passes (True, "")."""
-    ok, reason = validate_tree(_nested_ok_tree())
-    assert ok is True
-    assert reason == ""
+# ===========================================================================
+# _flatten_tree_text / _node_text_parts / _node_char_count / _tree_max_leaf_ratio
+# ===========================================================================
 
 
-# ---------------------------------------------------------------------------
-# Zone-5 fix: table block content visibility in tree metrics
-# ---------------------------------------------------------------------------
+_ARABIC_TITLE = "الفصل الأول عن أحكام العقد"
+_LATIN_TEXT = "Section One on Contract Terms and Conditions"
 
 
 def _table_only_tree():
@@ -133,126 +180,202 @@ def _table_only_leaf():
     }
 
 
-class TestFlattenTreeTextTableBlocks:
-    """Contract: _flatten_tree_text includes table block content."""
+def test_flatten_tree_text_includes_all_table_block_content():
+    """Zone-5: _flatten_tree_text must surface headers, row cells and
+    row_records so table-only nodes have a non-zero char count."""
+    flat = _flatten_tree_text(_table_only_tree())
+    assert len(flat) > 0, "table-only tree produced zero-length flat_text"
 
-    def test_table_only_nodes_produce_nonzero_chars(self):
-        """_flatten_tree_text must extract headers/rows/row_records content
-        so char count is non-zero for table-only nodes."""
-        flat = _flatten_tree_text(_table_only_tree())
-        assert len(flat) > 0, "table-only tree produced zero-length flat_text"
-
-    def test_headers_appear_in_flat_text(self):
-        flat = _flatten_tree_text(_table_only_tree())
-        assert "Col1" in flat
-        assert "Col2" in flat
-
-    def test_row_cells_appear_in_flat_text(self):
-        flat = _flatten_tree_text(_table_only_tree())
-        assert "alpha" in flat
-        assert "foxtrot" in flat
-
-    def test_row_records_dict_values_appear_in_flat_text(self):
-        flat = _flatten_tree_text(_table_only_tree())
-        assert "premium" in flat
-        assert "1200" in flat
-
-    def test_node_text_parts_extracts_all_table_fields(self):
-        """_node_text_parts extracts headers, row cells, and row_records."""
-        node = {
-            "title": "T",
-            "text": "body",
-            "headers": ["H1"],
-            "rows": [["R1C1"]],
-            "row_records": [{"k": "v"}],
-        }
-        parts = _node_text_parts(node)
-        assert "T" in parts
-        assert "body" in parts
-        assert "H1" in parts
-        assert "R1C1" in parts
-        assert "v" in parts
-
-
-class TestTreeMaxLeafRatioTableContent:
-    """Contract: _tree_max_leaf_ratio counts table content chars in leaf sizing."""
-
-    def test_table_only_leaf_has_nonzero_char_count(self):
-        """_node_char_count must be > 0 for a leaf with only table content."""
-        count = _node_char_count(_table_only_leaf())
-        assert count > 0, "table-only leaf reported 0 chars"
-
-    def test_leaf_ratio_denominator_includes_table_chars(self):
-        """_tree_max_leaf_ratio total must reflect table content."""
-        tree = _table_only_tree()
-        max_leaf, total, ratio = _tree_max_leaf_ratio(tree)
-        assert total > 0, "total chars is 0 for table-only tree"
-        assert max_leaf > 0, "max_leaf chars is 0 for table-only tree"
-        assert 0.0 < ratio <= 1.0
-
-
-class TestTreeSignalsFromTreeTableBlocks:
-    """Contract: TreeSignals.from_tree produces non-zero flat_text for table-only trees."""
-
-    def test_flat_text_nonzero_for_table_only_tree(self):
-        sig = TreeSignals.from_tree(_table_only_tree())
-        assert len(sig.flat_text) > 0, "TreeSignals.flat_text is empty for table-only tree"
-
-    def test_node_count_correct_for_table_tree(self):
-        sig = TreeSignals.from_tree(_table_only_tree())
-        assert sig.node_count == 3  # root + 2 children
-
-
-# --- from test_rfc013_structural_hardening.py ---
-
-
-# ---------------------------------------------------------------------------
-# P2: Shared page-hit extraction parity (D5 / ISS-44)
-# ---------------------------------------------------------------------------
-
-
-def test_extract_page_hits_single_page():
-    """_extract_page_hits returns nodes whose page range overlaps the request."""
-    from pageindex_mcp.helpers import _extract_page_hits
-
-    structure = [
-        {"node_id": "n1", "title": "A", "start_index": 1, "end_index": 3, "text": "hello"},
-        {"node_id": "n2", "title": "B", "start_index": 4, "end_index": 6, "text": "world"},
+    missing = [
+        token
+        for token in ("Col1", "Col2", "alpha", "foxtrot", "premium", "1200")
+        if token not in flat
     ]
-    hits = _extract_page_hits(structure, "2")
-    assert len(hits) == 1
-    assert hits[0]["node_id"] == "n1"
+    assert not missing, f"table content missing from flat_text: {missing}"
 
 
-def test_extract_page_hits_range():
+def test_node_text_parts_extracts_all_table_fields():
+    """_node_text_parts extracts title, text, headers, row cells and row_records."""
+    node = {
+        "title": "T",
+        "text": "body",
+        "headers": ["H1"],
+        "rows": [["R1C1"]],
+        "row_records": [{"k": "v"}],
+    }
+    parts = _node_text_parts(node)
+    missing = [t for t in ("T", "body", "H1", "R1C1", "v") if t not in parts]
+    assert not missing, f"_node_text_parts dropped: {missing}"
+
+
+def test_leaf_sizing_counts_table_content_chars():
+    """_node_char_count / _tree_max_leaf_ratio must count table content, or a
+    table-only tree reports a 0-char leaf ratio."""
+    assert _node_char_count(_table_only_leaf()) > 0, "table-only leaf reported 0 chars"
+
+    max_leaf, total, ratio = _tree_max_leaf_ratio(_table_only_tree())
+    assert total > 0, "total chars is 0 for table-only tree"
+    assert max_leaf > 0, "max_leaf chars is 0 for table-only tree"
+    assert 0.0 < ratio <= 1.0
+
+
+def test_tree_signals_from_table_only_tree():
+    """TreeSignals.from_tree yields non-empty flat_text and the right node count
+    for a table-only tree."""
+    sig = TreeSignals.from_tree(_table_only_tree())
+    assert len(sig.flat_text) > 0, "TreeSignals.flat_text is empty for table-only tree"
+    assert sig.node_count == 3  # root + 2 children
+
+
+def test_flatten_tree_text_separates_every_title_text_boundary():
+    """D1-P1: adjacent title/text fields stay newline-separated -- flat and
+    nested alike -- so an Arabic title never glues onto Latin body text and
+    the len(flat) floors in classify_verdict are not inflated by empty fields."""
+    flat_nodes = [
+        {"title": _ARABIC_TITLE, "text": "", "nodes": []},
+        {"title": "", "text": _LATIN_TEXT, "nodes": []},
+    ]
+    flat = _flatten_tree_text(flat_nodes)
+    assert flat == "\n".join([_ARABIC_TITLE, _LATIN_TEXT])
+    assert (_ARABIC_TITLE[-1] + _LATIN_TEXT[0]) not in flat
+    assert _ARABIC_TITLE + _LATIN_TEXT not in flat
+
+    nested_nodes = [
+        {
+            "title": _ARABIC_TITLE,
+            "text": "",
+            "nodes": [{"title": "", "text": _LATIN_TEXT, "nodes": []}],
+        }
+    ]
+    assert _flatten_tree_text(nested_nodes).split("\n") == [_ARABIC_TITLE, _LATIN_TEXT]
+
+
+# ===========================================================================
+# garble detection: _garble_ratio / check_garble / _garble_prongs
+# ===========================================================================
+
+
+def _clean_window(seed: int) -> str:
+    """~2000 chars of diverse, non-repeating alnum tokens -- not garbled."""
+    tokens = [f"token{seed}{i}" for i in range(400)]
+    return " ".join(tokens)[:2000]
+
+
+def test_garble_ratio_is_zero_when_no_window_is_garbled():
+    """D1-P2: all-clean windows yield ratio 0.0."""
+    assert _garble_ratio(_clean_window(0) + _clean_window(1)) == 0.0
+
+
+def test_check_garble_agrees_across_profiles():
+    """D7/ISS-36: check_garble must return the same verdict under the bulk and
+    the flat-markdown profile for every canonical input class."""
+    cases = [
+        ("clean prose", "This is a perfectly normal paragraph about insurance terms.", False),
+        ("numeric junk", "1651001429 " * 100, True),
+        ("null bytes", "hello\x00world", True),
+        ("replacement char", "hello�world", True),
+    ]
+
+    failures = []
+    for name, text, expected in cases:
+        for profile_name, profile in (
+            ("BULK", BULK_PROFILE),
+            ("FLAT_MARKDOWN", FLAT_MARKDOWN_PROFILE),
+        ):
+            got = check_garble(text, expected_script="Latn", profile=profile)
+            if got is not expected:
+                failures.append(f"  [{name}/{profile_name}] expected={expected}, got={got}")
+    assert not failures, "check_garble profile disagreement:\n" + "\n".join(failures)
+
+
+def test_check_garble_arabic_fragmentation_table():
+    """D2-P1/P3: single-letter Arabic fragmentation is flagged (alone and mixed
+    with intact tokens), while clean legal-decree phrasing modeled on
+    مرسوم 13 / مرسوم 33 must not false-trigger any prong."""
+    cases = [
+        ("pure fragments", "م ا د ة", True),
+        ("fragments among whole words", "م ا د ة رقم 1: أحكام عامة", True),
+        (
+            "clean marsoom 13",
+            "مرسوم اتحادي رقم 13 لسنة 2021 في شأن تنظيم علاقات العمل الحكومي",
+            False,
+        ),
+        (
+            "clean marsoom 33",
+            "مرسوم بقانون اتحادي رقم 33 لسنة 2021 بشأن تنظيم علاقات العمل وتعديلاته",
+            False,
+        ),
+    ]
+
+    failures = []
+    for name, text, expected in cases:
+        got = check_garble(text, expected_script=None, profile=BULK_PROFILE)
+        if got is not expected:
+            failures.append(f"  [{name}] expected={expected}, got={got}")
+    assert not failures, "Arabic fragment detector regressions:\n" + "\n".join(failures)
+
+
+_MOJIBAKE = "كtابcجديدxمادةyنص عربي سليم شروط التأمين " * 5
+
+
+def test_sparse_mojibake_prong_table():
+    """RFC-015 D8: Latin fragments glued into Arabic fire the sparse_mojibake
+    prong; clean Arabic prose, space-separated transliterated names (b1a72fb2
+    class) and sub-100-char text do not."""
+    clean_ar = "هذا نص عربي سليم تماما عن شروط التأمين والتغطية القانونية اليوم " * 2
+    translit = "المدير Ahmed Hassan وقع العقد مع Mohamed Ali في مدينة القاهرة اليوم " * 2
+    cases = [
+        ("glued mojibake", _MOJIBAKE, True),
+        ("clean arabic prose", clean_ar, False),
+        ("transliterated names", translit, False),
+        ("under 100-char length gate", "كtابcمادة", False),
+    ]
+
+    failures = []
+    for name, text, expected in cases:
+        fired = "sparse_mojibake" in _garble_prongs(text, original_text=text)
+        if fired is not expected:
+            failures.append(f"  [{name}] expected fired={expected}, got={fired}")
+    assert not failures, "sparse_mojibake prong regressions:\n" + "\n".join(failures)
+
+
+def test_sparse_mojibake_wired_into_both_garble_gates_additively():
+    """RFC-015 D8: the mojibake signal reaches the tree-bulk and flat-markdown
+    garble paths, while clean text stays not-garbled (bulk checks unweakened)."""
+    clean = "This is a perfectly normal paragraph about insurance terms."
+    cases = [
+        ("mojibake/bulk", _flatten_tree_text([{"node_id": "1", "title": "", "text": _MOJIBAKE}]),
+         BULK_PROFILE, True),
+        ("mojibake/flat", _MOJIBAKE, FLAT_MARKDOWN_PROFILE, True),
+        ("clean/bulk", _flatten_tree_text([{"node_id": "1", "title": "S", "text": clean}]),
+         BULK_PROFILE, False),
+        ("clean/flat", clean, FLAT_MARKDOWN_PROFILE, False),
+    ]
+
+    failures = []
+    for name, text, profile, expected in cases:
+        got = check_garble(text, expected_script=None, profile=profile)
+        if got is not expected:
+            failures.append(f"  [{name}] expected={expected}, got={got}")
+    assert not failures, "mojibake gate wiring regressions:\n" + "\n".join(failures)
+
+
+# ===========================================================================
+# _extract_page_hits
+# ===========================================================================
+
+
+def test_extract_page_hits_table():
+    """D5/ISS-44: _extract_page_hits resolves single pages and ranges, walks
+    nested nodes via _build_node_map, and excludes nodes with no 'text' key."""
     from pageindex_mcp.helpers import _extract_page_hits
 
-    structure = [
+    siblings = [
         {"node_id": "n1", "title": "A", "start_index": 1, "end_index": 3, "text": "a"},
         {"node_id": "n2", "title": "B", "start_index": 4, "end_index": 6, "text": "b"},
         {"node_id": "n3", "title": "C", "start_index": 7, "end_index": 9, "text": "c"},
     ]
-    hits = _extract_page_hits(structure, "3-5")
-    ids = {h["node_id"] for h in hits}
-    assert ids == {"n1", "n2"}
-
-
-def test_extract_page_hits_no_text_excluded():
-    """Nodes without a 'text' key are excluded from hits."""
-    from pageindex_mcp.helpers import _extract_page_hits
-
-    structure = [
-        {"node_id": "n1", "title": "A", "start_index": 1, "end_index": 3},
-    ]
-    hits = _extract_page_hits(structure, "2")
-    assert hits == []
-
-
-def test_extract_page_hits_nested():
-    """_extract_page_hits walks nested nodes via _build_node_map."""
-    from pageindex_mcp.helpers import _extract_page_hits
-
-    structure = [
+    nested = [
         {
             "node_id": "n1",
             "title": "Parent",
@@ -270,102 +393,56 @@ def test_extract_page_hits_nested():
             ],
         },
     ]
-    hits = _extract_page_hits(structure, "2")
-    ids = {h["node_id"] for h in hits}
-    assert "n2" in ids
+    textless = [{"node_id": "n1", "title": "A", "start_index": 1, "end_index": 3}]
+
+    cases = [
+        ("single page", siblings, "2", {"n1"}),
+        ("page range", siblings, "3-5", {"n1", "n2"}),
+        ("nested child", nested, "2", {"n1", "n2"}),
+        ("node without text excluded", textless, "2", set()),
+    ]
+
+    failures = []
+    for name, structure, pages, expected_ids in cases:
+        got = {h["node_id"] for h in _extract_page_hits(structure, pages)}
+        if got != expected_ids:
+            failures.append(f"  [{name}] expected={sorted(expected_ids)}, got={sorted(got)}")
+    assert not failures, "_extract_page_hits regressions:\n" + "\n".join(failures)
 
 
-# ---------------------------------------------------------------------------
-# P3: Non-Latin tessdata raise (D6 / ISS-34)
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# converters.ensure_tessdata
+# ===========================================================================
 
 
-def test_tessdata_unavailable_raises_for_arabic(monkeypatch, tmp_path):
-    """ensure_tessdata must raise TessdataUnavailableError when non-Latin
-    tessdata (e.g. 'ara') is missing, rather than silently dropping it."""
+def test_ensure_tessdata_non_latin_raises_latin_degrades(monkeypatch, tmp_path):
+    """D6/ISS-34: a missing non-Latin language (e.g. 'ara') must raise
+    TessdataUnavailableError rather than being silently dropped; a missing
+    Latin-script language degrades to ['deu', 'eng']; a present language is
+    returned untouched."""
     from pageindex_mcp.converters import TessdataUnavailableError, ensure_tessdata
 
-    monkeypatch.setenv("TESSDATA_PREFIX", str(tmp_path))
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setenv("TESSDATA_PREFIX", str(empty))
     monkeypatch.setenv("TESSDATA_ALLOW_DOWNLOAD", "0")
 
     with pytest.raises(TessdataUnavailableError, match="ara"):
         ensure_tessdata(["ara"])
 
+    assert ensure_tessdata(["fra"]) == ["deu", "eng"]
 
-def test_tessdata_latin_degrades_silently(monkeypatch, tmp_path):
-    """A missing Latin-script lang should be silently dropped, falling back
-    to ['deu', 'eng'] when nothing else is available."""
-    from pageindex_mcp.converters import ensure_tessdata
-
-    monkeypatch.setenv("TESSDATA_PREFIX", str(tmp_path))
-    monkeypatch.setenv("TESSDATA_ALLOW_DOWNLOAD", "0")
-
-    result = ensure_tessdata(["fra"])
-    assert result == ["deu", "eng"]
+    populated = tmp_path / "populated"
+    populated.mkdir()
+    (populated / "ara.traineddata").write_bytes(b"stub")
+    monkeypatch.setenv("TESSDATA_PREFIX", str(populated))
+    assert ensure_tessdata(["ara"]) == ["ara"]
 
 
-def test_tessdata_available_no_raise(monkeypatch, tmp_path):
-    """When tessdata files exist, ensure_tessdata returns them without raising."""
-    from pageindex_mcp.converters import ensure_tessdata
+# ===========================================================================
+# route_and_extract_flat / _flat_parse_table / table fidelity
+# ===========================================================================
 
-    monkeypatch.setenv("TESSDATA_PREFIX", str(tmp_path))
-    monkeypatch.setenv("TESSDATA_ALLOW_DOWNLOAD", "0")
-    (tmp_path / "ara.traineddata").write_bytes(b"stub")
-
-    result = ensure_tessdata(["ara"])
-    assert result == ["ara"]
-
-
-# ---------------------------------------------------------------------------
-# P4: Unified garble detection (D7 / ISS-36)
-# ---------------------------------------------------------------------------
-
-
-def test_garble_agreement_clean_text():
-    """check_garble must agree across contexts on clean text = not garbled."""
-    from pageindex_mcp.helpers import FLAT_MARKDOWN_PROFILE
-
-    clean = "This is a perfectly normal paragraph about insurance terms."
-
-    assert check_garble(clean, expected_script="Latn", profile=BULK_PROFILE) is False
-    assert check_garble(clean, expected_script="Latn", profile=FLAT_MARKDOWN_PROFILE) is False
-
-
-def test_garble_agreement_numeric_junk():
-    """check_garble must agree across contexts on numeric junk = garbled."""
-    from pageindex_mcp.helpers import FLAT_MARKDOWN_PROFILE
-
-    junk = "1651001429 " * 100
-
-    assert check_garble(junk, expected_script="Latn", profile=BULK_PROFILE) is True
-    assert check_garble(junk, expected_script="Latn", profile=FLAT_MARKDOWN_PROFILE) is True
-
-
-def test_garble_agreement_null_bytes():
-    """check_garble must flag null-byte content."""
-    from pageindex_mcp.helpers import FLAT_MARKDOWN_PROFILE
-
-    bad = "hello\x00world"
-
-    assert check_garble(bad, expected_script="Latn", profile=BULK_PROFILE) is True
-    assert check_garble(bad, expected_script="Latn", profile=FLAT_MARKDOWN_PROFILE) is True
-
-
-def test_garble_agreement_replacement_char():
-    """check_garble must flag U+FFFD replacement characters."""
-    from pageindex_mcp.helpers import FLAT_MARKDOWN_PROFILE
-
-    bad = "hello�world"
-
-    assert check_garble(bad, expected_script="Latn", profile=BULK_PROFILE) is True
-    assert check_garble(bad, expected_script="Latn", profile=FLAT_MARKDOWN_PROFILE) is True
-
-
-# --- from test_helpers.py ---
-
-
-_ARABIC_TITLE = "الفصل الأول عن أحكام العقد"
-_LATIN_TEXT = "Section One on Contract Terms and Conditions"
 
 _TABLE_MD = (
     "| Tarif | Beitrag | Selbstbeteiligung |\n"
@@ -384,115 +461,6 @@ def _tbl(headers: list, data_rows: list) -> dict:
     return {"role": "table", "headers": list(headers), "rows": rows, "row_records": records}
 
 
-def _tree_doc():
-    return {
-        "doc_name": "tree.pdf",
-        "structure": [
-            {"node_id": "n1", "title": "A", "summary": "a", "text": "alpha text"},
-        ],
-    }
-
-
-def _two_doc_summaries():
-    return [
-        {"doc_id": "a", "doc_name": "Alpha"},
-        {"doc_id": "b", "doc_name": "Beta"},
-    ]
-
-
-def _reset_registry_complete_cache():
-    helpers._registry_complete_cache = False
-    helpers._registry_complete_cache_ts = 0.0
-
-
-# -------------------------------------------------------------------------
-# _flatten_tree_text
-# -------------------------------------------------------------------------
-def test_flatten_tree_text_separates_arabic_title_from_latin_text_with_newline():
-    """D1-P1: Arabic title node adjacent to Latin text node stays newline-separated."""
-    nodes = [
-        {"title": _ARABIC_TITLE, "text": "", "nodes": []},
-        {"title": "", "text": _LATIN_TEXT, "nodes": []},
-    ]
-
-    flat = _flatten_tree_text(nodes)
-
-    # Empty title/text fields contribute no part (and therefore no separator),
-    # so the floors in classify_verdict that measure len(flat) are not inflated.
-    assert flat == "\n".join([_ARABIC_TITLE, _LATIN_TEXT])
-    boundary = _ARABIC_TITLE[-1] + _LATIN_TEXT[0]
-    assert boundary not in flat
-    assert _ARABIC_TITLE + _LATIN_TEXT not in flat
-
-
-def test_flatten_tree_text_separates_nested_node_boundaries():
-    """D1-P1: nested nodes also get newline separation at every title/text boundary."""
-    nodes = [
-        {
-            "title": _ARABIC_TITLE,
-            "text": "",
-            "nodes": [{"title": "", "text": _LATIN_TEXT, "nodes": []}],
-        }
-    ]
-
-    flat = _flatten_tree_text(nodes)
-    parts = flat.split("\n")
-
-    assert parts == [_ARABIC_TITLE, _LATIN_TEXT]
-
-
-# -------------------------------------------------------------------------
-# _garble_ratio
-# -------------------------------------------------------------------------
-def _clean_window(seed: int) -> str:
-    """~2000 chars of diverse, non-repeating alnum tokens -- not garbled."""
-    tokens = [f"token{seed}{i}" for i in range(400)]
-    return " ".join(tokens)[:2000]
-
-
-def test_garble_ratio_is_zero_when_no_window_is_garbled():
-    """D1-P2: all-clean windows yield ratio 0.0."""
-    text = _clean_window(0) + _clean_window(1)
-
-    ratio = _garble_ratio(text)
-
-    assert ratio == 0.0
-
-
-# -------------------------------------------------------------------------
-# check_garble -- Arabic single-letter fragment detection
-# -------------------------------------------------------------------------
-def test_check_garble_detects_single_letter_arabic_fragments():
-    """D2-P1: "مادة" decomposed into single-letter tokens is flagged garbled."""
-    fragmented = "م ا د ة"
-
-    assert check_garble(fragmented, expected_script=None, profile=BULK_PROFILE) is True
-
-
-def test_check_garble_detects_fragmented_heading_among_whole_words():
-    """D2-P1: fragmentation fires even when mixed with a few intact tokens,
-    as long as single-letter tokens exceed 40% of Arabic-bearing tokens."""
-    heading = "م ا د ة رقم 1: أحكام عامة"
-
-    assert check_garble(heading, expected_script=None, profile=BULK_PROFILE) is True
-
-
-def test_check_garble_clean_decree_text_not_flagged():
-    """D2-P3: negative test -- clean Arabic legal-decree phrasing modeled on
-    مرسوم 13 / مرسوم 33 must not false-trigger the fragment detector or
-    any other garble prong.  With the PF false-positive fix (garble.py
-    presentation_forms fallback removed), clean Arabic text without
-    presentation forms is correctly not flagged."""
-    marsoom_13 = "مرسوم اتحادي رقم 13 لسنة 2021 في شأن تنظيم علاقات العمل الحكومي"
-    marsoom_33 = "مرسوم بقانون اتحادي رقم 33 لسنة 2021 بشأن تنظيم علاقات العمل وتعديلاته"
-
-    assert check_garble(marsoom_13, expected_script=None, profile=BULK_PROFILE) is False
-    assert check_garble(marsoom_33, expected_script=None, profile=BULK_PROFILE) is False
-
-
-# -------------------------------------------------------------------------
-# FLAT-01 -- route_and_extract_flat: deterministic classification + extraction
-# -------------------------------------------------------------------------
 def test_flat_01_c2_table_emitted_as_matrix_and_verbalized_records():
     """FLAT-01-C2: an extracted table block carries a structured row matrix AND
     verbalized row_records of the form 'Header: Value; Header2: Value2; ...' with
@@ -516,71 +484,6 @@ def test_flat_01_c2_table_emitted_as_matrix_and_verbalized_records():
     assert "Tarif: Basis; Beitrag: 12 EUR; Selbstbeteiligung: 100 EUR" in records
 
 
-# -------------------------------------------------------------------------
-# FLAT-05 -- unified flat-document query surface (no new MCP tool)
-# -------------------------------------------------------------------------
-async def test_flat_05_c1_flat_doc_bypasses_llm_node_selection():
-    """FLAT-05-C1: a doc with a content_class and no usable structure[] is served
-    by the flat adapter -- it returns the verbalized flat content as (doc_id, name,
-    text) without ever issuing the LLM tree-node-selection call."""
-    import asyncio
-
-    _, blocks = route_and_extract_flat(_TABLE_MD)
-    data = {
-        "doc_name": "tarife.pdf",
-        "content_class": "flat_table",
-        "structure": [],  # no usable tree
-        "blocks": blocks,
-    }
-    sem = asyncio.Semaphore(1)
-
-    with patch.object(helpers.rag, "_llm", new_callable=AsyncMock) as mock_llm:
-        result = await helpers._search_one_doc("beitrag", "doc1", data, sem)
-
-    assert result is not None
-    doc_id, name, text = result
-    assert doc_id == "doc1"
-    assert name == "tarife.pdf"
-    assert "Tarif: Basis" in text  # verbalized row_record surfaced
-    mock_llm.assert_not_called()  # LLM node-selection bypassed
-
-
-async def test_flat_05_c1_tree_doc_still_uses_llm_node_selection():
-    """FLAT-05-C1 boundary: a normal tree doc (non-empty structure[]) takes the
-    UNCHANGED LLM node-selection path -- the adapter must not hijack it."""
-    import asyncio
-
-    data = _tree_doc()
-    sem = asyncio.Semaphore(1)
-
-    with patch.object(
-        helpers.rag,
-        "_llm",
-        new_callable=AsyncMock,
-        return_value='{"thinking":"t","node_list":["n1"]}',
-    ) as mock_llm:
-        result = await helpers._search_one_doc("q", "doc2", data, sem)
-
-    mock_llm.assert_awaited_once()  # tree path unchanged
-    assert result is not None
-    assert result[2] == "alpha text"
-
-
-def test_flat_05_c2_tree_doc_is_unaffected():
-    """FLAT-05-C2 boundary: a tree doc (no content_class) is not a flat doc;
-    flat_doc_view signals that by returning None so the transport keeps the
-    existing node-map / structure shape."""
-    tree_data = {
-        "doc_name": "tree.pdf",
-        "structure": [{"node_id": "n1", "title": "A", "text": "t"}],
-    }
-    assert flat_doc_view(tree_data) is None
-
-
-# -------------------------------------------------------------------------
-# Fix 2 -- broad table fidelity: stitch_continuation_tables, table_is_rtl,
-#           flag_empty_cells  (pure / in-process / no LLM / no IO)
-# -------------------------------------------------------------------------
 def test_fix2_c3_arabic_rtl_stitch_and_table_is_rtl():  # TABLE-01-C2
     """Arabic anchor passes table_is_rtl=True; stitch keeps the Arabic label
     column as join key; Arabic-Indic year continuation columns are merged;
@@ -653,9 +556,256 @@ def test_fix2_c6_route_and_extract_flat_stitches_paginated_table():  # TABLE-01-
     assert "suspected_miss" in merged["quality"]
 
 
-# -------------------------------------------------------------------------
-# D5 (ISS-17): _llm() guards against None content
-# -------------------------------------------------------------------------
+# ===========================================================================
+# _forward_fill_leading_column  (RFC-015 D9)
+# ===========================================================================
+
+
+def test_forward_fill_leading_column_only():
+    """D9: empty column-0 cells inherit the last non-empty label; data columns
+    keep their own empties (the anti-corruption invariant); a leading empty
+    with no prior value stays empty."""
+    rows = [
+        ["Selbstbehalt", "Katze", "10%"],
+        ["", "Hund", ""],
+        ["", "Pferd", "20%"],
+    ]
+    _forward_fill_leading_column(rows)
+    assert [r[0] for r in rows] == ["Selbstbehalt"] * 3
+    # data columns (index 1+) untouched -- the empty in row 1 col 2 stays empty
+    assert rows[1] == ["Selbstbehalt", "Hund", ""]
+
+    no_leading = [["", "x"], ["Label", "y"], ["", "z"]]
+    _forward_fill_leading_column(no_leading)
+    assert [r[0] for r in no_leading] == ["", "Label", "Label"]
+
+
+def test_forward_fill_wired_into_flat_parse_table():
+    """D9: _flat_parse_table forward-fills the merged label into both the
+    structured rows and the verbalized row_records (e544d939
+    Katze/Selbstbehalt shape)."""
+    lines = [
+        "| Selbstbehalt | Tier | Satz |",
+        "| --- | --- | --- |",
+        "| Selbstbehalt | Katze | 10% |",
+        "| | Hund | 15% |",
+        "| | Pferd | 20% |",
+    ]
+    block, nxt = _flat_parse_table(lines, 0)
+    assert nxt == 5
+    data_rows = block["rows"][1:]
+    assert [r[0] for r in data_rows] == ["Selbstbehalt"] * 3
+    # verbalized records carry the recovered label on every row
+    assert all("Selbstbehalt: Selbstbehalt" in rec for rec in block["row_records"])
+
+
+# ===========================================================================
+# Oversized-leaf splitting  (RFC-015 D5a / D5b)
+# ===========================================================================
+
+
+def test_ordinal_marker_recognition_table():
+    """D5b: `Schedule N` / `Schedule (N)` join the ordinal alternatives, the
+    captured number feeds the strictly-increasing-run guard, and the existing
+    §/Article/Section/مادة alternatives are untouched (purely additive)."""
+    patterns = [
+        "Schedule 3",
+        "Schedule (3)",
+        "§ 12",
+        "Article (9)",
+        "Section 4",
+        "المادة ٥",
+    ]
+    unmatched = [p for p in patterns if _OVERSIZED_ORDINAL_RE.search(p) is None]
+    assert not unmatched, f"_OVERSIZED_ORDINAL_RE no longer matches: {unmatched}"
+
+    m = _OVERSIZED_ORDINAL_RE.search("Schedule (7)")
+    assert m is not None
+    assert _ordinal_value(m) == (7,)
+
+
+def test_small_leaf_with_ordinal_run_is_split():
+    """D5a: a leaf UNDER max_chars but carrying a real ordinal run is split
+    (6147c7d7's 19,959-char residual-leaf class). Pre-D5a this was skipped."""
+    body = (
+        "Schedule 1\n" + "a" * 400 + "\n"
+        "Schedule 2\n" + "b" * 400 + "\n"
+        "Schedule 3\n" + "c" * 400 + "\n"
+    )
+    tree = [{"node_id": "n1", "title": "root", "text": body, "nodes": []}]
+    split_oversized_leaf_nodes(tree, max_chars=50000, min_segments=3)
+    assert len(tree[0]["nodes"]) == 3
+    assert [c["title"] for c in tree[0]["nodes"]] == ["Schedule 1", "Schedule 2", "Schedule 3"]
+
+
+def test_split_guard_leaves_marker_free_and_non_monotonic_leaves_intact():
+    """D5a only widens, never forces. _has_heading_markers needs a genuine
+    ordinal run, and the LIS guard leaves both a marker-free leaf and a leaf of
+    non-monotonic cross-references untouched."""
+    assert _has_heading_markers("... Schedule 1 ... Schedule 2 ...") is True
+    assert _has_heading_markers("just some ordinary paragraph text here") is False
+    assert _has_heading_markers("") is False
+
+    plain_tree = [{"node_id": "n1", "title": "root", "text": "plain short body", "nodes": []}]
+    split_oversized_leaf_nodes(plain_tree, max_chars=50000, min_segments=3)
+    assert plain_tree[0]["nodes"] == []
+    assert plain_tree[0]["text"] == "plain short body"
+
+    cross_ref_text = "see Article 9 above, and Article 2 earlier, per Article 5."
+    cross_ref_tree = [{"node_id": "n1", "title": "root", "text": cross_ref_text, "nodes": []}]
+    split_oversized_leaf_nodes(cross_ref_tree, max_chars=50000, min_segments=3)
+    assert cross_ref_tree[0]["nodes"] == []
+
+
+# ===========================================================================
+# _synthesize_preamble_node  (RFC-015 D10)
+# ===========================================================================
+
+
+_LONG_PREAMBLE = (
+    "This policy covers the named rider while mounted on any horse owned, "
+    "hired, or borrowed, including liability arising from third-party injury "
+    "or property damage during riding lessons, competitions, or hacking."
+)
+assert len(_LONG_PREAMBLE.strip()) > 50
+
+
+def _tree(structure):
+    return {"structure": structure}
+
+
+def test_preamble_over_threshold_synthesizes_node_at_index_0():
+    """D10: body text preceding the first heading (722eb392 GHV Reitlehrer
+    Haftpflicht 'who is covered' clause) is recovered as node 0, with the
+    expected bounds and node_id, ahead of the untouched original node."""
+    md_text = f"{_LONG_PREAMBLE}\n\n## Section 1 - Scope of Cover\n\nBody text here.\n"
+    original_node = {
+        "title": "Section 1 - Scope of Cover",
+        "text": "Body text here.",
+        "nodes": [],
+    }
+
+    result = _synthesize_preamble_node(md_text, _tree([original_node]))
+
+    assert len(result["structure"]) == 2
+    preamble_node = result["structure"][0]
+    assert preamble_node["title"] == "[Preamble]"
+    assert preamble_node["text"] == f"{_LONG_PREAMBLE}\n"
+    assert preamble_node["nodes"] == []
+    assert preamble_node["node_id"] == "preamble"
+    assert preamble_node["start_index"] == 0
+    # First heading line is at index 2 (0-indexed: preamble line, blank, heading).
+    assert preamble_node["end_index"] == 1
+    assert result["structure"][1] is original_node
+
+
+def test_preamble_synthesis_is_purely_additive():
+    """D10 HR5: no preamble, a trivial (sub-threshold) preamble, no heading at
+    all, or a missing/empty/None structure all leave the tree unchanged."""
+    original_node = {
+        "title": "Section 1 - Scope of Cover",
+        "text": "Body text here.",
+        "nodes": [],
+    }
+
+    # Whitespace-only preamble strips to 0 chars -- under the 50-char threshold.
+    trivial_node = {"title": "Section 1", "text": "Body text.", "nodes": []}
+    trivial = _synthesize_preamble_node(
+        "   \n\n## Section 1\n\nBody text.\n", _tree([trivial_node])
+    )
+    assert trivial["structure"] == [trivial_node]
+
+    no_preamble = _synthesize_preamble_node(
+        "## Section 1 - Scope of Cover\n\nBody text here.\n", _tree([original_node])
+    )
+    assert no_preamble["structure"] == [original_node]
+
+    md_text_no_heading = (
+        f"{_LONG_PREAMBLE}\n\nMore plain prose with no markdown heading at all.\n"
+    )
+    flat_node = {"title": "flat", "text": md_text_no_heading, "nodes": []}
+    no_heading = _synthesize_preamble_node(md_text_no_heading, _tree([flat_node]))
+    assert no_heading["structure"] == [flat_node]
+
+    assert _synthesize_preamble_node("", {"structure": []}) == {"structure": []}
+    assert _synthesize_preamble_node(f"{_LONG_PREAMBLE}\n\n## H\n", {}) == {}
+    assert _synthesize_preamble_node(f"{_LONG_PREAMBLE}\n\n## H\n", {"structure": None}) == {
+        "structure": None
+    }
+
+
+# ===========================================================================
+# flat_doc_view / _search_one_doc  (FLAT-05)
+# ===========================================================================
+
+
+def _tree_doc():
+    return {
+        "doc_name": "tree.pdf",
+        "structure": [
+            {"node_id": "n1", "title": "A", "summary": "a", "text": "alpha text"},
+        ],
+    }
+
+
+async def test_flat_05_c1_flat_doc_bypasses_llm_node_selection():
+    """FLAT-05-C1: a doc with a content_class and no usable structure[] is served
+    by the flat adapter -- it returns the verbalized flat content as (doc_id, name,
+    text) without ever issuing the LLM tree-node-selection call."""
+    _, blocks = route_and_extract_flat(_TABLE_MD)
+    data = {
+        "doc_name": "tarife.pdf",
+        "content_class": "flat_table",
+        "structure": [],  # no usable tree
+        "blocks": blocks,
+    }
+    sem = asyncio.Semaphore(1)
+
+    with patch.object(helpers.rag, "_llm", new_callable=AsyncMock) as mock_llm:
+        result = await helpers._search_one_doc("beitrag", "doc1", data, sem)
+
+    assert result is not None
+    doc_id, name, text = result
+    assert doc_id == "doc1"
+    assert name == "tarife.pdf"
+    assert "Tarif: Basis" in text  # verbalized row_record surfaced
+    mock_llm.assert_not_called()  # LLM node-selection bypassed
+
+
+async def test_flat_05_c1_tree_doc_still_uses_llm_node_selection():
+    """FLAT-05-C1 boundary: a normal tree doc (non-empty structure[]) takes the
+    UNCHANGED LLM node-selection path -- the adapter must not hijack it."""
+    sem = asyncio.Semaphore(1)
+
+    with patch.object(
+        helpers.rag,
+        "_llm",
+        new_callable=AsyncMock,
+        return_value='{"thinking":"t","node_list":["n1"]}',
+    ) as mock_llm:
+        result = await helpers._search_one_doc("q", "doc2", _tree_doc(), sem)
+
+    mock_llm.assert_awaited_once()  # tree path unchanged
+    assert result is not None
+    assert result[2] == "alpha text"
+
+
+def test_flat_05_c2_tree_doc_is_unaffected():
+    """FLAT-05-C2 boundary: a tree doc (no content_class) is not a flat doc;
+    flat_doc_view signals that by returning None so the transport keeps the
+    existing node-map / structure shape."""
+    tree_data = {
+        "doc_name": "tree.pdf",
+        "structure": [{"node_id": "n1", "title": "A", "text": "t"}],
+    }
+    assert flat_doc_view(tree_data) is None
+
+
+# ===========================================================================
+# _llm / _check_registry_complete_cached / _prefilter_docs
+# ===========================================================================
+
+
 async def test_llm_none_content_returns_empty_string(caplog):
     """D5-ISS-17: when the OpenAI response content is None, _llm logs a WARNING
     and returns "" instead of raising AttributeError on .strip()."""
@@ -671,16 +821,13 @@ async def test_llm_none_content_returns_empty_string(caplog):
     assert any("LLM returned None content" in record.message for record in caplog.records)
 
 
-# -------------------------------------------------------------------------
-# RFC-008 D1 (ISS-07): shared registry-complete check uses the cache.py
-#    singleton + a 60s TTL cache on a positive result
-# -------------------------------------------------------------------------
 async def test_d1_check_registry_complete_uses_redis_singleton_not_adhoc_connection():
     """The check must go through cache.get_async_redis() (the shared singleton)
     rather than opening a fresh ``aioredis.from_url`` connection per call, and
     must NOT call ``aclose()`` on the returned client (singleton lifecycle is
     owned by cache.py, not the caller)."""
-    _reset_registry_complete_cache()
+    helpers._registry_complete_cache = False
+    helpers._registry_complete_cache_ts = 0.0
 
     fake_client = AsyncMock()
     fake_client.aclose = AsyncMock()
@@ -700,16 +847,17 @@ async def test_d1_check_registry_complete_uses_redis_singleton_not_adhoc_connect
     mock_is_complete.assert_awaited_once_with(fake_client)
     fake_client.aclose.assert_not_awaited()
 
-    _reset_registry_complete_cache()
+    helpers._registry_complete_cache = False
+    helpers._registry_complete_cache_ts = 0.0
 
 
-# -------------------------------------------------------------------------
-# RFC-008 D6 (ISS-18): _prefilter_docs JSON extraction + narrowed catch
-# -------------------------------------------------------------------------
 async def test_d6_prefilter_malformed_json_falls_back_to_all_docs_with_warning(caplog):
     """D6-ISS-18: unparseable (brace-less) response fails open -- every doc_id is
     returned as a candidate and the failure logs at WARNING, not ERROR."""
-    summaries = _two_doc_summaries()
+    summaries = [
+        {"doc_id": "a", "doc_name": "Alpha"},
+        {"doc_id": "b", "doc_name": "Beta"},
+    ]
 
     with (
         patch.object(

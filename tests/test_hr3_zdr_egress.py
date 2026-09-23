@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import base64
-import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -42,31 +41,36 @@ def _make_hr3c_settings(**overrides) -> SimpleNamespace:
 
 
 class TestValidateHr3ComplianceRaises:
-    def test_raises_for_non_zdr_openai_base_url(self):
+    def test_every_endpoint_lever_is_checked_independently(self):
+        """HR3 boot gate: with pii_corpus=True, EACH of the three egress levers
+        -- openai_base_url, LLM_FALLBACK_BASE_URL and docling_service_url --
+        must independently refuse a non-ZDR endpoint, naming that lever in the
+        error. One row per lever; a lever that fails to block is named."""
         from pageindex_mcp.config import validate_hr3_compliance
 
-        fake_settings = _make_hr3c_settings(openai_base_url=_NON_ZDR_URL)
-        with patch("pageindex_mcp.client.llm._LLM_FALLBACK_BASE_URL", ""):
-            with pytest.raises(RuntimeError, match="openai_base_url"):
-                validate_hr3_compliance(fake_settings)
-
-    def test_raises_for_non_zdr_llm_fallback_base_url_when_set(self):
-        from pageindex_mcp.config import validate_hr3_compliance
-
-        fake_settings = _make_hr3c_settings(openai_base_url=_ZDR_URL)
-        with patch("pageindex_mcp.client.llm._LLM_FALLBACK_BASE_URL", _NON_ZDR_URL):
-            with pytest.raises(RuntimeError, match="LLM_FALLBACK_BASE_URL"):
-                validate_hr3_compliance(fake_settings)
-
-    def test_raises_for_non_zdr_docling_service_url_when_set(self):
-        from pageindex_mcp.config import validate_hr3_compliance
-
-        fake_settings = _make_hr3c_settings(
-            openai_base_url=_ZDR_URL, docling_service_url=_NON_ZDR_URL
-        )
-        with patch("pageindex_mcp.client.llm._LLM_FALLBACK_BASE_URL", ""):
-            with pytest.raises(RuntimeError, match="docling_service_url"):
-                validate_hr3_compliance(fake_settings)
+        levers = [
+            ("openai_base_url", _make_hr3c_settings(openai_base_url=_NON_ZDR_URL), ""),
+            (
+                "LLM_FALLBACK_BASE_URL",
+                _make_hr3c_settings(openai_base_url=_ZDR_URL),
+                _NON_ZDR_URL,
+            ),
+            (
+                "docling_service_url",
+                _make_hr3c_settings(openai_base_url=_ZDR_URL, docling_service_url=_NON_ZDR_URL),
+                "",
+            ),
+        ]
+        failures = []
+        for lever, fake_settings, fallback in levers:
+            with patch("pageindex_mcp.client.llm._LLM_FALLBACK_BASE_URL", fallback):
+                try:
+                    validate_hr3_compliance(fake_settings)
+                    failures.append(f"{lever}: a non-ZDR endpoint was NOT refused")
+                except RuntimeError as exc:
+                    if lever not in str(exc):
+                        failures.append(f"{lever}: blocked, but the error says {str(exc)!r}")
+        assert not failures, "HR3 boot gate: " + "; ".join(failures)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -75,10 +79,13 @@ class TestValidateHr3ComplianceRaises:
 
 
 class TestValidateHr3CompliancePasses:
-    def test_passes_when_all_endpoints_zdr_allowlisted(self):
+    def test_passes_when_zdr_allowlisted_or_corpus_is_not_pii(self):
+        """The boot gate returns None (no block) in both permitted cases: every
+        endpoint ZDR-allowlisted under pii_corpus=True, and pii_corpus=False
+        regardless of endpoints."""
         from pageindex_mcp.config import validate_hr3_compliance
 
-        fake_settings = _make_hr3c_settings(
+        all_allowlisted = _make_hr3c_settings(
             openai_base_url=_ZDR_URL,
             docling_service_url="https://bedrock-runtime.eu-central-1.amazonaws.com",
         )
@@ -86,18 +93,15 @@ class TestValidateHr3CompliancePasses:
             "pageindex_mcp.client.llm._LLM_FALLBACK_BASE_URL",
             "https://eu.api.openai.com/v1",
         ):
-            assert validate_hr3_compliance(fake_settings) is None
+            assert validate_hr3_compliance(all_allowlisted) is None
 
-    def test_passes_when_pii_corpus_false_regardless_of_endpoints(self):
-        from pageindex_mcp.config import validate_hr3_compliance
-
-        fake_settings = _make_hr3c_settings(
+        non_pii = _make_hr3c_settings(
             pii_corpus=False,
             openai_base_url=_NON_ZDR_URL,
             docling_service_url=_NON_ZDR_URL,
         )
         with patch("pageindex_mcp.client.llm._LLM_FALLBACK_BASE_URL", _NON_ZDR_URL):
-            assert validate_hr3_compliance(fake_settings) is None
+            assert validate_hr3_compliance(non_pii) is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -107,29 +111,29 @@ class TestValidateHr3CompliancePasses:
 
 class TestSharedFunctionSingleSourceOfTruth:
     @pytest.mark.asyncio
-    async def test_server_calls_shared_validate_hr3_compliance(self):
-        """_lifespan_with_scrape must invoke config.validate_hr3_compliance
-        (imported locally at call time) rather than reimplementing the check."""
-        sentinel = RuntimeError("sentinel-validate-hr3-compliance-called")
-        with patch("pageindex_mcp.config.validate_hr3_compliance", side_effect=sentinel) as mock_fn:
+    async def test_both_entry_points_call_the_shared_validate_hr3_compliance(self):
+        """Neither entry point may reimplement the boot check: server's
+        _lifespan_with_scrape and worker.lifecycle.startup must both invoke
+        config.validate_hr3_compliance. One row per entry point."""
+        sentinel = "sentinel-validate-hr3-compliance-called"
+
+        with patch(
+            "pageindex_mcp.config.validate_hr3_compliance", side_effect=RuntimeError(sentinel)
+        ) as mock_fn:
             from pageindex_mcp.server import _lifespan_with_scrape
 
-            with pytest.raises(RuntimeError, match="sentinel-validate-hr3-compliance-called"):
+            with pytest.raises(RuntimeError, match=sentinel):
                 async with _lifespan_with_scrape(MagicMock()):
                     pass  # pragma: no cover
         mock_fn.assert_called_once()
 
-    @pytest.mark.asyncio
-    async def test_worker_calls_shared_validate_hr3_compliance(self):
-        """worker.lifecycle.startup must invoke the shared
-        validate_hr3_compliance() rather than reimplementing the check."""
-        sentinel = RuntimeError("sentinel-validate-hr3-compliance-called")
         with patch(
-            "pageindex_mcp.worker.lifecycle.validate_hr3_compliance", side_effect=sentinel
+            "pageindex_mcp.worker.lifecycle.validate_hr3_compliance",
+            side_effect=RuntimeError(sentinel),
         ) as mock_fn:
             from pageindex_mcp.worker.lifecycle import startup
 
-            with pytest.raises(RuntimeError, match="sentinel-validate-hr3-compliance-called"):
+            with pytest.raises(RuntimeError, match=sentinel):
                 await startup({})
         mock_fn.assert_called_once()
 
@@ -238,77 +242,60 @@ class TestDoclingEgressGateBlocks:
 
 class TestDoclingEgressGatePasses:
     """(3) & (4): both functions proceed when pii_corpus=False, and when
-    pii_corpus=True but docling_service_url IS ZDR-allowlisted."""
+    pii_corpus=True but docling_service_url IS ZDR-allowlisted. Four permitted
+    rows -- two functions x two reasons the gate is a no-op -- asserted
+    together; a row that is wrongly blocked is named."""
 
     @pytest.mark.asyncio
-    async def test_remote_pdf_proceeds_when_pii_corpus_false(self):
-        from pageindex_mcp.client import _remote_pdf_to_markdown
+    async def test_remote_conversions_proceed_when_the_gate_is_a_no_op(self):
+        from pageindex_mcp.client import _remote_image_to_markdown, _remote_pdf_to_markdown
 
-        fake_settings = _make_docling_settings(pii_corpus=False, docling_service_url=_NON_ZDR_URL)
-        with (
-            patch("pageindex_mcp.client.remote.settings", fake_settings),
-            patch("pageindex_mcp.config.settings", fake_settings),
-            patch("httpx.AsyncClient", return_value=_FakeDoclingAsyncClient()),
-            patch(
-                "pageindex_mcp.storage.presigned_get_url",
-                return_value="https://minio/key?sig=abc",
+        rows = [
+            (
+                "pdf/pii_corpus=False",
+                "pdf",
+                _make_docling_settings(pii_corpus=False, docling_service_url=_NON_ZDR_URL),
             ),
-        ):
-            md, pics = await _remote_pdf_to_markdown("staging/key.pdf")
-        assert md == "ok"
-        assert pics == []
-
-    @pytest.mark.asyncio
-    async def test_remote_image_proceeds_when_pii_corpus_false(self):
-        from pageindex_mcp.client import _remote_image_to_markdown
-
-        fake_settings = _make_docling_settings(pii_corpus=False, docling_service_url=_NON_ZDR_URL)
-        with (
-            patch("pageindex_mcp.client.remote.settings", fake_settings),
-            patch("pageindex_mcp.config.settings", fake_settings),
-            patch("httpx.AsyncClient", return_value=_FakeDoclingAsyncClient()),
-            patch(
-                "pageindex_mcp.storage.presigned_get_url",
-                return_value="https://minio/key?sig=abc",
+            (
+                "image/pii_corpus=False",
+                "image",
+                _make_docling_settings(pii_corpus=False, docling_service_url=_NON_ZDR_URL),
             ),
-        ):
-            md = await _remote_image_to_markdown("staging/key.png")
-        assert md == "ok"
-
-    @pytest.mark.asyncio
-    async def test_remote_pdf_proceeds_when_pii_corpus_true_and_allowlisted(self):
-        from pageindex_mcp.client import _remote_pdf_to_markdown
-
-        fake_settings = _make_docling_settings(pii_corpus=True, docling_service_url=_ZDR_URL)
-        with (
-            patch("pageindex_mcp.client.remote.settings", fake_settings),
-            patch("pageindex_mcp.config.settings", fake_settings),
-            patch("httpx.AsyncClient", return_value=_FakeDoclingAsyncClient()),
-            patch(
-                "pageindex_mcp.storage.presigned_get_url",
-                return_value="https://minio/key?sig=abc",
+            (
+                "pdf/allowlisted",
+                "pdf",
+                _make_docling_settings(pii_corpus=True, docling_service_url=_ZDR_URL),
             ),
-        ):
-            md, pics = await _remote_pdf_to_markdown("staging/key.pdf")
-        assert md == "ok"
-        assert pics == []
-
-    @pytest.mark.asyncio
-    async def test_remote_image_proceeds_when_pii_corpus_true_and_allowlisted(self):
-        from pageindex_mcp.client import _remote_image_to_markdown
-
-        fake_settings = _make_docling_settings(pii_corpus=True, docling_service_url=_ZDR_URL)
-        with (
-            patch("pageindex_mcp.client.remote.settings", fake_settings),
-            patch("pageindex_mcp.config.settings", fake_settings),
-            patch("httpx.AsyncClient", return_value=_FakeDoclingAsyncClient()),
-            patch(
-                "pageindex_mcp.storage.presigned_get_url",
-                return_value="https://minio/key?sig=abc",
+            (
+                "image/allowlisted",
+                "image",
+                _make_docling_settings(pii_corpus=True, docling_service_url=_ZDR_URL),
             ),
-        ):
-            md = await _remote_image_to_markdown("staging/key.png")
-        assert md == "ok"
+        ]
+        failures = []
+        for name, kind, fake_settings in rows:
+            with (
+                patch("pageindex_mcp.client.remote.settings", fake_settings),
+                patch("pageindex_mcp.config.settings", fake_settings),
+                patch("httpx.AsyncClient", return_value=_FakeDoclingAsyncClient()),
+                patch(
+                    "pageindex_mcp.storage.presigned_get_url",
+                    return_value="https://minio/key?sig=abc",
+                ),
+            ):
+                try:
+                    if kind == "pdf":
+                        md, pics = await _remote_pdf_to_markdown("staging/key.pdf")
+                        if pics != []:
+                            failures.append(f"{name}: picture_results={pics!r}")
+                    else:
+                        md = await _remote_image_to_markdown("staging/key.png")
+                except Exception as exc:  # noqa: BLE001 - any block is a failure here
+                    failures.append(f"{name}: wrongly blocked with {exc!r}")
+                    continue
+            if md != "ok":
+                failures.append(f"{name}: markdown={md!r}, expected 'ok'")
+        assert not failures, "permitted Docling egress rows: " + "; ".join(failures)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -429,19 +416,6 @@ class TestZdrEgressGateRaisesTypedError:
                 require_zdr_compliance(_NON_ZDR_URL, "VLM markdown extraction")
         assert type(exc_info.value) is ZDRComplianceError
         assert isinstance(exc_info.value, RuntimeError)
-
-    @pytest.mark.asyncio
-    async def test_vlm_extract_markdown_raises_zdr_compliance_error_when_blocked(self):
-        """The VLM egress path (client/indexer.py's actual call site) raises
-        ZDRComplianceError -- not a bare RuntimeError -- via zdr_egress_gate."""
-        from pageindex_mcp.config import ZDRComplianceError
-        from pageindex_mcp.converters.formats import vlm_extract_markdown
-
-        fake_settings = _make_hr3c_settings(openai_base_url=_NON_ZDR_URL)
-        with patch("pageindex_mcp.config.settings", fake_settings):
-            with pytest.raises(ZDRComplianceError) as exc_info:
-                await vlm_extract_markdown("staging/doc.pdf")
-        assert type(exc_info.value) is not RuntimeError  # not the bare base class
 
 
 def _make_flat_persist_state() -> "ExtractionState":  # noqa: F821 - imported below
@@ -578,34 +552,73 @@ class TestHr3EgressBlockedTotalPathLabels:
     at each of the five gated egress points."""
 
     @pytest.mark.asyncio
-    async def test_docling_pdf_path_label(self):
-        from pageindex_mcp.client import _remote_pdf_to_markdown
+    async def test_non_vlm_path_labels(self):
+        """Four of the five gated egress points increment
+        HR3_EGRESS_BLOCKED_TOTAL with their own `path` label when they block
+        (the fifth, `vlm`, is asserted separately below because it goes through
+        the indexer's except-handler). A row whose label does not move is
+        named -- a mislabelled block is invisible in the dashboards."""
+        from pageindex_mcp.client import _remote_image_to_markdown, _remote_pdf_to_markdown
+        from pageindex_mcp.client.llm import _llm_with_retry
         from pageindex_mcp.metrics import HR3_EGRESS_BLOCKED_TOTAL
 
-        fake_settings = _make_docling_settings(docling_service_url=_NON_ZDR_URL)
-        before = HR3_EGRESS_BLOCKED_TOTAL.labels(path="docling_pdf")._value.get()
-        with (
-            patch("pageindex_mcp.client.remote.settings", fake_settings),
-            patch("pageindex_mcp.config.settings", fake_settings),
-        ):
-            with pytest.raises(RuntimeError):
+        docling_settings = _make_docling_settings(docling_service_url=_NON_ZDR_URL)
+        llm_primary_settings = _make_llm_settings(openai_base_url=_NON_ZDR_URL)
+        llm_fallback_settings = _make_llm_settings(openai_base_url=_ZDR_URL)
+
+        async def _docling_pdf():
+            with (
+                patch("pageindex_mcp.client.remote.settings", docling_settings),
+                patch("pageindex_mcp.config.settings", docling_settings),
+            ):
                 await _remote_pdf_to_markdown("staging/key.pdf")
-        assert HR3_EGRESS_BLOCKED_TOTAL.labels(path="docling_pdf")._value.get() == before + 1
 
-    @pytest.mark.asyncio
-    async def test_docling_image_path_label(self):
-        from pageindex_mcp.client import _remote_image_to_markdown
-        from pageindex_mcp.metrics import HR3_EGRESS_BLOCKED_TOTAL
-
-        fake_settings = _make_docling_settings(docling_service_url=_NON_ZDR_URL)
-        before = HR3_EGRESS_BLOCKED_TOTAL.labels(path="docling_image")._value.get()
-        with (
-            patch("pageindex_mcp.client.remote.settings", fake_settings),
-            patch("pageindex_mcp.config.settings", fake_settings),
-        ):
-            with pytest.raises(RuntimeError):
+        async def _docling_image():
+            with (
+                patch("pageindex_mcp.client.remote.settings", docling_settings),
+                patch("pageindex_mcp.config.settings", docling_settings),
+            ):
                 await _remote_image_to_markdown("staging/key.png")
-        assert HR3_EGRESS_BLOCKED_TOTAL.labels(path="docling_image")._value.get() == before + 1
+
+        async def _llm_primary():
+            with (
+                patch("pageindex_mcp.client.llm.settings", llm_primary_settings),
+                patch("pageindex_mcp.config.settings", llm_primary_settings),
+            ):
+                await _llm_with_retry(
+                    AsyncMock(return_value="unused"), max_retries=1, fallback_base_url=""
+                )
+
+        async def _llm_fallback():
+            with (
+                patch("pageindex_mcp.client.llm.settings", llm_fallback_settings),
+                patch("pageindex_mcp.config.settings", llm_fallback_settings),
+            ):
+                await _llm_with_retry(
+                    AsyncMock(side_effect=ConnectionError("transient")),
+                    max_retries=1,
+                    fallback_base_url=_NON_ZDR_URL,
+                )
+
+        rows = [
+            ("docling_pdf", _docling_pdf),
+            ("docling_image", _docling_image),
+            ("llm_primary", _llm_primary),
+            ("llm_fallback", _llm_fallback),
+        ]
+        failures = []
+        for path, run in rows:
+            before = HR3_EGRESS_BLOCKED_TOTAL.labels(path=path)._value.get()
+            try:
+                await run()
+                failures.append(f"{path}: the egress was NOT blocked")
+                continue
+            except Exception:  # noqa: BLE001 - LLMTransientFailure may wrap the block
+                pass
+            after = HR3_EGRESS_BLOCKED_TOTAL.labels(path=path)._value.get()
+            if after != before + 1:
+                failures.append(f"{path}: counter went {before} -> {after}, expected +1")
+        assert not failures, "HR3 egress path labels: " + "; ".join(failures)
 
     @pytest.mark.asyncio
     async def test_vlm_path_label(self):
@@ -753,119 +766,71 @@ class TestWorkerStartupBlocksBeforeJobAcceptance:
 
 
 class TestFullPipelinePiiCorpusZdrCompliant:
+    """Scenarios 2 and 3 end to end (Properties 1-4 together): a PII corpus on
+    all-ZDR endpoints passes every gate, and a non-PII corpus passes every gate
+    even on non-ZDR endpoints because none of them fire. In both, nothing is
+    ever recorded as a compliance-blocked egress."""
+
     @pytest.mark.asyncio
     async def test_boot_gate_docling_and_llm_all_succeed_no_blocks_recorded(self):
         from pageindex_mcp.client import _remote_pdf_to_markdown
         from pageindex_mcp.client.llm import _llm_with_retry
         from pageindex_mcp.config import validate_hr3_compliance
 
-        fake_settings = SimpleNamespace(
-            pii_corpus=True,
-            openai_base_url=_ZDR_URL,
-            docling_service_url=_ZDR_URL,
-            docling_service_timeout_s=600,
-            docling_service_bearer_token="",
-        )
-        before = {
-            path: _counter_value(path)
-            for path in ("docling_pdf", "docling_image", "vlm", "llm_primary", "llm_fallback")
-        }
+        paths = ("docling_pdf", "docling_image", "vlm", "llm_primary", "llm_fallback")
+        scenarios = [
+            # (name, url, pii_corpus, fallback env, expected _primary_zdr_verified)
+            ("pii corpus on ZDR endpoints", _ZDR_URL, True, "", True),
+            # The gate never runs when pii_corpus=False, so the "verified" cache
+            # stays False (RFC-039 D3: it is only set True after a successful
+            # gate check).
+            ("non-PII corpus on non-ZDR endpoints", _NON_ZDR_URL, False, _NON_ZDR_URL, False),
+        ]
 
-        with (
-            patch("pageindex_mcp.config.settings", fake_settings),
-            patch("pageindex_mcp.client.llm.settings", fake_settings),
-            patch("pageindex_mcp.client.remote.settings", fake_settings),
-            patch("pageindex_mcp.client.llm._LLM_FALLBACK_BASE_URL", ""),
-            patch("httpx.AsyncClient", return_value=_FakeDoclingAsyncClient()),
-            patch(
-                "pageindex_mcp.storage.presigned_get_url",
-                return_value="https://minio/key?sig=abc",
-            ),
-        ):
-            # Boot gate (D1)
-            validate_hr3_compliance(fake_settings)
+        for name, url, pii_corpus, fallback, expect_verified in scenarios:
+            import pageindex_mcp.client.llm as llm_module
 
-            # Docling remote PDF conversion (D2)
-            md, pics = await _remote_pdf_to_markdown("staging/key.pdf")
-            assert md == "ok"
-            assert pics == []
+            llm_module._primary_zdr_verified = False
+            fake_settings = SimpleNamespace(
+                pii_corpus=pii_corpus,
+                openai_base_url=url,
+                docling_service_url=url,
+                docling_service_timeout_s=600,
+                docling_service_bearer_token="",
+            )
+            before = {path: _counter_value(path) for path in paths}
 
-            # Primary LLM tree generation (D3)
-            call_fn = AsyncMock(return_value="tree-result")
-            result = await _llm_with_retry(call_fn, max_retries=1, fallback_base_url="")
-            assert result == "tree-result"
-            call_fn.assert_called_once()
+            with (
+                patch("pageindex_mcp.config.settings", fake_settings),
+                patch("pageindex_mcp.client.llm.settings", fake_settings),
+                patch("pageindex_mcp.client.remote.settings", fake_settings),
+                patch("pageindex_mcp.client.llm._LLM_FALLBACK_BASE_URL", fallback),
+                patch("httpx.AsyncClient", return_value=_FakeDoclingAsyncClient()),
+                patch(
+                    "pageindex_mcp.storage.presigned_get_url",
+                    return_value="https://minio/key?sig=abc",
+                ),
+            ):
+                # Boot gate (D1)
+                validate_hr3_compliance(fake_settings)
 
-        import pageindex_mcp.client.llm as llm_module
+                # Docling remote PDF conversion (D2)
+                md, pics = await _remote_pdf_to_markdown("staging/key.pdf")
+                assert md == "ok", name
+                assert pics == [], name
 
-        assert llm_module._primary_zdr_verified is True
+                # Primary LLM tree generation (D3)
+                call_fn = AsyncMock(return_value="tree-result")
+                result = await _llm_with_retry(call_fn, max_retries=1, fallback_base_url="")
+                assert result == "tree-result", name
+                call_fn.assert_called_once()
 
-        after = {
-            path: _counter_value(path)
-            for path in ("docling_pdf", "docling_image", "vlm", "llm_primary", "llm_fallback")
-        }
-        assert after == before, "no compliance-blocked egress should be recorded on the happy path"
+            assert llm_module._primary_zdr_verified is expect_verified, name
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Scenario 3: full pipeline with pii_corpus=False and non-ZDR endpoints --
-# every gate is a no-op
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-class TestFullPipelineNonPiiCorpusGatesDoNotFire:
-    @pytest.mark.asyncio
-    async def test_boot_gate_docling_and_llm_all_succeed_despite_non_zdr_endpoints(self):
-        from pageindex_mcp.client import _remote_pdf_to_markdown
-        from pageindex_mcp.client.llm import _llm_with_retry
-        from pageindex_mcp.config import validate_hr3_compliance
-
-        fake_settings = SimpleNamespace(
-            pii_corpus=False,
-            openai_base_url=_NON_ZDR_URL,
-            docling_service_url=_NON_ZDR_URL,
-            docling_service_timeout_s=600,
-            docling_service_bearer_token="",
-        )
-        before = {
-            path: _counter_value(path)
-            for path in ("docling_pdf", "docling_image", "vlm", "llm_primary", "llm_fallback")
-        }
-
-        with (
-            patch("pageindex_mcp.config.settings", fake_settings),
-            patch("pageindex_mcp.client.llm.settings", fake_settings),
-            patch("pageindex_mcp.client.remote.settings", fake_settings),
-            patch("pageindex_mcp.client.llm._LLM_FALLBACK_BASE_URL", _NON_ZDR_URL),
-            patch("httpx.AsyncClient", return_value=_FakeDoclingAsyncClient()),
-            patch(
-                "pageindex_mcp.storage.presigned_get_url",
-                return_value="https://minio/key?sig=abc",
-            ),
-        ):
-            # Boot gate is a no-op when pii_corpus=False.
-            validate_hr3_compliance(fake_settings)
-
-            md, pics = await _remote_pdf_to_markdown("staging/key.pdf")
-            assert md == "ok"
-            assert pics == []
-
-            call_fn = AsyncMock(return_value="tree-result")
-            result = await _llm_with_retry(call_fn, max_retries=1, fallback_base_url="")
-            assert result == "tree-result"
-            call_fn.assert_called_once()
-
-        import pageindex_mcp.client.llm as llm_module
-
-        # The gate never ran, so the "verified" cache stays False (RFC-039 D3
-        # note: it is only ever set True after a successful gate check).
-        assert llm_module._primary_zdr_verified is False
-
-        after = {
-            path: _counter_value(path)
-            for path in ("docling_pdf", "docling_image", "vlm", "llm_primary", "llm_fallback")
-        }
-        assert after == before, "non-PII deployments must never increment HR3_EGRESS_BLOCKED_TOTAL"
+            after = {path: _counter_value(path) for path in paths}
+            assert after == before, (
+                f"{name}: no compliance-blocked egress should ever be recorded here"
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -876,31 +841,24 @@ class TestFullPipelineNonPiiCorpusGatesDoNotFire:
 
 class TestHr3CounterExposedOnMetricsEndpoint:
     @pytest.mark.asyncio
-    async def test_metrics_endpoint_reports_hr3_egress_blocked_total_with_path_label(self):
+    async def test_metrics_endpoint_reports_all_five_egress_paths(self):
+        """The counter is scrapeable: the series name is present, each of the
+        five path labels is exported, and the value for a path matches what was
+        recorded."""
         from pageindex_mcp.metrics import metrics_response
 
-        HR3_EGRESS_BLOCKED_TOTAL.labels(path="docling_pdf").inc()
-        before = _counter_value("docling_pdf")
+        paths = ("docling_pdf", "docling_image", "vlm", "llm_primary", "llm_fallback")
+        for path in paths:
+            HR3_EGRESS_BLOCKED_TOTAL.labels(path=path).inc()
+        expected = _counter_value("docling_pdf")
 
         response = await metrics_response(MagicMock())
         body = response.body.decode()
 
         assert "pageindex_hr3_egress_blocked_total" in body
-        assert 'path="docling_pdf"' in body
-        assert f'pageindex_hr3_egress_blocked_total{{path="docling_pdf"}} {before}' in body
-
-    @pytest.mark.asyncio
-    async def test_metrics_endpoint_reports_all_five_egress_paths(self):
-        from pageindex_mcp.metrics import metrics_response
-
-        for path in ("docling_pdf", "docling_image", "vlm", "llm_primary", "llm_fallback"):
-            HR3_EGRESS_BLOCKED_TOTAL.labels(path=path).inc()
-
-        response = await metrics_response(MagicMock())
-        body = response.body.decode()
-
-        for path in ("docling_pdf", "docling_image", "vlm", "llm_primary", "llm_fallback"):
-            assert f'path="{path}"' in body
+        assert f'pageindex_hr3_egress_blocked_total{{path="docling_pdf"}} {expected}' in body
+        missing = [p for p in paths if f'path="{p}"' not in body]
+        assert not missing, f"path labels missing from /metrics: {missing}"
 
 
 # --- from test_zdr_egress.py ---
@@ -937,46 +895,35 @@ class TestRequireZdrCompliance:
     """config.require_zdr_compliance raises RuntimeError when pii_corpus=True
     and URL not ZDR-allowlisted; returns None otherwise."""
 
-    def test_raises_when_pii_corpus_true_and_non_zdr_url(self):
+    def test_refuses_every_non_allowlisted_url_and_names_the_purpose(self):
+        """With pii_corpus=True the primitive refuses a non-ZDR URL, and refuses
+        an absent one just as hard (None and "" are not "no egress" -- they mean
+        the default endpoint, which is not ZDR). The caller-supplied purpose is
+        echoed in the message so the blocked call site is identifiable."""
+        from pageindex_mcp.config import require_zdr_compliance
+
+        failures = []
         with patch("pageindex_mcp.config.settings", _make_settings(pii_corpus=True)):
-            from pageindex_mcp.config import require_zdr_compliance
-
-            with pytest.raises(RuntimeError, match="ZDR allow-list"):
-                require_zdr_compliance(_NON_ZDR_URL, "unit test")
-
-    def test_silent_when_pii_corpus_false(self):
-        with patch("pageindex_mcp.config.settings", _make_settings(pii_corpus=False)):
-            from pageindex_mcp.config import require_zdr_compliance
-
-            # Must return None without raising
-            assert require_zdr_compliance(_NON_ZDR_URL, "unit test") is None
-
-    def test_silent_when_url_is_zdr_allowlisted(self):
-        with patch("pageindex_mcp.config.settings", _make_settings(pii_corpus=True)):
-            from pageindex_mcp.config import require_zdr_compliance
-
-            assert require_zdr_compliance(_ZDR_URL, "unit test") is None
-
-    def test_raises_when_url_is_none(self):
-        with patch("pageindex_mcp.config.settings", _make_settings(pii_corpus=True)):
-            from pageindex_mcp.config import require_zdr_compliance
-
-            with pytest.raises(RuntimeError, match="ZDR allow-list"):
-                require_zdr_compliance(None, "unit test")
-
-    def test_raises_when_url_is_empty(self):
-        with patch("pageindex_mcp.config.settings", _make_settings(pii_corpus=True)):
-            from pageindex_mcp.config import require_zdr_compliance
-
-            with pytest.raises(RuntimeError, match="ZDR allow-list"):
-                require_zdr_compliance("", "unit test")
-
-    def test_error_message_includes_purpose(self):
-        with patch("pageindex_mcp.config.settings", _make_settings(pii_corpus=True)):
-            from pageindex_mcp.config import require_zdr_compliance
+            for name, url in (("non-ZDR", _NON_ZDR_URL), ("None", None), ("empty", "")):
+                try:
+                    require_zdr_compliance(url, "unit test")
+                    failures.append(f"{name} url was NOT refused")
+                except RuntimeError as exc:
+                    if "ZDR allow-list" not in str(exc):
+                        failures.append(f"{name} url: message was {str(exc)!r}")
 
             with pytest.raises(RuntimeError, match="my purpose"):
                 require_zdr_compliance(_NON_ZDR_URL, "my purpose")
+        assert not failures, "; ".join(failures)
+
+    def test_silent_when_corpus_is_not_pii_or_url_is_allowlisted(self):
+        """Returns None without raising in both permitted cases."""
+        from pageindex_mcp.config import require_zdr_compliance
+
+        with patch("pageindex_mcp.config.settings", _make_settings(pii_corpus=False)):
+            assert require_zdr_compliance(_NON_ZDR_URL, "unit test") is None
+        with patch("pageindex_mcp.config.settings", _make_settings(pii_corpus=True)):
+            assert require_zdr_compliance(_ZDR_URL, "unit test") is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -989,95 +936,70 @@ class TestLifespanStartupZdr:
     endpoints are not ZDR-allowlisted."""
 
     @pytest.mark.asyncio
-    async def test_rejects_non_zdr_openai_base_url(self):
-        fake_settings = _make_settings(pii_corpus=True, openai_base_url=_NON_ZDR_URL)
-        with patch("pageindex_mcp.server.settings", fake_settings):
-            from pageindex_mcp.server import _lifespan_with_scrape
+    async def test_refuses_to_start_on_any_non_zdr_endpoint(self):
+        """Startup fails on a non-ZDR openai_base_url, and fails on a non-ZDR
+        LLM_FALLBACK_BASE_URL even when the primary is allowlisted -- each
+        naming the lever it refused on. A lever that lets the process boot is
+        named here."""
+        from pageindex_mcp.server import _lifespan_with_scrape
 
-            with pytest.raises(RuntimeError, match="openai_base_url"):
-                async with _lifespan_with_scrape(MagicMock()):
-                    pass  # pragma: no cover
-
-    @pytest.mark.asyncio
-    async def test_rejects_non_zdr_fallback_url(self):
-        """When openai_base_url is ZDR but LLM_FALLBACK_BASE_URL is not,
-        startup must still fail."""
-        fake_settings = _make_settings(pii_corpus=True, openai_base_url=_ZDR_URL)
-        with (
-            patch("pageindex_mcp.server.settings", fake_settings),
-            patch(
-                "pageindex_mcp.client.llm._LLM_FALLBACK_BASE_URL",
+        rows = [
+            ("openai_base_url", _make_settings(pii_corpus=True, openai_base_url=_NON_ZDR_URL), ""),
+            (
+                "LLM_FALLBACK_BASE_URL",
+                _make_settings(pii_corpus=True, openai_base_url=_ZDR_URL),
                 _NON_ZDR_URL,
             ),
-        ):
-            from pageindex_mcp.server import _lifespan_with_scrape
-
-            with pytest.raises(RuntimeError, match="LLM_FALLBACK_BASE_URL"):
-                async with _lifespan_with_scrape(MagicMock()):
-                    pass  # pragma: no cover
+        ]
+        failures = []
+        for lever, fake_settings, fallback in rows:
+            with (
+                patch("pageindex_mcp.server.settings", fake_settings),
+                patch("pageindex_mcp.client.llm._LLM_FALLBACK_BASE_URL", fallback),
+            ):
+                try:
+                    async with _lifespan_with_scrape(MagicMock()):
+                        pass  # pragma: no cover
+                    failures.append(f"{lever}: startup was NOT refused")
+                except RuntimeError as exc:
+                    if lever not in str(exc):
+                        failures.append(f"{lever}: refused, but the error says {str(exc)!r}")
+        assert not failures, "startup refusal: " + "; ".join(failures)
 
     @pytest.mark.asyncio
-    async def test_accepts_zdr_endpoints(self):
-        """When both URLs are ZDR-allowlisted, startup proceeds past
-        the ZDR checks (may fail later on other checks -- that is OK;
-        we only verify no ZDR RuntimeError is raised)."""
+    async def test_accepts_zdr_endpoints_and_an_empty_fallback(self):
+        """Startup proceeds past the ZDR checks when both URLs are allowlisted,
+        and when LLM_FALLBACK_BASE_URL is empty/unset -- only a non-empty
+        non-ZDR URL triggers the block. (Later, unrelated startup failures are
+        acceptable; we assert only that no ZDR rejection happened.)"""
         fake_settings = _make_settings(
             pii_corpus=True,
             openai_base_url=_ZDR_URL,
             registry_enabled=False,
             postgres_dsn="",
         )
-        with (
-            patch("pageindex_mcp.server.settings", fake_settings),
-            patch(
-                "pageindex_mcp.client.llm._LLM_FALLBACK_BASE_URL",
-                "https://another.openai.azure.com/v1",
-            ),
-            patch("pageindex_mcp.helpers.validate_feature_wirings"),
-            patch("pageindex_mcp.server.get_async_redis", new_callable=AsyncMock),
-            patch("pageindex_mcp.server.queue_metrics") as qm,
-            patch("pageindex_mcp.server.registry_metrics_sync_loop", new_callable=AsyncMock),
-        ):
-            qm.queue_depth_scrape_loop = AsyncMock()
+        for fallback in ("https://another.openai.azure.com/v1", ""):
+            with (
+                patch("pageindex_mcp.server.settings", fake_settings),
+                patch("pageindex_mcp.client.llm._LLM_FALLBACK_BASE_URL", fallback),
+                patch("pageindex_mcp.helpers.validate_feature_wirings"),
+                patch("pageindex_mcp.server.get_async_redis", new_callable=AsyncMock),
+                patch("pageindex_mcp.server.queue_metrics") as qm,
+                patch("pageindex_mcp.server.registry_metrics_sync_loop", new_callable=AsyncMock),
+            ):
+                qm.queue_depth_scrape_loop = AsyncMock()
 
-            from pageindex_mcp.server import _lifespan_with_scrape
+                from pageindex_mcp.server import _lifespan_with_scrape
 
-            # Should NOT raise RuntimeError for ZDR
-            try:
-                async with _lifespan_with_scrape(MagicMock()):
-                    pass
-            except RuntimeError as exc:
-                if "ZDR" in str(exc) or "HR3" in str(exc):
-                    pytest.fail(f"Unexpected ZDR rejection: {exc}")
-                # Other RuntimeErrors (unrelated setup) are acceptable
-            except Exception:
-                pass  # Non-ZDR exceptions from downstream setup are fine
-
-    @pytest.mark.asyncio
-    async def test_empty_fallback_url_is_allowed(self):
-        """When LLM_FALLBACK_BASE_URL is empty/unset, startup should not
-        reject it -- only a non-empty non-ZDR URL triggers the block."""
-        fake_settings = _make_settings(pii_corpus=True, openai_base_url=_ZDR_URL)
-        with (
-            patch("pageindex_mcp.server.settings", fake_settings),
-            patch("pageindex_mcp.client.llm._LLM_FALLBACK_BASE_URL", ""),
-            patch("pageindex_mcp.helpers.validate_feature_wirings"),
-            patch("pageindex_mcp.server.get_async_redis", new_callable=AsyncMock),
-            patch("pageindex_mcp.server.queue_metrics") as qm,
-            patch("pageindex_mcp.server.registry_metrics_sync_loop", new_callable=AsyncMock),
-        ):
-            qm.queue_depth_scrape_loop = AsyncMock()
-
-            from pageindex_mcp.server import _lifespan_with_scrape
-
-            try:
-                async with _lifespan_with_scrape(MagicMock()):
-                    pass
-            except RuntimeError as exc:
-                if "ZDR" in str(exc) or "HR3" in str(exc) or "FALLBACK" in str(exc).upper():
-                    pytest.fail(f"Unexpected ZDR/fallback rejection: {exc}")
-            except Exception:
-                pass  # Non-ZDR exceptions from downstream setup are fine
+                try:
+                    async with _lifespan_with_scrape(MagicMock()):
+                        pass
+                except RuntimeError as exc:
+                    text = str(exc)
+                    if "ZDR" in text or "HR3" in text or "FALLBACK" in text.upper():
+                        pytest.fail(f"Unexpected ZDR rejection (fallback={fallback!r}): {exc}")
+                except Exception:
+                    pass  # Non-ZDR exceptions from downstream setup are fine
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1120,63 +1042,42 @@ class TestLlmWithRetryFallbackZdr:
                 )
 
     @pytest.mark.asyncio
-    async def test_fallback_allowed_when_pii_corpus_false(self):
-        """With pii_corpus=False, fallback proceeds normally regardless of URL."""
+    async def test_fallback_allowed_when_permitted(self):
+        """The two permitted rows: pii_corpus=False (the gate is a no-op for a
+        non-PII corpus, whatever the URL), and pii_corpus=True with a
+        ZDR-allowlisted fallback. In both the fallback URL is actually reached."""
         from pageindex_mcp.client.llm import _llm_with_retry
 
-        exc = ConnectionError("refused")
-        results = []
+        rows = [
+            ("pii_corpus=False", False, _NON_ZDR_URL),
+            ("allowlisted fallback", True, _ZDR_URL),
+        ]
+        failures = []
+        for name, pii_corpus, fallback_url in rows:
+            results: list = []
 
-        async def tracked_fn(**kwargs):
-            results.append(kwargs.get("base_url"))
-            if len(results) <= 1:
-                raise exc
-            return "fallback_ok"
+            async def tracked_fn(_seen=results, **kwargs):
+                _seen.append(kwargs.get("base_url"))
+                if len(_seen) <= 1:
+                    raise ConnectionError("refused")
+                return "fallback_ok"
 
-        with (
-            patch("pageindex_mcp.client.llm.asyncio.sleep", new_callable=AsyncMock),
-            patch(
-                "pageindex_mcp.config.settings",
-                _make_settings(pii_corpus=False),
-            ),
-        ):
-            result = await _llm_with_retry(
-                tracked_fn,
-                max_retries=1,
-                fallback_base_url=_NON_ZDR_URL,
-            )
-        assert result == "fallback_ok"
-        assert _NON_ZDR_URL in results
-
-    @pytest.mark.asyncio
-    async def test_fallback_allowed_when_url_is_zdr(self):
-        """With pii_corpus=True but a ZDR-allowlisted fallback URL,
-        fallback proceeds."""
-        from pageindex_mcp.client.llm import _llm_with_retry
-
-        exc = ConnectionError("refused")
-        results = []
-
-        async def tracked_fn(**kwargs):
-            results.append(kwargs.get("base_url"))
-            if len(results) <= 1:
-                raise exc
-            return "fallback_ok"
-
-        with (
-            patch("pageindex_mcp.client.llm.asyncio.sleep", new_callable=AsyncMock),
-            patch(
-                "pageindex_mcp.config.settings",
-                _make_settings(pii_corpus=True),
-            ),
-        ):
-            result = await _llm_with_retry(
-                tracked_fn,
-                max_retries=1,
-                fallback_base_url=_ZDR_URL,
-            )
-        assert result == "fallback_ok"
-        assert _ZDR_URL in results
+            with (
+                patch("pageindex_mcp.client.llm.asyncio.sleep", new_callable=AsyncMock),
+                patch("pageindex_mcp.config.settings", _make_settings(pii_corpus=pii_corpus)),
+            ):
+                try:
+                    result = await _llm_with_retry(
+                        tracked_fn, max_retries=1, fallback_base_url=fallback_url
+                    )
+                except Exception as exc:  # noqa: BLE001 - any block is a failure here
+                    failures.append(f"{name}: wrongly blocked with {exc!r}")
+                    continue
+            if result != "fallback_ok":
+                failures.append(f"{name}: returned {result!r}")
+            if fallback_url not in results:
+                failures.append(f"{name}: the fallback URL was never reached (tried {results!r})")
+        assert not failures, "permitted fallback rows: " + "; ".join(failures)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1190,12 +1091,17 @@ class TestVlmExtractMarkdownZdr:
 
     @pytest.mark.asyncio
     async def test_blocked_when_pii_corpus_true_non_zdr(self):
+        """The VLM egress path (client/indexer.py's actual call site) blocks,
+        and raises the typed ZDRComplianceError -- not a bare RuntimeError --
+        via zdr_egress_gate, so callers can pattern-match the compliance case."""
+        from pageindex_mcp.config import ZDRComplianceError
         from pageindex_mcp.converters.formats import vlm_extract_markdown
 
         fake_settings = _make_settings(pii_corpus=True, openai_base_url=_NON_ZDR_URL)
         with patch("pageindex_mcp.config.settings", fake_settings):
-            with pytest.raises(RuntimeError, match="ZDR"):
+            with pytest.raises(ZDRComplianceError, match="ZDR") as exc_info:
                 await vlm_extract_markdown("/tmp/dummy.pdf")
+        assert type(exc_info.value) is not RuntimeError  # not the bare base class
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1290,26 +1196,18 @@ class TestRegressionExistingGates:
     """The two call sites that were already gated before this zone fix
     must continue blocking under pii_corpus=True + non-ZDR URL."""
 
-    def test_add_vlm_descriptions_blocked(self):
-        """_add_vlm_descriptions returns immediately (no LLM call) when
-        pii_corpus=True and endpoint is not ZDR-allowlisted."""
+    def test_previously_gated_sites_still_block(self):
+        """Both sites that were already gated before the zone fix must keep
+        blocking under pii_corpus=True + non-ZDR URL: _add_vlm_descriptions
+        returns without attempting a completion (an open gate would reach
+        litellm and fail), and _generate_flat_doc_description returns ''."""
+        from pageindex_mcp.client.indexer import _generate_flat_doc_description
         from pageindex_mcp.converters.pictures import _add_vlm_descriptions
 
         fake_settings = _make_settings(pii_corpus=True, openai_base_url=_NON_ZDR_URL)
         with patch("pageindex_mcp.config.settings", fake_settings):
-            # Pass empty list -- if gate is open it would try litellm.completion
-            # and fail; a clean return means the gate blocked.
             _add_vlm_descriptions([], doc_id="test-doc-123")
-
-    def test_generate_flat_doc_description_blocked(self):
-        """_generate_flat_doc_description returns '' when pii_corpus=True
-        and endpoint is not ZDR-allowlisted."""
-        from pageindex_mcp.client.indexer import _generate_flat_doc_description
-
-        fake_settings = _make_settings(pii_corpus=True, openai_base_url=_NON_ZDR_URL)
-        with patch("pageindex_mcp.config.settings", fake_settings):
-            result = _generate_flat_doc_description("Some document text", doc_id="test-doc-456")
-        assert result == ""
+            assert _generate_flat_doc_description("Some document text", doc_id="test-doc-456") == ""
 
     def test_zdr_egress_gate_returns_false_tuple(self):
         """zdr_egress_gate returns (False, api_base) when blocked,
@@ -1346,10 +1244,11 @@ class TestZdrAllowPatterns:
     verify the exact allowlist contents, per-pattern matching, and
     boundary safety of the substring approach."""
 
-    def test_allow_patterns_exact_contents(self):
-        """_ZDR_ALLOW_PATTERNS must contain exactly the three documented
-        ZDR-qualified endpoint patterns -- no more, no less."""
-        from pageindex_mcp.config import _ZDR_ALLOW_PATTERNS
+    def test_allowlisted_endpoints(self):
+        """_ZDR_ALLOW_PATTERNS holds exactly the three documented ZDR-qualified
+        endpoint patterns -- no more, no less -- and every spelling of them
+        (including mixed case) is accepted by _is_zdr_allowlisted."""
+        from pageindex_mcp.config import _ZDR_ALLOW_PATTERNS, _is_zdr_allowlisted
 
         assert set(_ZDR_ALLOW_PATTERNS) == {
             ".openai.azure.com",
@@ -1357,45 +1256,30 @@ class TestZdrAllowPatterns:
             "eu.api.openai.com",
         }
 
-    def test_allowlist_azure(self):
-        """Azure OpenAI endpoints (*.openai.azure.com) are ZDR-allowlisted."""
+        allowed = [
+            "https://my-instance.openai.azure.com/v1",
+            "https://OTHER.openai.azure.com",
+            "https://bedrock-runtime.eu-central-1.amazonaws.com",
+            "https://bedrock-runtime.us-east-1.amazonaws.com",
+            "https://eu.api.openai.com/v1",
+            "https://MyInstance.OpenAI.Azure.COM/v1",
+            "https://EU.API.OPENAI.COM/v1",
+        ]
+        rejected = [url for url in allowed if _is_zdr_allowlisted(url) is not True]
+        assert not rejected, f"ZDR-qualified endpoints wrongly rejected: {rejected}"
+
+    def test_non_allowlisted_endpoints_are_rejected(self):
+        """Standard OpenAI (api.openai.com, no 'eu.' prefix) is NOT allowlisted,
+        and neither None nor the empty string is -- an unset endpoint means the
+        default one, which is not ZDR."""
         from pageindex_mcp.config import _is_zdr_allowlisted
 
-        assert _is_zdr_allowlisted("https://my-instance.openai.azure.com/v1") is True
-        assert _is_zdr_allowlisted("https://OTHER.openai.azure.com") is True
-
-    def test_allowlist_bedrock(self):
-        """AWS Bedrock runtime endpoints are ZDR-allowlisted."""
-        from pageindex_mcp.config import _is_zdr_allowlisted
-
-        assert _is_zdr_allowlisted("https://bedrock-runtime.eu-central-1.amazonaws.com") is True
-        assert _is_zdr_allowlisted("https://bedrock-runtime.us-east-1.amazonaws.com") is True
-
-    def test_allowlist_openai_eu(self):
-        """OpenAI EU ZDR endpoint is ZDR-allowlisted."""
-        from pageindex_mcp.config import _is_zdr_allowlisted
-
-        assert _is_zdr_allowlisted("https://eu.api.openai.com/v1") is True
-
-    def test_non_zdr_openai_rejected(self):
-        """Standard OpenAI (api.openai.com, no 'eu.' prefix) is NOT allowlisted."""
-        from pageindex_mcp.config import _is_zdr_allowlisted
-
-        assert _is_zdr_allowlisted("https://api.openai.com/v1") is False
-
-    def test_none_and_empty_rejected(self):
-        """None and empty string are NOT allowlisted."""
-        from pageindex_mcp.config import _is_zdr_allowlisted
-
-        assert _is_zdr_allowlisted(None) is False
-        assert _is_zdr_allowlisted("") is False
-
-    def test_case_insensitive(self):
-        """Allowlist matching is case-insensitive per implementation."""
-        from pageindex_mcp.config import _is_zdr_allowlisted
-
-        assert _is_zdr_allowlisted("https://MyInstance.OpenAI.Azure.COM/v1") is True
-        assert _is_zdr_allowlisted("https://EU.API.OPENAI.COM/v1") is True
+        accepted = [
+            url
+            for url in ("https://api.openai.com/v1", None, "")
+            if _is_zdr_allowlisted(url) is not False
+        ]
+        assert not accepted, f"non-ZDR endpoints wrongly allowlisted: {accepted}"
 
 
 class TestLlmWithRetryZdrPropagation:
@@ -1409,8 +1293,11 @@ class TestLlmWithRetryZdrPropagation:
 
     @pytest.mark.asyncio
     async def test_zdr_violation_propagates_as_runtime_error_not_llm_transient(self):
-        """When pii_corpus=True and fallback URL is non-ZDR, the exception
-        raised must be RuntimeError (not LLMTransientFailure)."""
+        """When pii_corpus=True and the fallback URL is non-ZDR, the exception
+        raised must be a bare RuntimeError -- NOT its subclass
+        LLMTransientFailure, which callers treat as retryable -- and call_fn
+        must never have been invoked with the non-ZDR fallback URL, confirming
+        the gate fires BEFORE the network call."""
         from pageindex_mcp.client.llm import LLMTransientFailure, _llm_with_retry
 
         call_fn = AsyncMock(side_effect=ConnectionError("refused"))
@@ -1425,33 +1312,13 @@ class TestLlmWithRetryZdrPropagation:
                     max_retries=1,
                     fallback_base_url=_NON_ZDR_URL,
                 )
-            # Must be bare RuntimeError, NOT its subclass LLMTransientFailure
             assert not isinstance(exc_info.value, LLMTransientFailure), (
                 "ZDR violation should propagate as RuntimeError, not LLMTransientFailure"
             )
             assert "ZDR allow-list" in str(exc_info.value)
 
-    @pytest.mark.asyncio
-    async def test_non_zdr_fallback_never_invokes_call_fn_with_fallback_url(self):
-        """The call_fn must never be called with the non-ZDR fallback URL,
-        confirming the gate fires BEFORE the network call."""
-        from pageindex_mcp.client.llm import _llm_with_retry
-
-        call_fn = AsyncMock(side_effect=ConnectionError("refused"))
-
-        with (
-            patch("pageindex_mcp.client.llm.asyncio.sleep", new_callable=AsyncMock),
-            patch("pageindex_mcp.config.settings", _make_settings(pii_corpus=True)),
-        ):
-            with pytest.raises(RuntimeError):
-                await _llm_with_retry(
-                    call_fn,
-                    max_retries=1,
-                    fallback_base_url=_NON_ZDR_URL,
-                )
-
-            # Verify: every call_fn invocation used the primary URL (None),
-            # never the non-ZDR fallback
+            # Every call_fn invocation used the primary URL (None), never the
+            # non-ZDR fallback.
             for c in call_fn.call_args_list:
                 base = c.kwargs.get("base_url")
                 assert base != _NON_ZDR_URL, (
@@ -1465,47 +1332,45 @@ class TestStartupValidationContract:
     both openai_base_url and LLM_FALLBACK_BASE_URL independently."""
 
     @pytest.mark.asyncio
-    async def test_startup_checks_openai_base_url_independently(self):
-        """When only openai_base_url is non-ZDR, startup fails even if
-        LLM_FALLBACK_BASE_URL is empty."""
-        fake_settings = _make_settings(pii_corpus=True, openai_base_url=_NON_ZDR_URL)
-        with (
-            patch("pageindex_mcp.server.settings", fake_settings),
-            patch("pageindex_mcp.client.llm._LLM_FALLBACK_BASE_URL", ""),
-        ):
-            from pageindex_mcp.server import _lifespan_with_scrape
+    async def test_startup_checks_each_url_independently_and_skips_when_not_pii(self):
+        """Three rows: a non-ZDR openai_base_url fails even with an empty
+        fallback; a non-ZDR LLM_FALLBACK_BASE_URL fails on the fallback check
+        specifically even when the primary is allowlisted; and with
+        pii_corpus=False both checks are skipped entirely, however non-ZDR the
+        URLs are."""
+        from pageindex_mcp.server import _lifespan_with_scrape
 
-            with pytest.raises(RuntimeError, match="openai_base_url"):
-                async with _lifespan_with_scrape(MagicMock()):
-                    pass
+        failures = []
+        rows = [
+            ("openai_base_url", _make_settings(pii_corpus=True, openai_base_url=_NON_ZDR_URL), ""),
+            (
+                "LLM_FALLBACK_BASE_URL",
+                _make_settings(pii_corpus=True, openai_base_url=_ZDR_URL),
+                _NON_ZDR_URL,
+            ),
+        ]
+        for lever, fake_settings, fallback in rows:
+            with (
+                patch("pageindex_mcp.server.settings", fake_settings),
+                patch("pageindex_mcp.client.llm._LLM_FALLBACK_BASE_URL", fallback),
+            ):
+                try:
+                    async with _lifespan_with_scrape(MagicMock()):
+                        pass
+                    failures.append(f"{lever}: startup was NOT refused")
+                except RuntimeError as exc:
+                    if lever not in str(exc):
+                        failures.append(f"{lever}: refused on the wrong check: {str(exc)!r}")
+        assert not failures, "independent startup checks: " + "; ".join(failures)
 
-    @pytest.mark.asyncio
-    async def test_startup_checks_fallback_url_independently(self):
-        """When openai_base_url is ZDR but LLM_FALLBACK_BASE_URL is non-ZDR,
-        startup fails on the fallback check specifically."""
-        fake_settings = _make_settings(pii_corpus=True, openai_base_url=_ZDR_URL)
-        with (
-            patch("pageindex_mcp.server.settings", fake_settings),
-            patch("pageindex_mcp.client.llm._LLM_FALLBACK_BASE_URL", _NON_ZDR_URL),
-        ):
-            from pageindex_mcp.server import _lifespan_with_scrape
-
-            with pytest.raises(RuntimeError, match="LLM_FALLBACK_BASE_URL"):
-                async with _lifespan_with_scrape(MagicMock()):
-                    pass
-
-    @pytest.mark.asyncio
-    async def test_startup_skips_all_zdr_checks_when_pii_corpus_false(self):
-        """When pii_corpus=False, startup must skip ZDR checks entirely,
-        even if all URLs are non-ZDR."""
-        fake_settings = _make_settings(
+        non_pii = _make_settings(
             pii_corpus=False,
             openai_base_url=_NON_ZDR_URL,
             registry_enabled=False,
             postgres_dsn="",
         )
         with (
-            patch("pageindex_mcp.server.settings", fake_settings),
+            patch("pageindex_mcp.server.settings", non_pii),
             patch("pageindex_mcp.client.llm._LLM_FALLBACK_BASE_URL", _NON_ZDR_URL),
             patch("pageindex_mcp.helpers.validate_feature_wirings"),
             patch("pageindex_mcp.server.get_async_redis", new_callable=AsyncMock),
@@ -1513,9 +1378,6 @@ class TestStartupValidationContract:
             patch("pageindex_mcp.server.registry_metrics_sync_loop", new_callable=AsyncMock),
         ):
             qm.queue_depth_scrape_loop = AsyncMock()
-
-            from pageindex_mcp.server import _lifespan_with_scrape
-
             try:
                 async with _lifespan_with_scrape(MagicMock()):
                     pass
@@ -1573,7 +1435,12 @@ class TestEgressSiteExhaustiveness:
 
 
 class TestPresignedUrl:
-    def test_presigned_get_url_delegates_to_minio(self):
+    def test_presigned_get_url_honours_the_configured_endpoint(self):
+        """Both endpoint modes of storage.presigned_get_url: the default path
+        delegates to the MinIO client, and a configured MINIO_PRESIGN_ENDPOINT
+        signs against the separate public-facing client instead."""
+        from pageindex_mcp.storage import presigned_get_url
+
         mock_minio = MagicMock()
         mock_minio.presigned_get_object.return_value = (
             "https://minio.example.com/bucket/key?sig=abc"
@@ -1586,13 +1453,10 @@ class TestPresignedUrl:
             mock_settings.minio_endpoint = "minio.example.com"
             mock_settings.minio_path_prefix = ""
             mock_settings.minio_bucket = "pageindex"
-            from pageindex_mcp.storage import presigned_get_url
-
             url = presigned_get_url("uploads/staging/job123/test.pdf")
         assert "minio.example.com" in url
         mock_minio.presigned_get_object.assert_called_once()
 
-    def test_presigned_get_url_uses_presign_endpoint(self):
         mock_presign = MagicMock()
         mock_presign.presigned_get_object.return_value = (
             "https://public.minio.com/bucket/key?sig=xyz"
@@ -1606,36 +1470,18 @@ class TestPresignedUrl:
             mock_settings.minio_secure = True
             mock_settings.minio_access_key = "key"
             mock_settings.minio_secret_key = "secret"
-            from pageindex_mcp.storage import presigned_get_url
-
             url = presigned_get_url("uploads/staging/job123/test.pdf")
         assert "public.minio.com" in url
 
 
 # ---------------------------------------------------------------------------
-# PictureResult base64 round-trip
-# ---------------------------------------------------------------------------
-
-
-class TestPictureResultRoundTrip:
-    def test_base64_encode_decode_preserves_bytes(self):
-        original = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
-        encoded = base64.b64encode(original).decode("ascii")
-        decoded = base64.b64decode(encoded)
-        assert decoded == original
-
-    def test_empty_png_bytes_handled(self):
-        pr = {"ocr_text": "hello", "png_bytes": "", "page": 1}
-        raw_b64 = pr.get("png_bytes", "")
-        if raw_b64:
-            pr["png_bytes"] = base64.b64decode(raw_b64)
-        else:
-            pr["png_bytes"] = b""
-        assert pr["png_bytes"] == b""
-
-
-# ---------------------------------------------------------------------------
 # Remote conversion functions
+#
+# NOTE: the former TestPictureResultRoundTrip asserted base64.b64decode(
+# base64.b64encode(x)) == x and re-implemented the empty-png branch inside the
+# test body -- it exercised the stdlib and the test, never production code.
+# The real round-trip (and the empty-png_bytes row) is asserted below against
+# _remote_pdf_to_markdown, which is the code that actually does the decoding.
 # ---------------------------------------------------------------------------
 
 
@@ -1679,9 +1525,26 @@ class _MockAsyncClient:
         return self._version_response
 
 
+def _remote_settings(mock_settings, token=""):
+    mock_settings.docling_service_url = "http://docling:8080"
+    mock_settings.docling_service_timeout_s = 600
+    mock_settings.docling_service_bearer_token = token
+    return mock_settings
+
+
+def _reset_remote_version_cache():
+    from pageindex_mcp.client import remote as remote_module
+
+    remote_module._remote_docling_version = None
+    remote_module._remote_pipeline_version_behind = None
+
+
 class TestRemotePdfToMarkdown:
     @pytest.mark.asyncio
     async def test_basic_remote_call(self):
+        """The markdown and every picture_result come back, with png_bytes
+        base64-decoded to the exact bytes the service sent -- and an empty
+        png_bytes field decoding to b"" rather than raising."""
         png_bytes = b"\x89PNG_test_data"
         response_data = {
             "markdown": "# Test Document\n\nHello world",
@@ -1694,7 +1557,16 @@ class TestRemotePdfToMarkdown:
                     "description": "",
                     "skipped_reason": "",
                     "decorative": False,
-                }
+                },
+                {
+                    "ocr_text": "no image bytes",
+                    "png_bytes": "",
+                    "page": 2,
+                    "bbox": {"l": 0, "t": 0, "r": 1, "b": 1},
+                    "description": "",
+                    "skipped_reason": "",
+                    "decorative": False,
+                },
             ],
         }
         mock_client = _MockAsyncClient(response_data)
@@ -1706,190 +1578,143 @@ class TestRemotePdfToMarkdown:
                 "pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key?sig=abc"
             ),
         ):
-            mock_settings.docling_service_url = "http://docling:8080"
-            mock_settings.docling_service_timeout_s = 600
-            mock_settings.docling_service_bearer_token = ""
-
+            _remote_settings(mock_settings)
             from pageindex_mcp.client import _remote_pdf_to_markdown
 
             md, pics = await _remote_pdf_to_markdown("staging/key.pdf")
 
         assert md == "# Test Document\n\nHello world"
-        assert len(pics) == 1
+        assert len(pics) == 2
         assert pics[0]["png_bytes"] == png_bytes
         assert pics[0]["ocr_text"] == "figure caption"
+        assert pics[1]["png_bytes"] == b""
 
     @pytest.mark.asyncio
-    async def test_bearer_token_sent(self):
-        response_data = {"markdown": "test", "picture_results": []}
-        captured = {}
-        mock_client = _MockAsyncClient(response_data, capture_headers=captured)
+    async def test_authorization_header_follows_the_configured_token(self):
+        """A configured bearer token is sent as Authorization; an empty one
+        sends no Authorization header at all."""
+        failures = []
+        for token, expected in (("secret-token", "Bearer secret-token"), ("", None)):
+            captured = {}
+            mock_client = _MockAsyncClient(
+                {"markdown": "test", "picture_results": []}, capture_headers=captured
+            )
+            _reset_remote_version_cache()
+            with (
+                patch("pageindex_mcp.client.remote.settings") as mock_settings,
+                patch("httpx.AsyncClient", return_value=mock_client),
+                patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"),
+            ):
+                _remote_settings(mock_settings, token=token)
+                from pageindex_mcp.client import _remote_pdf_to_markdown
 
-        with (
-            patch("pageindex_mcp.client.remote.settings") as mock_settings,
-            patch("httpx.AsyncClient", return_value=mock_client),
-            patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"),
-        ):
-            mock_settings.docling_service_url = "http://docling:8080"
-            mock_settings.docling_service_timeout_s = 600
-            mock_settings.docling_service_bearer_token = "secret-token"
-
-            from pageindex_mcp.client import _remote_pdf_to_markdown
-
-            await _remote_pdf_to_markdown("staging/key.pdf")
-
-        assert captured.get("Authorization") == "Bearer secret-token"
-
-    @pytest.mark.asyncio
-    async def test_no_auth_header_when_token_empty(self):
-        response_data = {"markdown": "test", "picture_results": []}
-        captured = {}
-        mock_client = _MockAsyncClient(response_data, capture_headers=captured)
-
-        with (
-            patch("pageindex_mcp.client.remote.settings") as mock_settings,
-            patch("httpx.AsyncClient", return_value=mock_client),
-            patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"),
-        ):
-            mock_settings.docling_service_url = "http://docling:8080"
-            mock_settings.docling_service_timeout_s = 600
-            mock_settings.docling_service_bearer_token = ""
-
-            from pageindex_mcp.client import _remote_pdf_to_markdown
-
-            await _remote_pdf_to_markdown("staging/key.pdf")
-
-        assert "Authorization" not in captured
+                await _remote_pdf_to_markdown("staging/key.pdf")
+            if captured.get("Authorization") != expected:
+                failures.append(
+                    f"token={token!r}: Authorization={captured.get('Authorization')!r}, "
+                    f"expected {expected!r}"
+                )
+        assert not failures, "; ".join(failures)
 
     @pytest.mark.asyncio
-    async def test_commit_sha_mismatch_warns_and_increments_counter(self):
-        response_data = {"markdown": "test", "picture_results": []}
-        mock_client = _MockAsyncClient(
-            response_data,
-            version_data={"commit_sha": "remote-sha", "pipeline_version": 4},
-        )
-
-        with (
-            patch("pageindex_mcp.client.remote.settings") as mock_settings,
-            patch("pageindex_mcp.client.remote._CLIENT_BUILD_SHA", "client-sha"),
-            patch("pageindex_mcp.client.remote.CURRENT_PIPELINE_VERSION", 4),
-            patch("httpx.AsyncClient", return_value=mock_client),
-            patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"),
-            patch("pageindex_mcp.client.remote.logger") as mock_logger,
-            patch("pageindex_mcp.client.remote.DOCLING_VERSION_SKEW") as mock_metric,
-        ):
-            mock_settings.docling_service_url = "http://docling:8080"
-            mock_settings.docling_service_timeout_s = 600
-            mock_settings.docling_service_bearer_token = ""
-
-            from pageindex_mcp.client import _remote_pdf_to_markdown
-
-            await _remote_pdf_to_markdown("staging/key.pdf")
-
-        mock_logger.warning.assert_any_call(
-            "Remote Docling SHA %s != client SHA %s", "remote-sha", "client-sha"
-        )
-        mock_metric.labels.assert_any_call(signal="commit_sha")
-        mock_logger.error.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_pipeline_version_behind_errors_and_increments_counter(self):
-        response_data = {"markdown": "test", "picture_results": []}
-        mock_client = _MockAsyncClient(
-            response_data,
-            version_data={"commit_sha": "client-sha", "pipeline_version": 3},
-        )
-
-        with (
-            patch("pageindex_mcp.client.remote.settings") as mock_settings,
-            patch("pageindex_mcp.client.remote._CLIENT_BUILD_SHA", "client-sha"),
-            patch("pageindex_mcp.client.remote.CURRENT_PIPELINE_VERSION", 4),
-            patch("httpx.AsyncClient", return_value=mock_client),
-            patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"),
-            patch("pageindex_mcp.client.remote.logger") as mock_logger,
-            patch("pageindex_mcp.client.remote.DOCLING_VERSION_SKEW") as mock_metric,
-        ):
-            mock_settings.docling_service_url = "http://docling:8080"
-            mock_settings.docling_service_timeout_s = 600
-            mock_settings.docling_service_bearer_token = ""
-
-            from pageindex_mcp.client import _remote_pdf_to_markdown
-
-            await _remote_pdf_to_markdown("staging/key.pdf")
-
-        mock_logger.error.assert_any_call("Remote pipeline_version %d < local %d", 3, 4)
-        mock_metric.labels.assert_any_call(signal="pipeline_version")
-
-    @pytest.mark.asyncio
-    async def test_matching_version_no_warning(self):
-        response_data = {"markdown": "test", "picture_results": []}
-        mock_client = _MockAsyncClient(
-            response_data,
-            version_data={"commit_sha": "client-sha", "pipeline_version": 4},
-        )
-
-        with (
-            patch("pageindex_mcp.client.remote.settings") as mock_settings,
-            patch("pageindex_mcp.client.remote._CLIENT_BUILD_SHA", "client-sha"),
-            patch("pageindex_mcp.client.remote.CURRENT_PIPELINE_VERSION", 4),
-            patch("httpx.AsyncClient", return_value=mock_client),
-            patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"),
-            patch("pageindex_mcp.client.remote.logger") as mock_logger,
-            patch("pageindex_mcp.client.remote.DOCLING_VERSION_SKEW") as mock_metric,
-        ):
-            mock_settings.docling_service_url = "http://docling:8080"
-            mock_settings.docling_service_timeout_s = 600
-            mock_settings.docling_service_bearer_token = ""
-
-            from pageindex_mcp.client import _remote_pdf_to_markdown
-
-            await _remote_pdf_to_markdown("staging/key.pdf")
-
-        mock_logger.warning.assert_not_called()
-        mock_logger.error.assert_not_called()
-        mock_metric.labels.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_version_fetch_failure_degrades_gracefully(self):
+    async def test_version_skew_signals(self):
+        """Every outcome of the remote /version probe, in one table: a commit
+        SHA mismatch warns, a remote pipeline_version behind the local one
+        errors, both label DOCLING_VERSION_SKEW with their own signal, a
+        matching remote is silent, and an unreachable /version endpoint
+        degrades gracefully without failing the conversion."""
         response_data = {"markdown": "test", "picture_results": []}
 
         class _FailingGetClient(_MockAsyncClient):
             async def get(self, url, *, timeout=None):
                 raise RuntimeError("connection refused")
 
-        mock_client = _FailingGetClient(response_data)
+        cases = [
+            (
+                "commit_sha mismatch",
+                _MockAsyncClient(
+                    response_data, version_data={"commit_sha": "remote-sha", "pipeline_version": 4}
+                ),
+                {"warning": True, "error": False, "signal": "commit_sha"},
+            ),
+            (
+                "pipeline_version behind",
+                _MockAsyncClient(
+                    response_data, version_data={"commit_sha": "client-sha", "pipeline_version": 3}
+                ),
+                {"warning": False, "error": True, "signal": "pipeline_version"},
+            ),
+            (
+                "versions match",
+                _MockAsyncClient(
+                    response_data, version_data={"commit_sha": "client-sha", "pipeline_version": 4}
+                ),
+                {"warning": False, "error": False, "signal": None},
+            ),
+            (
+                "/version unreachable",
+                _FailingGetClient(response_data),
+                {"warning": None, "error": None, "signal": None},
+            ),
+        ]
 
-        with (
-            patch("pageindex_mcp.client.remote.settings") as mock_settings,
-            patch("httpx.AsyncClient", return_value=mock_client),
-            patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"),
-        ):
-            mock_settings.docling_service_url = "http://docling:8080"
-            mock_settings.docling_service_timeout_s = 600
-            mock_settings.docling_service_bearer_token = ""
+        failures = []
+        for name, client, expected in cases:
+            _reset_remote_version_cache()
+            with (
+                patch("pageindex_mcp.client.remote.settings") as mock_settings,
+                patch("pageindex_mcp.client.remote._CLIENT_BUILD_SHA", "client-sha"),
+                patch("pageindex_mcp.client.remote.CURRENT_PIPELINE_VERSION", 4),
+                patch("httpx.AsyncClient", return_value=client),
+                patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"),
+                patch("pageindex_mcp.client.remote.logger") as mock_logger,
+                patch("pageindex_mcp.client.remote.DOCLING_VERSION_SKEW") as mock_metric,
+            ):
+                _remote_settings(mock_settings)
+                from pageindex_mcp.client import _remote_pdf_to_markdown
 
-            from pageindex_mcp.client import _remote_pdf_to_markdown
+                md, _pics = await _remote_pdf_to_markdown("staging/key.pdf")
 
-            md, pics = await _remote_pdf_to_markdown("staging/key.pdf")
+            if md != "test":
+                failures.append(f"{name}: conversion returned {md!r}, expected 'test'")
+            if expected["warning"] is True:
+                try:
+                    mock_logger.warning.assert_any_call(
+                        "Remote Docling SHA %s != client SHA %s", "remote-sha", "client-sha"
+                    )
+                except AssertionError:
+                    failures.append(f"{name}: expected the SHA-mismatch warning")
+            elif expected["warning"] is False and mock_logger.warning.called:
+                failures.append(f"{name}: unexpected warning {mock_logger.warning.call_args!r}")
+            if expected["error"] is True:
+                try:
+                    mock_logger.error.assert_any_call("Remote pipeline_version %d < local %d", 3, 4)
+                except AssertionError:
+                    failures.append(f"{name}: expected the pipeline_version error")
+            elif expected["error"] is False and mock_logger.error.called:
+                failures.append(f"{name}: unexpected error {mock_logger.error.call_args!r}")
+            if expected["signal"] is not None:
+                try:
+                    mock_metric.labels.assert_any_call(signal=expected["signal"])
+                except AssertionError:
+                    failures.append(f"{name}: DOCLING_VERSION_SKEW not labelled")
+            elif mock_metric.labels.called:
+                failures.append(f"{name}: unexpected skew metric {mock_metric.labels.call_args!r}")
 
-        assert md == "test"
+        assert not failures, "version-skew rows: " + "; ".join(failures)
 
 
 class TestRemoteImageToMarkdown:
     @pytest.mark.asyncio
     async def test_basic_image_call(self):
-        response_data = {"markdown": "OCR text from image"}
-        mock_client = _MockAsyncClient(response_data)
+        mock_client = _MockAsyncClient({"markdown": "OCR text from image"})
 
         with (
             patch("pageindex_mcp.client.remote.settings") as mock_settings,
             patch("httpx.AsyncClient", return_value=mock_client),
             patch("pageindex_mcp.storage.presigned_get_url", return_value="https://minio/key"),
         ):
-            mock_settings.docling_service_url = "http://docling:8080"
-            mock_settings.docling_service_timeout_s = 600
-            mock_settings.docling_service_bearer_token = ""
-
+            _remote_settings(mock_settings)
             from pageindex_mcp.client import _remote_image_to_markdown
 
             md = await _remote_image_to_markdown("staging/key.png")
@@ -1903,23 +1728,29 @@ class TestRemoteImageToMarkdown:
 
 
 class TestConvertersCliStagingKey:
-    def test_staging_key_argument_parsed(self):
-        import argparse
+    def test_staging_key_flag_is_declared_and_passed_under_the_same_name(self):
+        """Repaired from a pair of tests that built a throwaway ArgumentParser
+        in the test body and then asserted argparse's own behaviour -- they
+        could not fail for any change to this codebase.
 
-        parser = argparse.ArgumentParser()
-        parser.add_argument("input_path")
-        parser.add_argument("--staging-key", default=None)
-        args = parser.parse_args(["test.pdf", "--staging-key", "uploads/staging/job1/test.pdf"])
-        assert args.staging_key == "uploads/staging/job1/test.pdf"
+        The real invariant is that the two ends agree: converters_cli declares
+        ``--staging-key`` (defaulting to None), and subprocess_mgr spells the
+        flag exactly the same way when it builds the child's argv.
+        """
+        import inspect
 
-    def test_staging_key_default_none(self):
-        import argparse
+        from pageindex_mcp import converters_cli
+        from pageindex_mcp.worker import subprocess_mgr
 
-        parser = argparse.ArgumentParser()
-        parser.add_argument("input_path")
-        parser.add_argument("--staging-key", default=None)
-        args = parser.parse_args(["test.pdf"])
-        assert args.staging_key is None
+        cli_source = inspect.getsource(converters_cli)
+        assert '"--staging-key"' in cli_source, (
+            "converters_cli must declare the --staging-key argument"
+        )
+        declaration = cli_source.split('"--staging-key"', 1)[1].split(")", 1)[0]
+        assert "default=None" in declaration, "--staging-key must default to None"
+        assert '"--staging-key"' in inspect.getsource(subprocess_mgr), (
+            "subprocess_mgr must pass the child the identically-spelled flag"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1964,74 +1795,55 @@ class TestRemotePdfExpectedScriptPayload:
     payload key so the server-side garble check need not re-infer the script."""
 
     @pytest.mark.asyncio
-    async def test_expected_script_forwarded_in_payload(self):
-        from pageindex_mcp.client import _remote_pdf_to_markdown
+    async def test_expected_script_payload_shape(self):
+        """Three payload shapes in one table: a PDF conversion with an
+        expected_script forwards it; one without sends the key as an explicit
+        null (a remote build predating the key ignores it, so the shape stays
+        stable in both directions); the image endpoint's payload is unchanged
+        and carries no expected_script at all."""
+        from pageindex_mcp.client import _remote_image_to_markdown, _remote_pdf_to_markdown
 
         fake_settings = _make_docling_settings(pii_corpus=False)
-        fake_client = _CapturingDoclingAsyncClient()
-        with (
-            patch("pageindex_mcp.client.remote.settings", fake_settings),
-            patch("pageindex_mcp.config.settings", fake_settings),
-            patch("httpx.AsyncClient", return_value=fake_client),
-            patch(
-                "pageindex_mcp.storage.presigned_get_url",
-                return_value="https://minio/key?sig=abc",
-            ),
-        ):
-            await _remote_pdf_to_markdown("staging/key.pdf", expected_script="arabic")
+        failures = []
 
-        convert_posts = [p for p in fake_client.posts if p["url"].endswith("/convert/pdf")]
-        assert len(convert_posts) == 1
-        payload = convert_posts[0]["json"]
-        assert "expected_script" in payload, (
-            "the remote conversion payload must carry the expected_script key"
+        async def _run(coro_factory):
+            fake_client = _CapturingDoclingAsyncClient()
+            _reset_remote_version_cache()
+            with (
+                patch("pageindex_mcp.client.remote.settings", fake_settings),
+                patch("pageindex_mcp.config.settings", fake_settings),
+                patch("httpx.AsyncClient", return_value=fake_client),
+                patch(
+                    "pageindex_mcp.storage.presigned_get_url",
+                    return_value="https://minio/key?sig=abc",
+                ),
+            ):
+                await coro_factory()
+            return fake_client
+
+        client = await _run(
+            lambda: _remote_pdf_to_markdown("staging/key.pdf", expected_script="arabic")
         )
-        assert payload["expected_script"] == "arabic"
+        convert_posts = [p for p in client.posts if p["url"].endswith("/convert/pdf")]
+        if len(convert_posts) != 1:
+            failures.append(f"with script: {len(convert_posts)} /convert/pdf posts, expected 1")
+        elif convert_posts[0]["json"].get("expected_script") != "arabic":
+            failures.append(
+                "with script: the remote conversion payload must carry expected_script='arabic', "
+                f"got {convert_posts[0]['json'].get('expected_script')!r}"
+            )
 
-    @pytest.mark.asyncio
-    async def test_expected_script_key_present_as_none_when_not_supplied(self):
-        """Omitting the argument sends the key with an explicit null rather
-        than dropping it -- a remote build that predates the key ignores it,
-        so the shape stays stable in both directions."""
-        from pageindex_mcp.client import _remote_pdf_to_markdown
+        client = await _run(lambda: _remote_pdf_to_markdown("staging/key.pdf"))
+        payload = client.posts[0]["json"]
+        if "expected_script" not in payload or payload["expected_script"] is not None:
+            got = payload.get("expected_script")
+            failures.append(f"without script: expected an explicit null key, got {got!r}")
 
-        fake_settings = _make_docling_settings(pii_corpus=False)
-        fake_client = _CapturingDoclingAsyncClient()
-        with (
-            patch("pageindex_mcp.client.remote.settings", fake_settings),
-            patch("pageindex_mcp.config.settings", fake_settings),
-            patch("httpx.AsyncClient", return_value=fake_client),
-            patch(
-                "pageindex_mcp.storage.presigned_get_url",
-                return_value="https://minio/key?sig=abc",
-            ),
-        ):
-            await _remote_pdf_to_markdown("staging/key.pdf")
+        client = await _run(lambda: _remote_image_to_markdown("staging/key.png"))
+        if "expected_script" in client.posts[0]["json"]:
+            failures.append("image payload must not carry expected_script")
 
-        payload = fake_client.posts[0]["json"]
-        assert payload["expected_script"] is None
-
-    @pytest.mark.asyncio
-    async def test_image_payload_has_no_expected_script(self):
-        """Regression: only the PDF path carries expected_script; the image
-        endpoint's payload shape is unchanged."""
-        from pageindex_mcp.client import _remote_image_to_markdown
-
-        fake_settings = _make_docling_settings(pii_corpus=False)
-        fake_client = _CapturingDoclingAsyncClient()
-        with (
-            patch("pageindex_mcp.client.remote.settings", fake_settings),
-            patch("pageindex_mcp.config.settings", fake_settings),
-            patch("httpx.AsyncClient", return_value=fake_client),
-            patch(
-                "pageindex_mcp.storage.presigned_get_url",
-                return_value="https://minio/key?sig=abc",
-            ),
-        ):
-            await _remote_image_to_markdown("staging/key.png")
-
-        payload = fake_client.posts[0]["json"]
-        assert "expected_script" not in payload
+        assert not failures, "expected_script payload rows: " + "; ".join(failures)
 
     def test_indexer_forwards_expected_script_to_remote(self):
         """Wiring: indexer.py passes expected_script into _remote_pdf_to_markdown."""
@@ -2073,62 +1885,55 @@ class TestRemoteDoclingVersionEnforcement:
         )
 
     @pytest.mark.asyncio
-    async def test_raises_when_stale_and_enforce_true(self):
-        from pageindex_mcp.client.remote import _check_remote_docling_version
-        from pageindex_mcp.config import RemoteVersionSkewError
-
-        with _patched_remote_config(remote_version_enforce=True):
-            with pytest.raises(RemoteVersionSkewError, match="REMOTE_VERSION_ENFORCE"):
-                await _check_remote_docling_version(self._stale_client())
-
-    @pytest.mark.asyncio
     async def test_enforce_blocks_every_call_not_just_the_fetching_one(self):
-        """The /version response is cached after the first fetch, so the block
-        must be re-evaluated per call -- otherwise only the first conversion of
-        the process is gated and every later one slips through."""
+        """A stale remote raises under enforce -- and keeps raising. The
+        /version response is cached after the first fetch, so the block must be
+        re-evaluated per call; otherwise only the first conversion of the
+        process is gated and every later one slips through."""
         from pageindex_mcp.client.remote import _check_remote_docling_version
         from pageindex_mcp.config import RemoteVersionSkewError
 
         client = self._stale_client()
         with _patched_remote_config(remote_version_enforce=True):
-            with pytest.raises(RemoteVersionSkewError):
+            with pytest.raises(RemoteVersionSkewError, match="REMOTE_VERSION_ENFORCE"):
                 await _check_remote_docling_version(client)
             # Second call: cache is warm, no new fetch, but still blocked.
             with pytest.raises(RemoteVersionSkewError):
                 await _check_remote_docling_version(client)
 
     @pytest.mark.asyncio
-    async def test_no_raise_when_remote_is_current_and_enforce_true(self):
+    async def test_enforce_does_not_block_a_current_or_unreachable_remote(self):
+        """Enforce mode blocks an observed skew only: a remote at the current
+        pipeline version passes, and a /version fetch failure never sets the
+        skew flag, so an unreachable endpoint must not become a hard block."""
+        from pageindex_mcp.client import remote as remote_module
         from pageindex_mcp.client.remote import _check_remote_docling_version
 
         with _patched_remote_config(remote_version_enforce=True):
             await _check_remote_docling_version(self._current_client())
 
-    @pytest.mark.asyncio
-    async def test_unreachable_version_endpoint_stays_warn_only_under_enforce(self):
-        """A /version fetch failure never sets the skew flag, so enforce mode
-        must not turn an unreachable endpoint into a hard block."""
-        from pageindex_mcp.client import remote as remote_module
-        from pageindex_mcp.client.remote import _check_remote_docling_version
-
-        broken = MagicMock()
-        broken.get = AsyncMock(side_effect=RuntimeError("connection refused"))
-        with _patched_remote_config(remote_version_enforce=True):
+            _reset_remote_version_cache()
+            broken = MagicMock()
+            broken.get = AsyncMock(side_effect=RuntimeError("connection refused"))
             await _check_remote_docling_version(broken)
         assert remote_module._remote_pipeline_version_behind is None
 
     @pytest.mark.asyncio
-    async def test_warns_only_when_enforce_false(self, caplog):
+    async def test_warn_only_is_the_shipped_default(self, caplog):
         """Regression: the default (enforce=False) path is byte-identical
-        warn-only behavior -- skew is logged and metricked, never raised."""
+        warn-only behavior -- skew is observed, logged and metricked, never
+        raised -- and False is what the shipped config actually says."""
         import logging
 
         from pageindex_mcp.client import remote as remote_module
         from pageindex_mcp.client.remote import _check_remote_docling_version
+        from pageindex_mcp.config import pipeline_config
 
-        with _patched_remote_config(remote_version_enforce=False):
-            with caplog.at_level(logging.ERROR, logger="pageindex_mcp.client.remote"):
-                await _check_remote_docling_version(self._stale_client())
+        with (
+            _patched_remote_config(remote_version_enforce=False),
+            caplog.at_level(logging.ERROR, logger="pageindex_mcp.client.remote"),
+        ):
+            await _check_remote_docling_version(self._stale_client())
 
         assert remote_module._remote_pipeline_version_behind == 0, (
             "warn-only mode must still observe and record the skew"
@@ -2138,12 +1943,7 @@ class TestRemoteDoclingVersionEnforcement:
             for rec in caplog.records
         ), "warn-only mode must log the pipeline_version skew"
 
-    @pytest.mark.asyncio
-    async def test_default_config_is_warn_only(self):
-        """The shipped default for remote_version_enforce is False."""
-        from pageindex_mcp.client.remote import _check_remote_docling_version
-        from pageindex_mcp.config import pipeline_config
-
         assert pipeline_config.remote_version_enforce is False
         # No patching: exercise the real, unpatched config.
+        _reset_remote_version_cache()
         await _check_remote_docling_version(self._stale_client())

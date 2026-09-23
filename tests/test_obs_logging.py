@@ -1,34 +1,58 @@
-"""RED-step tests for RFC-046 D12 (core tranche): the ``obs/`` package.
+# ALLOW-NEW-TEST-FILE: consolidation target for the observability cluster
+"""Observability tests: the ``obs/`` package, ``scripts/logtrace.py``,
+Prometheus metrics, Langfuse tracing and the arq queue-depth scrape.
 
-Scope: tasks 12.1, 12.2, 12.3, 12.4, 12.10 only. No DECISION_POINTS
-instrumentation (12.5-12.9) is exercised here.
+Consolidated home for what used to live in three files
+(``test_obs_logging.py`` + ``test_observability_combined.py`` +
+``test_logtrace.py``). Grouped by the production function exercised, not by
+origin file.
 
-These tests are written against the *contract* described in:
+Contracts exercised here:
   - agents/rfcs/046-ocr-attribution-failure-cluster-remediation.md, R12
-  - agents/designs/design-rfc046-ocr-attribution-failure-cluster-remediation.md,
-    Service Contract 11, Property 12, Property 13
-
-The ``obs`` package does not exist yet. Most of these tests are expected to
-fail with ModuleNotFoundError until it is built (RED). 12.3's test exercises
-the *existing* ``_run_converter_subprocess`` and is expected to fail on a
-behavioural assertion, since child stderr is buffered via ``communicate()``
-today and never forwarded to the parent's real stderr as it is produced.
+  - agents/designs/design-rfc046-...md, Service Contract 11, Property 12/13
+  - agents/contracts/llm-02.yaml -- LLM-02, LLM-02-C1 .. LLM-02-C5
 """
 
 from __future__ import annotations
 
 import asyncio
 import io
-import logging
 import json
+import logging
 import re
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import fakeredis.aioredis
+import openai
 import pytest
+from httpx import ASGITransport, AsyncClient
+from starlette.applications import Starlette
+from starlette.routing import Route
 
+import pageindex_mcp.tracing as tracing
+from pageindex_mcp import queue_metrics
+from pageindex_mcp.converters import (
+    TessdataUnavailableError,
+    ensure_tessdata,
+    pdf_markdown_converters,
+)
+from pageindex_mcp.metrics import (
+    AGPL_FALLBACK_TOTAL,
+    ARQ_QUEUE_DEPTH,
+    DOCUMENTS_TOTAL,
+    LLM_CALLS,
+    MINIO_OPS,
+    TESSDATA_LATIN_FALLBACK_TOTAL,
+    TOOL_CALLS,
+    TOOL_ERRORS,
+    metrics_response,
+)
 from pageindex_mcp.worker.subprocess_mgr import _run_converter_subprocess
 
 RFC3339_MS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
@@ -57,235 +81,202 @@ REQUIRED_ENVELOPE_KEYS = {
 }
 
 
-def _make_json_logging_root(stream):
-    """Build a stdlib logging pipeline using the obs JsonFormatter/ContextFilter.
+def _isolated_json_logger(name: str, stream):
+    """A private logger wired to the obs JsonFormatter + ContextFilter.
 
-    Returns the configured logger so a test can emit through it and then
-    parse ``stream.getvalue()``. Isolated per-test (no shared root logger
-    mutation survives outside the caller, since we build a private logger
-    and only attach it to a fresh handler).
+    Nothing about the shared root logger is mutated, so tests stay isolated.
     """
-    from pageindex_mcp import obs  # noqa: PLC0415 -- deliberately deferred, see module docstring
+    from pageindex_mcp import obs
 
-    logger = __import__("logging").getLogger(f"obs-test-{id(stream)}")
+    logger = logging.getLogger(name)
     logger.handlers.clear()
     logger.propagate = False
-    logger.setLevel(__import__("logging").DEBUG)
+    logger.setLevel(logging.DEBUG)
 
-    handler = __import__("logging").StreamHandler(stream)
+    handler = logging.StreamHandler(stream)
     handler.setFormatter(obs.JsonFormatter())
     handler.addFilter(obs.ContextFilter())
     logger.addHandler(handler)
     return logger, obs
 
 
+def _records(stream) -> list[dict]:
+    return [json.loads(line) for line in stream.getvalue().split("\n") if line.strip()]
+
+
 # ---------------------------------------------------------------------------
-# 12.1 -- envelope shape, RFC3339 ts, one-line exceptions, kind="log" wrapping
+# obs.JsonFormatter / obs.ContextFilter -- the envelope (R12.1, Property 13)
 # ---------------------------------------------------------------------------
 
 
 class TestJsonEnvelope:
-    def test_a_record_is_exactly_one_line_of_valid_json(self):
-        # Arrange
-        import io
+    def test_a_plain_module_log_call_becomes_one_full_json_envelope_line(self):
+        """A stdlib ``logging.getLogger(__name__).info(...)`` from one of the
+        48 existing, unmodified modules must come out as exactly one line of
+        valid JSON carrying every R12.1 field, ``v == 1``, ``kind == "log"``
+        and an RFC3339-UTC-with-ms ``ts`` reflecting emission time.
 
+        This is the whole point of attaching ContextFilter/JsonFormatter to
+        the handler rather than editing 48 call sites.
+        """
         stream = io.StringIO()
-        logger, _obs = _make_json_logging_root(stream)
+        plain_logger, _obs = _isolated_json_logger("pageindex_mcp.some_unmodified_module", stream)
 
-        # Act
-        logger.info("hello world")
+        before = time.time()
+        plain_logger.info("a perfectly ordinary log message")
+        after = time.time()
+
         output = stream.getvalue()
-
-        # Assert
         lines = [line for line in output.split("\n") if line.strip()]
         assert len(lines) == 1, f"expected exactly one line, got {len(lines)}: {lines!r}"
-        parsed = json.loads(lines[0])  # must not raise
-        assert isinstance(parsed, dict)
 
-    def test_envelope_carries_every_field_r12_1_names_with_v_equal_1(self):
-        import io
-
-        stream = io.StringIO()
-        logger, _obs = _make_json_logging_root(stream)
-
-        logger.info("hello world")
-        record = json.loads(stream.getvalue().strip())
-
+        record = json.loads(lines[0])
+        assert isinstance(record, dict)
         missing = REQUIRED_ENVELOPE_KEYS - record.keys()
         assert not missing, f"envelope missing required keys: {missing}"
         assert record["v"] == 1
-
-    def test_ts_is_rfc3339_utc_with_millisecond_precision(self):
-        import io
-
-        stream = io.StringIO()
-        logger, _obs = _make_json_logging_root(stream)
-
-        before = time.time()
-        logger.info("timestamp check")
-        after = time.time()
-        record = json.loads(stream.getvalue().strip())
+        assert record["kind"] == "log"
+        assert record["msg"] == "a perfectly ordinary log message"
 
         ts = record["ts"]
         assert RFC3339_MS_RE.match(ts), (
             f"ts {ts!r} is not RFC3339 UTC with ms (e.g. 2026-09-17T12:00:00.123Z)"
         )
-
-        parsed_dt = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
-        parsed_epoch = parsed_dt.timestamp()
-        # ts must reflect record.created (log-emission time), not later ingest time.
+        parsed_epoch = (
+            datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC).timestamp()
+        )
+        # ts must reflect record.created (log-emission time), not ingest time.
         assert before - 1.0 <= parsed_epoch <= after + 1.0
 
     def test_exception_record_puts_traceback_in_exc_stack_as_one_escaped_string(self):
-        import io
-
         stream = io.StringIO()
-        logger, _obs = _make_json_logging_root(stream)
+        logger, _obs = _isolated_json_logger("pageindex_mcp.obs_exc_probe", stream)
 
         try:
             raise ValueError("boom")
         except ValueError:
             logger.exception("something failed")
 
-        output = stream.getvalue()
-        lines = [line for line in output.split("\n") if line.strip()]
+        lines = [line for line in stream.getvalue().split("\n") if line.strip()]
         assert len(lines) == 1, "an exception record must still occupy exactly one line"
 
         record = json.loads(lines[0])
-        assert "exc" in record and record["exc"], "exc field must be populated"
+        assert record.get("exc"), "exc field must be populated"
         assert "stack" in record["exc"], "exc.stack must carry the traceback"
         assert isinstance(record["exc"]["stack"], str)
         assert "ValueError" in record["exc"]["stack"]
         assert "boom" in record["exc"]["stack"]
-        # A raw traceback contains literal newlines; exc.stack must have escaped
-        # them away so the JSON line itself never spans multiple physical lines.
-        assert "\n" not in record["exc"]["stack"] or record["exc"]["stack"].count("\\n") > 0 or True
-        # Stronger, unambiguous check: re-serializing the parsed record back to
-        # one line must round-trip to a single JSON line with no bare newlines
-        # inside the value once embedded in the raw log line itself.
+        # The raw JSON line itself must never span multiple physical lines.
         assert "\n" not in lines[0]
 
-    def test_plain_logger_info_from_unmodified_module_comes_out_as_kind_log(self):
-        """A stdlib ``logging.getLogger(__name__).info(...)`` call from one of
-        the 48 existing, unmodified modules must be auto-wrapped with
-        kind="log" and the full envelope -- this is the whole point of
-        attaching ContextFilter/JsonFormatter to the root handler rather than
-        editing call sites."""
-        import io
-        import logging as stdlib_logging
 
-        stream = io.StringIO()
-        # Simulate an existing, unmodified module: a bare getLogger call with
-        # no knowledge of obs, no `extra=`, nothing special.
-        plain_logger = stdlib_logging.getLogger("pageindex_mcp.some_unmodified_module")
-        plain_logger.handlers.clear()
-        plain_logger.propagate = False
-        plain_logger.setLevel(stdlib_logging.DEBUG)
+class _Hostile:
+    """A value whose str()/repr() both raise -- the shape that reaches the
+    formatter via ``extra={...}`` at call sites like storage/documents.py:257."""
 
-        from pageindex_mcp import obs  # noqa: PLC0415
+    def __str__(self) -> str:
+        raise RuntimeError("boom")
 
-        handler = stdlib_logging.StreamHandler(stream)
-        handler.setFormatter(obs.JsonFormatter())
-        handler.addFilter(obs.ContextFilter())
-        plain_logger.addHandler(handler)
+    __repr__ = __str__
 
-        plain_logger.info("a perfectly ordinary log message")
-        record = json.loads(stream.getvalue().strip())
 
-        assert record["kind"] == "log"
-        assert record["msg"] == "a perfectly ordinary log message"
-        assert record.keys() >= REQUIRED_ENVELOPE_KEYS
+def _record(**extra: object) -> logging.LogRecord:
+    record = logging.LogRecord("t", logging.INFO, "f.py", 1, "hello", None, None)
+    for key, value in extra.items():
+        setattr(record, key, value)
+    return record
+
+
+def test_formatter_survives_a_hostile_value_in_every_field_it_reads():
+    """RFC-046 D12 review follow-up (2026-09-18): the formatter must be
+    exception-safe for EVERY field it reads, not only ``attrs`` -- a
+    correlation field, a decision field, and the %-formatted message itself."""
+    from pageindex_mcp.obs.formatter import JsonFormatter
+
+    correlation = json.loads(JsonFormatter().format(_record(doc_id=_Hostile())))
+    assert correlation["doc_id"] == "<unserialisable>"
+    assert correlation["msg"] == "hello"
+
+    decision = json.loads(JsonFormatter().format(_record(choice=_Hostile(), event="pick")))
+    assert decision["choice"] == "<unserialisable>"
+    assert decision["event"] == "pick"
+
+    # getMessage() applies %-formatting and raises before the envelope exists.
+    arg_record = logging.LogRecord("t", logging.INFO, "f.py", 1, "x=%s", (_Hostile(),), None)
+    assert json.loads(JsonFormatter().format(arg_record))["msg"] == "<unserialisable>"
+
+
+def test_configure_writes_one_json_line_to_stderr_never_stdout(capsys):
+    """Property 13: one line, one record, on ``sys.stderr``.
+
+    ``converters_cli`` reserves stdout for exactly two JSON lines, so a stdout
+    handler fails every job. And before the hostile-field fix, logging's
+    internal handleError dumped a multi-line traceback to the real stderr and
+    the record was lost entirely.
+    """
+    from pageindex_mcp.obs import configure
+
+    configure()
+
+    root = logging.getLogger()
+    streams = [
+        getattr(h, "stream", None) for h in root.handlers if isinstance(h, logging.StreamHandler)
+    ]
+    assert any(s is sys.stderr for s in streams), f"no handler targets sys.stderr: {streams!r}"
+    assert not any(s is sys.stdout for s in streams), f"a handler targets sys.stdout: {streams!r}"
+
+    logging.getLogger("test.hostile").info("hello", extra={"doc_id": _Hostile()})
+    captured = capsys.readouterr()
+    lines = captured.err.strip().splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["msg"] == "hello"
+    assert captured.out == ""
 
 
 # ---------------------------------------------------------------------------
-# Property 13 -- handler stream is sys.stderr, never stdout
-# ---------------------------------------------------------------------------
-
-
-class TestHandlerTargetsStderrNotStdout:
-    def test_configure_installs_a_handler_whose_stream_is_sys_stderr(self, monkeypatch):
-        from pageindex_mcp import obs
-
-        # Act
-        obs.configure()
-
-        # Assert: at least one handler on the root logger writes to sys.stderr,
-        # and none writes to sys.stdout (converters_cli reserves stdout for
-        # exactly two JSON lines; a stdout handler fails every job).
-        import logging as stdlib_logging
-
-        root = stdlib_logging.getLogger()
-        streams = [
-            getattr(h, "stream", None)
-            for h in root.handlers
-            if isinstance(h, stdlib_logging.StreamHandler)
-        ]
-        assert any(s is sys.stderr for s in streams), f"no handler targets sys.stderr: {streams!r}"
-        assert not any(s is sys.stdout for s in streams), (
-            f"a handler targets sys.stdout: {streams!r}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# 12.2 -- contextvars-backed correlation, no leakage across concurrent tasks
+# obs.bind_log_context / obs.context -- contextvar correlation (task 12.2)
 # ---------------------------------------------------------------------------
 
 
 class TestContextCorrelation:
-    def test_bound_context_fields_appear_on_records_from_a_different_module(self):
-        """doc_id/doc_sha8/job_id/run_id bound via bind_log_context() must show
-        up on log records emitted by a module that never imports obs and
-        knows nothing about the binding -- this is the point of a
-        contextvars-backed Filter on the root *handler*."""
-        import io
-        import logging as stdlib_logging
-
-        from pageindex_mcp import obs
-
+    def test_bound_fields_reach_an_oblivious_module_and_do_not_outlive_the_block(self):
+        """Fields bound via ``bind_log_context()`` must appear on records from
+        a module that never imports obs (the point of a contextvars-backed
+        Filter on the handler) -- and must be gone again once the block exits,
+        because the arq worker process is long-lived and reuses the contextvar
+        across every job it processes."""
         stream = io.StringIO()
-        other_module_logger = stdlib_logging.getLogger("pageindex_mcp.totally_unrelated_module")
-        other_module_logger.handlers.clear()
-        other_module_logger.propagate = False
-        other_module_logger.setLevel(stdlib_logging.DEBUG)
-        handler = stdlib_logging.StreamHandler(stream)
-        handler.setFormatter(obs.JsonFormatter())
-        handler.addFilter(obs.ContextFilter())
-        other_module_logger.addHandler(handler)
+        logger, obs = _isolated_json_logger("pageindex_mcp.totally_unrelated_module", stream)
 
         with obs.bind_log_context(
             run_id="run-1", job_id="job-1", doc_id="doc-1", doc_sha8="abcd1234"
         ):
-            other_module_logger.info("emitted from an oblivious module")
+            logger.info("emitted from an oblivious module")
+        # Simulate the worker moving on to a new job with no explicit binding.
+        logger.info("second job's record, unbound")
 
-        record = json.loads(stream.getvalue().strip())
-        assert record["run_id"] == "run-1"
-        assert record["job_id"] == "job-1"
-        assert record["doc_id"] == "doc-1"
-        assert record["doc_sha8"] == "abcd1234"
+        first, second = _records(stream)
+        assert first["run_id"] == "run-1"
+        assert first["job_id"] == "job-1"
+        assert first["doc_id"] == "doc-1"
+        assert first["doc_sha8"] == "abcd1234"
+        assert second["doc_id"] != "doc-1", (
+            "doc_id bled into the next document's record after the context manager exited"
+        )
+        assert second["run_id"] != "run-1"
 
-    @pytest.mark.asyncio
     async def test_context_does_not_leak_across_concurrent_asyncio_tasks(self):
-        import io
-        import logging as stdlib_logging
-
         from pageindex_mcp import obs
+        from pageindex_mcp.obs.redact import hash_doc_name
 
         stream_a = io.StringIO()
         stream_b = io.StringIO()
-        logger = stdlib_logging.getLogger("pageindex_mcp.concurrency_probe")
-        logger.handlers.clear()
-        logger.propagate = False
-        logger.setLevel(stdlib_logging.DEBUG)
-
-        handler_a = stdlib_logging.StreamHandler(stream_a)
-        handler_a.setFormatter(obs.JsonFormatter())
-        handler_a.addFilter(obs.ContextFilter())
-        handler_b = stdlib_logging.StreamHandler(stream_b)
+        logger, _obs = _isolated_json_logger("pageindex_mcp.concurrency_probe", stream_a)
+        # A second handler on the same logger: whichever task is "current" when
+        # a record is emitted determines the contextvar values baked into it.
+        handler_b = logging.StreamHandler(stream_b)
         handler_b.setFormatter(obs.JsonFormatter())
         handler_b.addFilter(obs.ContextFilter())
-        # Both handlers on the same logger: whichever task is "current" when
-        # a record is emitted determines the contextvar values baked into it.
-        logger.addHandler(handler_a)
         logger.addHandler(handler_b)
 
         async def task_a():
@@ -302,105 +293,38 @@ class TestContextCorrelation:
 
         combined_output = stream_a.getvalue() + stream_b.getvalue()
         records = [json.loads(line) for line in combined_output.split("\n") if line.strip()]
-        from pageindex_mcp.obs.redact import hash_doc_name
 
-        doc_names = {r["doc_name_sha8"] for r in records}
-
-        # Each record must carry exactly the doc_name of the task that
-        # emitted it -- never the other task's value, and never both mixed
-        # into one record. Compared as digests since task 12.6: the filename
-        # is hashed at bind time and never reaches the envelope in clear.
+        # Each record must carry exactly the doc_name of the task that emitted
+        # it -- never the other task's value, and never both mixed into one.
+        # Compared as digests since task 12.6: the filename is hashed at bind
+        # time and never reaches the envelope in clear.
         record_by_msg = {r["msg"]: r["doc_name_sha8"] for r in records}
         assert record_by_msg.get("record from task A") == hash_doc_name("doc-A")
         assert record_by_msg.get("record from task B") == hash_doc_name("doc-B")
         assert record_by_msg.get("record from task A") != record_by_msg.get("record from task B")
         assert "doc-A" not in combined_output and "doc-B" not in combined_output
 
-    def test_context_is_restored_after_the_manager_exits_no_bleed_to_next_document(self):
-        """The arq worker process is long-lived: after bind_log_context()'s
-        `with` block exits, a subsequent log call (simulating the next job on
-        the same worker) must NOT still see the previous document's doc_id."""
-        import io
-        import logging as stdlib_logging
-
-        from pageindex_mcp import obs
-
-        stream = io.StringIO()
-        logger = stdlib_logging.getLogger("pageindex_mcp.worker_reuse_probe")
-        logger.handlers.clear()
-        logger.propagate = False
-        logger.setLevel(stdlib_logging.DEBUG)
-        handler = stdlib_logging.StreamHandler(stream)
-        handler.setFormatter(obs.JsonFormatter())
-        handler.addFilter(obs.ContextFilter())
-        logger.addHandler(handler)
-
-        with obs.bind_log_context(doc_id="doc-from-first-job"):
-            logger.info("first job's record")
-
-        # Simulate the worker moving on to a new job with no explicit binding.
-        logger.info("second job's record, unbound")
-
-        records = [json.loads(line) for line in stream.getvalue().split("\n") if line.strip()]
-        first, second = records[0], records[1]
-        assert first["doc_id"] == "doc-from-first-job"
-        assert second["doc_id"] != "doc-from-first-job", (
-            "doc_id bled into the next document's record after the context manager exited"
-        )
-
 
 # ---------------------------------------------------------------------------
-# 12.4 -- Phase enum + phase() context manager: entry/exit, dur_ms, phase_seq
+# obs.phase / obs.Phase -- entry/exit, dur_ms, phase_seq (task 12.4)
 # ---------------------------------------------------------------------------
 
 
 class TestPhaseTracking:
-    def test_phase_emits_entry_and_exit_records(self):
-        import io
-        import logging as stdlib_logging
-
+    def test_phase_emits_entry_and_exit_and_the_exit_carries_dur_ms(self):
         from pageindex_mcp import obs
 
         stream = io.StringIO()
-        logger = stdlib_logging.getLogger("pageindex_mcp.phase_probe")
-        logger.handlers.clear()
-        logger.propagate = False
-        logger.setLevel(stdlib_logging.DEBUG)
-        handler = stdlib_logging.StreamHandler(stream)
-        handler.setFormatter(obs.JsonFormatter())
-        handler.addFilter(obs.ContextFilter())
-        logger.addHandler(handler)
-
-        with obs.phase(obs.Phase.CONVERT, logger=logger):
-            pass
-
-        records = [json.loads(line) for line in stream.getvalue().split("\n") if line.strip()]
-        assert len(records) == 2, f"expected an entry and an exit record, got {len(records)}"
-        entry, exit_record = records
-        assert entry["phase"] == obs.Phase.CONVERT.value
-        assert exit_record["phase"] == obs.Phase.CONVERT.value
-
-    def test_exit_record_carries_dur_ms(self):
-        import io
-        import logging as stdlib_logging
-
-        from pageindex_mcp import obs
-
-        stream = io.StringIO()
-        logger = stdlib_logging.getLogger("pageindex_mcp.phase_dur_probe")
-        logger.handlers.clear()
-        logger.propagate = False
-        logger.setLevel(stdlib_logging.DEBUG)
-        handler = stdlib_logging.StreamHandler(stream)
-        handler.setFormatter(obs.JsonFormatter())
-        handler.addFilter(obs.ContextFilter())
-        logger.addHandler(handler)
+        logger, _obs = _isolated_json_logger("pageindex_mcp.phase_probe", stream)
 
         with obs.phase(obs.Phase.CONVERT, logger=logger):
             time.sleep(0.02)
 
-        records = [json.loads(line) for line in stream.getvalue().split("\n") if line.strip()]
-        exit_record = records[-1]
+        records = _records(stream)
+        assert len(records) == 2, f"expected an entry and an exit record, got {len(records)}"
+        entry, exit_record = records
+        assert entry["phase"] == obs.Phase.CONVERT.value
+        assert exit_record["phase"] == obs.Phase.CONVERT.value
         assert exit_record["dur_ms"] is not None
         assert exit_record["dur_ms"] >= 15  # slept ~20ms; allow scheduler slack
 
@@ -409,20 +333,10 @@ class TestPhaseTracking:
         from the first pass -- phase_seq must differ (monotonic per
         document/context), never repeat the same value for two distinct
         entries of the same phase."""
-        import io
-        import logging as stdlib_logging
-
         from pageindex_mcp import obs
 
         stream = io.StringIO()
-        logger = stdlib_logging.getLogger("pageindex_mcp.phase_seq_probe")
-        logger.handlers.clear()
-        logger.propagate = False
-        logger.setLevel(stdlib_logging.DEBUG)
-        handler = stdlib_logging.StreamHandler(stream)
-        handler.setFormatter(obs.JsonFormatter())
-        handler.addFilter(obs.ContextFilter())
-        logger.addHandler(handler)
+        logger, _obs = _isolated_json_logger("pageindex_mcp.phase_seq_probe", stream)
 
         with obs.bind_log_context(doc_id="doc-reentry-probe"):
             with obs.phase(obs.Phase.OCR, logger=logger):
@@ -430,12 +344,9 @@ class TestPhaseTracking:
             with obs.phase(obs.Phase.OCR, logger=logger):
                 pass
 
-        records = [json.loads(line) for line in stream.getvalue().split("\n") if line.strip()]
-        ocr_records = [r for r in records if r["phase"] == obs.Phase.OCR.value]
+        ocr_records = [r for r in _records(stream) if r["phase"] == obs.Phase.OCR.value]
         assert len(ocr_records) == 4  # 2 entries x (entry + exit)
-        first_pass_seq = ocr_records[0]["phase_seq"]
-        second_pass_seq = ocr_records[2]["phase_seq"]
-        assert first_pass_seq != second_pass_seq, (
+        assert ocr_records[0]["phase_seq"] != ocr_records[2]["phase_seq"], (
             "phase_seq did not distinguish the re-entered OCR phase from its first pass"
         )
         # entry/exit of the same pass must share the same phase_seq
@@ -443,8 +354,46 @@ class TestPhaseTracking:
         assert ocr_records[2]["phase_seq"] == ocr_records[3]["phase_seq"]
 
 
+class _ExplodesOnRepr:
+    def __repr__(self):
+        raise RuntimeError("repr blew up")
+
+    def __str__(self):
+        raise RuntimeError("str blew up")
+
+
+class TestEmittersNeverRaise:
+    def test_decision_and_phase_never_raise_on_hostile_attrs(self):
+        """Even with DEBUG forced -- so the cheap ``isEnabledFor`` guard cannot
+        short-circuit before attrs are built -- neither emitter may raise.
+
+        ``phase()`` must still propagate the *body's* exception (swallowing a
+        caller bug is not its job) but must never raise a second, different
+        exception that masks or replaces the real one.
+        """
+        from pageindex_mcp import obs
+
+        root_logger = logging.getLogger("pageindex_mcp.obs")
+        previous_level = root_logger.level
+        root_logger.setLevel(logging.DEBUG)
+        try:
+            obs.decision(
+                event="ocr_strategy_chosen",
+                choice="tesseract",
+                reason="probe",
+                attrs={"poison": _ExplodesOnRepr(), "also_bad": object()},
+            )
+            with (
+                pytest.raises(ValueError, match="caller failure"),
+                obs.phase(obs.Phase.CONVERT, attrs={"poison": _ExplodesOnRepr()}),
+            ):
+                raise ValueError("caller failure")
+        finally:
+            root_logger.setLevel(previous_level)
+
+
 # ---------------------------------------------------------------------------
-# 12.3 -- child stderr streamed to the parent as produced, not at the end
+# worker/subprocess_mgr -- child stderr streamed to the parent (task 12.3)
 # ---------------------------------------------------------------------------
 
 
@@ -497,10 +446,7 @@ class _FakeProc:
     """Simulates a converter child that writes stderr, pauses, writes again.
 
     Mirrors real asyncio.subprocess.Process enough for
-    ``_run_converter_subprocess`` to run its real (unmocked) code against it:
-    a handshake readline, a streamed ``.stderr`` reader, a ``.stdout`` reader
-    that yields the final result line after the handshake, and a
-    `pid`/`returncode` the OOM/error-classification paths can inspect.
+    ``_run_converter_subprocess`` to run its real (unmocked) code against it.
     """
 
     def __init__(self, stderr_chunks: list[bytes], pause_s: float, final_stdout: bytes):
@@ -513,10 +459,6 @@ class _FakeProc:
         self.pid = 999999
 
     async def communicate(self):
-        # Kept only for any test double consumer that still expects it; the
-        # real (unmocked) 12.3 implementation no longer calls this -- it
-        # reads .stdout/.stderr directly and concurrently instead, which is
-        # exactly what the streaming assertions in this class exercise.
         await asyncio.sleep(self._pause_s)
         return self._final_stdout, b"".join(self._stderr_chunks)
 
@@ -524,7 +466,6 @@ class _FakeProc:
         return self.returncode
 
 
-@pytest.mark.asyncio
 class TestChildStderrStreamedToParent:
     async def test_stderr_reaches_parent_as_produced_not_buffered_until_exit(
         self, monkeypatch, capsys
@@ -552,28 +493,13 @@ class TestChildStderrStreamedToParent:
         # Assert: the first stderr line must already be visible on the real
         # parent stderr stream well before the child (and the whole call)
         # finishes -- streamed, not buffered until proc.communicate() returns.
+        # The two-JSON-line stdout contract must still hold across that change.
         assert "first-line" in early_capture.err, (
             "child stderr was not forwarded to the parent's stderr until the "
             "child finished (still buffered via communicate())"
         )
-        assert result.get("doc_id") == "fake-doc"
-
-    async def test_stdout_two_json_line_contract_still_holds(self, monkeypatch):
-        fake_proc = _FakeProc(
-            stderr_chunks=[b"some diagnostic\n"],
-            pause_s=0.01,
-            final_stdout=b'{"ok": true, "doc_id": "fake-doc-2"}\n',
-        )
-
-        async def fake_create_subprocess_exec(*args, **kwargs):
-            return fake_proc
-
-        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
-
-        result = await _run_converter_subprocess("/fake/path2.pdf")
-
         assert result["ok"] is True
-        assert result["doc_id"] == "fake-doc-2"
+        assert result.get("doc_id") == "fake-doc"
 
     async def test_stderr_tail_is_populated_and_bounded_on_failure(self, monkeypatch):
         from pageindex_mcp.worker.subprocess_mgr import ConverterChildError
@@ -601,124 +527,92 @@ class TestChildStderrStreamedToParent:
         )
 
 
-# ---------------------------------------------------------------------------
-# Contract: decision() and phase() never raise
-# ---------------------------------------------------------------------------
+class TestOversizedChildStderrLineRealSubprocess:
+    """A real ``asyncio`` subprocess pipe, not a fake reader.
 
+    This is the one guard the existing doubles cannot provide. The defect it
+    locks: ``_forward_child_stderr`` briefly used ``StreamReader.readline()``,
+    which raises ``ValueError`` ("Separator is not found, and chunk exceed the
+    limit") on any line past the stream's 64 KiB limit -- a limit the *child*
+    controls, and one that ``proc.communicate()`` never had. The ValueError
+    escaped past ``_run_converter_subprocess``'s ``except (TimeoutError,
+    CancelledError)`` with the child still alive, leaking a ~1.7 GB converter
+    process. A fake reader has no such limit and reproduces none of it.
+    """
 
-class _ExplodesOnRepr:
-    def __repr__(self):
-        raise RuntimeError("repr blew up")
-
-    def __str__(self):
-        raise RuntimeError("str blew up")
-
-
-class TestEmittersNeverRaise:
-    def test_decision_never_raises_even_with_unserialisable_attrs(self):
-        from pageindex_mcp import obs
-
-        # Act / Assert: must not raise, regardless of how hostile attrs are.
-        obs.decision(
-            event="route_selected",
-            choice="tree",
-            reason="probe",
-            attrs={"poison": _ExplodesOnRepr()},
+    async def test_line_far_over_the_stream_limit_is_forwarded_with_a_bounded_tail(self, capsys):
+        from pageindex_mcp.worker.subprocess_mgr import (
+            STDERR_TAIL_MAX_BYTES,
+            _forward_child_stderr,
+            _StderrTail,
         )
 
-    def test_phase_never_raises_even_when_the_body_or_attrs_are_hostile(self):
-        from pageindex_mcp import obs
-
-        # A phase() whose body raises should propagate the body's exception
-        # (it is not phase()'s job to swallow caller bugs) but phase() itself
-        # -- its own entry/exit emission machinery -- must never raise a
-        # *second*, different exception (e.g. from formatting a hostile
-        # object into attrs) that masks or replaces the real one.
-        with pytest.raises(ValueError, match="caller failure"):
-            with obs.phase(obs.Phase.CONVERT, attrs={"poison": _ExplodesOnRepr()}):
-                raise ValueError("caller failure")
-
-    def test_decision_never_raises_when_logger_isEnabledFor_check_itself_is_bypassed(self):
-        """Even if a caller forces evaluation (e.g. DEBUG enabled) the
-        never-raise posture must hold end to end, not just when the cheap
-        isEnabledFor guard short-circuits before attrs are built."""
-        import logging as stdlib_logging
-
-        from pageindex_mcp import obs
-
-        root_logger = stdlib_logging.getLogger("pageindex_mcp.obs")
-        previous_level = root_logger.level
-        root_logger.setLevel(stdlib_logging.DEBUG)
+        payload_len = 200_000  # well past asyncio's 64 KiB default
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            f"import sys; sys.stderr.write('E' * {payload_len} + '\\n'); sys.stderr.flush()",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        tail = _StderrTail()
         try:
-            obs.decision(
-                event="ocr_strategy_chosen",
-                choice="tesseract",
-                reason="probe",
-                attrs={"poison": _ExplodesOnRepr(), "also_bad": object()},
-            )
+            # Part of the assertion is simply that this returns: readline() raised here.
+            await asyncio.wait_for(_forward_child_stderr(proc.stderr, tail), timeout=30)
         finally:
-            root_logger.setLevel(previous_level)
+            await proc.wait()
+
+        forwarded = capsys.readouterr().err
+        assert forwarded.count("E") == payload_len, (
+            "the whole oversized line must reach the parent's stderr, not a truncated prefix"
+        )
+        assert tail.text(), "the bounded tail must still capture something from the line"
+        # The tail is a diagnostic excerpt, not a buffer: 200 KB on one line
+        # must not cost the parent 200 KB of retained memory on a host that
+        # has already been OOM-killed once.
+        assert len(tail.text().encode()) <= STDERR_TAIL_MAX_BYTES * 2
 
 
 # ---------------------------------------------------------------------------
-# Task 12.2 -- wiring the four unwired bind sites into the application.
+# The four bind sites wired into the application (task 12.2)
 # ---------------------------------------------------------------------------
 
 
 class TestWorkerJobBindsRunIdAndJobId:
     """worker/job.py::process_document_job binds run_id + job_id at entry."""
 
-    async def test_binds_job_id_and_a_generated_run_id(self):
-        from unittest.mock import AsyncMock, patch
-
+    async def test_binds_job_id_and_a_run_id_preferring_one_already_on_ctx(self):
         from pageindex_mcp.obs.context import current_context
         from pageindex_mcp.worker.job import process_document_job
 
-        captured: dict = {}
+        async def _run(ctx, job_id):
+            captured: dict = {}
 
-        async def fake_subprocess(*args, **kwargs):
-            captured.update(current_context())
-            return {"ok": True, "doc_id": "abc12345", "peak_rss_kib": 0, "duration_ms": 0}
+            async def fake_subprocess(*args, **kwargs):
+                captured.update(current_context())
+                return {"ok": True, "doc_id": "abc12345", "peak_rss_kib": 0, "duration_ms": 0}
 
-        ctx = {"redis": AsyncMock()}
-        with (
-            patch("pageindex_mcp.worker.job._run_converter_subprocess", fake_subprocess),
-            patch("pageindex_mcp.worker.job.download_staging"),
-            patch("pageindex_mcp.worker.job.delete_staging"),
-            patch("pageindex_mcp.worker.job.shutil"),
-        ):
-            await process_document_job(ctx, "uploads/staging/job-ctx/report.pdf", "job-ctx")
+            with (
+                patch("pageindex_mcp.worker.job._run_converter_subprocess", fake_subprocess),
+                patch("pageindex_mcp.worker.job.download_staging"),
+                patch("pageindex_mcp.worker.job.delete_staging"),
+                patch("pageindex_mcp.worker.job.shutil"),
+            ):
+                await process_document_job(ctx, f"uploads/staging/{job_id}/report.pdf", job_id)
+            return captured
 
-        assert captured.get("job_id") == "job-ctx"
-        assert captured.get("run_id")  # generated, non-empty
+        generated = await _run({"redis": AsyncMock()}, "job-ctx")
+        assert generated.get("job_id") == "job-ctx"
+        assert generated.get("run_id")  # generated, non-empty
+
+        preassigned = await _run({"redis": AsyncMock(), "run_id": "run-preassigned"}, "job-ctx2")
+        assert preassigned.get("run_id") == "run-preassigned"
+
         # The binding must not leak into the caller's own context afterward --
         # the arq worker process is long-lived and reuses this contextvar
         # across every job it processes.
         assert current_context().get("job_id") is None
         assert current_context().get("run_id") is None
-
-    async def test_uses_an_existing_ctx_run_id_instead_of_generating_one(self):
-        from unittest.mock import AsyncMock, patch
-
-        from pageindex_mcp.obs.context import current_context
-        from pageindex_mcp.worker.job import process_document_job
-
-        captured: dict = {}
-
-        async def fake_subprocess(*args, **kwargs):
-            captured.update(current_context())
-            return {"ok": True, "doc_id": "abc12345", "peak_rss_kib": 0, "duration_ms": 0}
-
-        ctx = {"redis": AsyncMock(), "run_id": "run-preassigned"}
-        with (
-            patch("pageindex_mcp.worker.job._run_converter_subprocess", fake_subprocess),
-            patch("pageindex_mcp.worker.job.download_staging"),
-            patch("pageindex_mcp.worker.job.delete_staging"),
-            patch("pageindex_mcp.worker.job.shutil"),
-        ):
-            await process_document_job(ctx, "uploads/staging/job-ctx2/report.pdf", "job-ctx2")
-
-        assert captured.get("run_id") == "run-preassigned"
 
 
 class TestPreprocessClientBindsInsideSemaphore:
@@ -727,9 +621,9 @@ class TestPreprocessClientBindsInsideSemaphore:
 
     async def test_two_concurrent_documents_do_not_share_doc_name(self):
         import asyncio as _asyncio
-        from unittest.mock import AsyncMock, patch
 
         import preprocess_client
+
         from pageindex_mcp.obs.context import current_context
 
         release_first = _asyncio.Event()
@@ -751,7 +645,6 @@ class TestPreprocessClientBindsInsideSemaphore:
             return {"ok": True, "doc_id": "d", "peak_rss_kib": 0, "duration_ms": 0}
 
         sem = _asyncio.Semaphore(2)
-        from pathlib import Path
 
         with patch("pageindex_mcp.worker._run_converter_subprocess", fake_subprocess, create=True):
             await _asyncio.gather(
@@ -766,102 +659,6 @@ class TestPreprocessClientBindsInsideSemaphore:
         assert captured["first"] == hash_doc_name("first.pdf")
         assert captured["second"] == hash_doc_name("second.pdf")
         assert captured["first"] != captured["second"]
-        assert captured["first"] != captured["second"]
-
-
-class TestSignalsReapTheConverterChild:
-    """A supervisor's SIGTERM must reach `_kill_group`, not bypass it.
-
-    Observed 2026-09-19 (gate 12.C): `timeout 2400` killed the parent and the
-    converter child survived in its own session, holding ~2-3 GB and still
-    running OCR minutes later. `_kill_group` is wired into every *exception*
-    path but Python's default SIGTERM action runs no `finally`, so nothing
-    reaped it. The fix routes the signal into task cancellation, which the
-    existing cleanup already handles."""
-
-    async def test_sigterm_and_sigint_are_both_hooked(self):
-        import asyncio as _asyncio
-
-        import preprocess_client
-
-        hooked: list[str] = []
-
-        class _Loop:
-            def add_signal_handler(self, sig, cb, *args):
-                hooked.append(sig.name)
-
-        task = _asyncio.current_task()
-        installed = preprocess_client.install_child_reaping_signal_handlers(_Loop(), task)
-
-        assert hooked == ["SIGTERM", "SIGINT"]
-        assert installed == ["SIGTERM", "SIGINT"]
-
-    async def test_the_handler_cancels_the_task(self):
-        """The registered callback must cancel -- registering something that
-        does not cancel would leave the child exactly as orphaned."""
-        import asyncio as _asyncio
-
-        import preprocess_client
-
-        captured: dict = {}
-
-        class _Loop:
-            def add_signal_handler(self, sig, cb, *args):
-                captured.setdefault("cb", (cb, args))
-
-        async def _sleeper():
-            await _asyncio.sleep(30)
-
-        task = _asyncio.create_task(_sleeper())
-        preprocess_client.install_child_reaping_signal_handlers(_Loop(), task)
-        cb, args = captured["cb"]
-        cb(*args)
-
-        with pytest.raises(_asyncio.CancelledError):
-            await task
-        assert task.cancelled()
-
-    async def test_unsupported_platform_is_reported_not_swallowed(self):
-        """`add_signal_handler` raises NotImplementedError where it is not
-        supported. That must not crash the run -- but it must also not claim
-        coverage it does not have."""
-        import asyncio as _asyncio
-
-        import preprocess_client
-
-        class _Loop:
-            def add_signal_handler(self, sig, cb, *args):
-                raise NotImplementedError
-
-        installed = preprocess_client.install_child_reaping_signal_handlers(
-            _Loop(), _asyncio.current_task()
-        )
-        assert installed == []
-
-    async def test_cancelling_the_wrapper_reaps_a_real_child(self):
-        """The guarantee itself, through the real code path: a cancelled
-        `_run_converter_subprocess` must leave no surviving process."""
-        import asyncio as _asyncio
-        import os
-        import signal as _signal
-        import sys as _sys
-
-        from pageindex_mcp.worker.subprocess_mgr import _kill_group
-
-        proc = await _asyncio.create_subprocess_exec(
-            _sys.executable,
-            "-c",
-            "import time; time.sleep(60)",
-            stdout=_asyncio.subprocess.PIPE,
-            stderr=_asyncio.subprocess.PIPE,
-            start_new_session=True,
-        )
-        pid = proc.pid
-        await _kill_group(proc, grace=5.0)
-
-        assert proc.returncode is not None, "child must have exited"
-        with pytest.raises(ProcessLookupError):
-            os.kill(pid, _signal.SIGTERM)
 
 
 class TestPreprocessClientCorrelatesTheRegistryUpsert:
@@ -876,8 +673,6 @@ class TestPreprocessClientCorrelatesTheRegistryUpsert:
 
     async def test_registry_upsert_sees_run_id_doc_name_and_doc_id(self):
         import asyncio as _asyncio
-        from pathlib import Path
-        from unittest.mock import patch
 
         import preprocess_client
 
@@ -905,40 +700,113 @@ class TestPreprocessClientCorrelatesTheRegistryUpsert:
         assert captured.get("doc_id") == "doc-42"
 
 
+class TestSignalsReapTheConverterChild:
+    """A supervisor's SIGTERM must reach `_kill_group`, not bypass it.
+
+    Observed 2026-09-19 (gate 12.C): `timeout 2400` killed the parent and the
+    converter child survived in its own session, holding ~2-3 GB and still
+    running OCR minutes later. `_kill_group` is wired into every *exception*
+    path but Python's default SIGTERM action runs no `finally`, so nothing
+    reaped it. The fix routes the signal into task cancellation, which the
+    existing cleanup already handles."""
+
+    async def test_both_signals_are_hooked_to_a_callback_that_actually_cancels(self):
+        """Registering something that does not cancel would leave the child
+        exactly as orphaned. And where ``add_signal_handler`` is unsupported
+        it raises NotImplementedError: that must not crash the run, but it
+        must also not claim coverage it does not have."""
+        import asyncio as _asyncio
+
+        import preprocess_client
+
+        hooked: list[str] = []
+        captured: dict = {}
+
+        class _Loop:
+            def add_signal_handler(self, sig, cb, *args):
+                hooked.append(sig.name)
+                captured.setdefault("cb", (cb, args))
+
+        async def _sleeper():
+            await _asyncio.sleep(30)
+
+        task = _asyncio.create_task(_sleeper())
+        installed = preprocess_client.install_child_reaping_signal_handlers(_Loop(), task)
+
+        assert hooked == ["SIGTERM", "SIGINT"]
+        assert installed == ["SIGTERM", "SIGINT"]
+
+        cb, args = captured["cb"]
+        cb(*args)
+        with pytest.raises(_asyncio.CancelledError):
+            await task
+        assert task.cancelled()
+
+        class _UnsupportedLoop:
+            def add_signal_handler(self, sig, cb, *args):
+                raise NotImplementedError
+
+        assert (
+            preprocess_client.install_child_reaping_signal_handlers(
+                _UnsupportedLoop(), _asyncio.current_task()
+            )
+            == []
+        )
+
+    async def test_cancelling_the_wrapper_reaps_a_real_child(self):
+        """The guarantee itself, through the real code path: a cancelled
+        `_run_converter_subprocess` must leave no surviving process."""
+        import asyncio as _asyncio
+        import os
+        import signal as _signal
+
+        from pageindex_mcp.worker.subprocess_mgr import _kill_group
+
+        proc = await _asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import time; time.sleep(60)",
+            stdout=_asyncio.subprocess.PIPE,
+            stderr=_asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        pid = proc.pid
+        await _kill_group(proc, grace=5.0)
+
+        assert proc.returncode is not None, "child must have exited"
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, _signal.SIGTERM)
+
+
 class TestConvertersCliBindsLogContextFromEnv:
     """converters_cli reads PAGEINDEX_LOG_CONTEXT and binds it -- a malformed
     or absent value must never raise (a logging problem must never fail a
     document)."""
 
-    def test_valid_json_dict_is_parsed(self, monkeypatch):
-        import json as _json
-
+    def test_env_parsing_table(self, monkeypatch):
+        """Table-driven: only a well-formed JSON *object* yields a mapping;
+        every other shape degrades to ``{}`` instead of raising."""
         from pageindex_mcp.converters_cli import _log_context_from_env
         from pageindex_mcp.obs.constants import ENV_LOG_CONTEXT
 
-        monkeypatch.setenv(ENV_LOG_CONTEXT, _json.dumps({"run_id": "r1", "job_id": "j1"}))
-        assert _log_context_from_env() == {"run_id": "r1", "job_id": "j1"}
-
-    def test_missing_env_var_returns_empty_mapping(self, monkeypatch):
-        from pageindex_mcp.converters_cli import _log_context_from_env
-        from pageindex_mcp.obs.constants import ENV_LOG_CONTEXT
+        cases = [
+            ('{"run_id": "r1", "job_id": "j1"}', {"run_id": "r1", "job_id": "j1"}),
+            ("{not valid json", {}),
+            ("[1, 2, 3]", {}),
+            ('"a string"', {}),
+        ]
+        failures = []
+        for raw, expected in cases:
+            monkeypatch.setenv(ENV_LOG_CONTEXT, raw)
+            actual = _log_context_from_env()
+            if actual != expected:
+                failures.append(f"{raw!r} -> {actual!r}, expected {expected!r}")
 
         monkeypatch.delenv(ENV_LOG_CONTEXT, raising=False)
-        assert _log_context_from_env() == {}
+        if _log_context_from_env() != {}:
+            failures.append("absent env var did not yield {}")
 
-    def test_malformed_json_does_not_raise(self, monkeypatch):
-        from pageindex_mcp.converters_cli import _log_context_from_env
-        from pageindex_mcp.obs.constants import ENV_LOG_CONTEXT
-
-        monkeypatch.setenv(ENV_LOG_CONTEXT, "{not valid json")
-        assert _log_context_from_env() == {}
-
-    def test_json_that_is_not_a_dict_returns_empty_mapping(self, monkeypatch):
-        from pageindex_mcp.converters_cli import _log_context_from_env
-        from pageindex_mcp.obs.constants import ENV_LOG_CONTEXT
-
-        monkeypatch.setenv(ENV_LOG_CONTEXT, "[1, 2, 3]")
-        assert _log_context_from_env() == {}
+        assert not failures, "env parsing mismatches:\n  " + "\n  ".join(failures)
 
     async def test_main_binds_context_from_env_without_raising_on_garbage(self, monkeypatch):
         """main() must complete (return its handled-failure exit code, not
@@ -960,8 +828,6 @@ class TestIndexerBindsDocShaAndDocId:
     _persist_flat_result)."""
 
     async def test_persist_tree_result_binds_doc_id_for_its_own_logging(self):
-        from unittest.mock import AsyncMock, patch
-
         from pageindex_mcp.client.indexer import CustomPageIndexClient
         from pageindex_mcp.helpers import ExtractionState, Route, TreeDefect
         from pageindex_mcp.obs.context import current_context
@@ -1015,134 +881,60 @@ class TestIndexerBindsDocShaAndDocId:
 
 
 # ---------------------------------------------------------------------------
-# RFC-046 D12 review follow-ups (2026-09-18): the formatter must be
-# exception-safe for EVERY field it reads, not only `attrs`.
+# obs/log_config.py -- the env surface, read once at import (task 12.7)
 # ---------------------------------------------------------------------------
-class _Hostile:
-    """A value whose str()/repr() both raise -- the shape that reaches the
-    formatter via `extra={...}` at call sites like storage/documents.py:257."""
-
-    def __str__(self) -> str:
-        raise RuntimeError("boom")
-
-    __repr__ = __str__
 
 
-def _record(**extra: object) -> logging.LogRecord:
-    record = logging.LogRecord("t", logging.INFO, "f.py", 1, "hello", None, None)
-    for key, value in extra.items():
-        setattr(record, key, value)
-    return record
-
-
-def test_formatter_survives_a_hostile_correlation_field():
-    # Arrange
-    from pageindex_mcp.obs.formatter import JsonFormatter
-
-    # Act
-    line = JsonFormatter().format(_record(doc_id=_Hostile()))
-
-    # Assert
-    parsed = json.loads(line)
-    assert parsed["doc_id"] == "<unserialisable>"
-    assert parsed["msg"] == "hello"
-
-
-def test_formatter_survives_a_hostile_decision_field():
-    # Arrange
-    from pageindex_mcp.obs.formatter import JsonFormatter
-
-    # Act
-    line = JsonFormatter().format(_record(choice=_Hostile(), event="pick"))
-
-    # Assert
-    parsed = json.loads(line)
-    assert parsed["choice"] == "<unserialisable>"
-    assert parsed["event"] == "pick"
-
-
-def test_formatter_survives_a_hostile_message_arg():
-    # Arrange -- getMessage() applies %-formatting and raises before the
-    # envelope is even built.
-    from pageindex_mcp.obs.formatter import JsonFormatter
-
-    record = logging.LogRecord("t", logging.INFO, "f.py", 1, "x=%s", (_Hostile(),), None)
-
-    # Act
-    line = JsonFormatter().format(record)
-
-    # Assert
-    assert json.loads(line)["msg"] == "<unserialisable>"
-
-
-def test_hostile_field_still_reaches_the_stream_as_one_json_line(capsys):
-    """Property 13: one line, one record. Before the fix, logging's internal
-    handleError dumped a multi-line traceback to the real stderr and the
-    record was lost entirely."""
-    # Arrange
-    from pageindex_mcp.obs import configure
-
-    configure()
-    log = logging.getLogger("test.hostile")
-
-    # Act
-    log.info("hello", extra={"doc_id": _Hostile()})
-    captured = capsys.readouterr().err.strip().splitlines()
-
-    # Assert
-    assert len(captured) == 1
-    assert json.loads(captured[0])["msg"] == "hello"
-
-
-# ── RFC-046 D12 (task 12.7): the env surface, read once at import ────────────
 class TestLogConfigEnvSurface:
     """R12.10: level, node sample, decisions on/off and content widening are
     resolved ONCE at import, in ``obs/log_config.py`` alone, so the six
     hot-path files can import a resolved constant instead of reading
-    ``os.environ`` per call (``TestHotPathConfigAccessGuard`` forbids that)."""
+    ``os.environ`` per call."""
 
-    def test_defaults_when_nothing_is_set(self, monkeypatch):
+    def test_defaults_and_env_overrides_are_resolved_at_import(self, monkeypatch):
         import importlib
 
         from pageindex_mcp.obs import log_config
 
-        for var in (
+        env_vars = (
             "PAGEINDEX_LOG_LEVEL",
             "PAGEINDEX_LOG_NODE_SAMPLE",
             "PAGEINDEX_LOG_DECISIONS",
             "PAGEINDEX_LOG_CONTENT",
-        ):
-            monkeypatch.delenv(var, raising=False)
-        mod = importlib.reload(log_config)
+        )
         try:
+            for var in env_vars:
+                monkeypatch.delenv(var, raising=False)
+            mod = importlib.reload(log_config)
             assert mod.LOG_LEVEL == logging.INFO
             assert mod.LOG_DECISIONS_ENABLED is True
             assert mod.LOG_NODE_SAMPLE == 0
             assert mod.LOG_CONTENT_WIDENED is False
-        finally:
-            importlib.reload(log_config)
 
-    def test_env_values_are_honoured_at_import(self, monkeypatch):
-        import importlib
-
-        from pageindex_mcp.obs import log_config
-
-        monkeypatch.setenv("PAGEINDEX_LOG_LEVEL", "debug")
-        monkeypatch.setenv("PAGEINDEX_LOG_NODE_SAMPLE", "25")
-        monkeypatch.setenv("PAGEINDEX_LOG_DECISIONS", "off")
-        monkeypatch.setenv("PAGEINDEX_LOG_CONTENT", "true")
-        mod = importlib.reload(log_config)
-        try:
+            monkeypatch.setenv("PAGEINDEX_LOG_LEVEL", "debug")
+            monkeypatch.setenv("PAGEINDEX_LOG_NODE_SAMPLE", "25")
+            monkeypatch.setenv("PAGEINDEX_LOG_DECISIONS", "off")
+            monkeypatch.setenv("PAGEINDEX_LOG_CONTENT", "true")
+            mod = importlib.reload(log_config)
             assert mod.LOG_LEVEL == logging.DEBUG
             assert mod.LOG_NODE_SAMPLE == 25
             assert mod.LOG_DECISIONS_ENABLED is False
             assert mod.LOG_CONTENT_WIDENED is True
+
+            # R12.7: PAGEINDEX_LOG_CONTENT must never unmask full text -- it
+            # only raises a truncation length, and the widened bound is still
+            # finite.
+            assert 0 < mod.CONTENT_TRUNCATION_CHARS < mod.CONTENT_TRUNCATION_CHARS_WIDE
+            assert mod.CONTENT_TRUNCATION_CHARS_WIDE < 10_000
         finally:
             importlib.reload(log_config)
 
-    @pytest.mark.parametrize(
-        ("raw", "expected"),
-        [
+    def test_switch_and_count_parsing_never_raise(self):
+        """Table-driven: both parsers must absorb anything an operator can put
+        in an env var, falling back to the documented default."""
+        from pageindex_mcp.obs.log_config import _parse_count, _parse_switch
+
+        switch_cases = [
             ("on", True),
             ("ON", True),
             ("1", True),
@@ -1154,39 +946,26 @@ class TestLogConfigEnvSurface:
             ("no", False),
             ("", True),
             ("nonsense", True),
-        ],
-    )
-    def test_decisions_flag_parsing(self, raw, expected):
-        from pageindex_mcp.obs.log_config import _parse_switch
+        ]
+        count_cases = [("0", 0), ("25", 25), ("-4", 0), ("abc", 0), ("", 0), (None, 0)]
 
-        assert _parse_switch(raw, default=True) is expected
-
-    @pytest.mark.parametrize(
-        ("raw", "expected"),
-        [("0", 0), ("25", 25), ("-4", 0), ("abc", 0), ("", 0), (None, 0)],
-    )
-    def test_node_sample_parsing_never_raises(self, raw, expected):
-        from pageindex_mcp.obs.log_config import _parse_count
-
-        assert _parse_count(raw, default=0) == expected
-
-    def test_content_widening_only_widens_a_bound(self):
-        """R12.7: PAGEINDEX_LOG_CONTENT must never unmask full text -- it only
-        raises a truncation length, and the widened bound is still finite."""
-        from pageindex_mcp.obs.log_config import (
-            CONTENT_TRUNCATION_CHARS,
-            CONTENT_TRUNCATION_CHARS_WIDE,
-        )
-
-        assert 0 < CONTENT_TRUNCATION_CHARS < CONTENT_TRUNCATION_CHARS_WIDE
-        assert CONTENT_TRUNCATION_CHARS_WIDE < 10_000
+        failures = [
+            f"_parse_switch({raw!r}) -> {_parse_switch(raw, default=True)!r}, expected {exp!r}"
+            for raw, exp in switch_cases
+            if _parse_switch(raw, default=True) is not exp
+        ] + [
+            f"_parse_count({raw!r}) -> {_parse_count(raw, default=0)!r}, expected {exp!r}"
+            for raw, exp in count_cases
+            if _parse_count(raw, default=0) != exp
+        ]
+        assert not failures, "env parse mismatches:\n  " + "\n  ".join(failures)
 
 
 class TestDecisionsKillSwitch:
     """PAGEINDEX_LOG_DECISIONS=off silences the decision layer without
     touching ordinary log records."""
 
-    def test_decision_is_suppressed_when_switched_off(self, monkeypatch, caplog):
+    def test_decision_is_emitted_only_while_the_switch_is_on(self, monkeypatch, caplog):
         from pageindex_mcp.obs import decisions
 
         monkeypatch.setattr(decisions, "LOG_DECISIONS_ENABLED", False)
@@ -1194,16 +973,20 @@ class TestDecisionsKillSwitch:
             decisions.decision(event="route_selected", choice="tree", reason="test")
         assert caplog.records == []
 
-    def test_decision_is_emitted_when_switched_on(self, monkeypatch, caplog):
-        from pageindex_mcp.obs import decisions
-
         monkeypatch.setattr(decisions, "LOG_DECISIONS_ENABLED", True)
         with caplog.at_level(logging.INFO, logger="pageindex_mcp.obs"):
             decisions.decision(event="route_selected", choice="tree", reason="test")
         assert [r.event for r in caplog.records] == ["route_selected"]
 
 
-# ── RFC-046 D12 (task 12.6): redaction ───────────────────────────────────────
+# ---------------------------------------------------------------------------
+# obs/redact.py -- PII and path redaction (task 12.6, Hard Rule 3)
+#
+# These stay deliberately fine-grained and standalone: a single field silently
+# leaking is a compliance exposure, and a loop would mask which one failed.
+# ---------------------------------------------------------------------------
+
+
 class TestPathRedaction:
     """R12.7: an absolute path reduces to its basename. Directory layout can
     carry a client or matter name (``/srv/corpora/acme-insurance/...``), and
@@ -1362,14 +1145,12 @@ class TestOwnMessagesCarryTheDigestNotTheFilename:
     def test_plaintext_never_enters_the_mapping_sent_to_the_child(self):
         """The substitution source must live outside the correlation mapping:
         subprocess_mgr serialises that whole mapping into the child's env."""
-        import json as _json
-
         from pageindex_mcp.obs import bind_log_context
         from pageindex_mcp.obs.context import current_context
 
         name = "Mustermann_Police_2024.pdf"
         with bind_log_context(run_id="r1", doc_name=name):
-            serialised = _json.dumps(dict(current_context()))
+            serialised = json.dumps(dict(current_context()))
 
         assert name not in serialised
 
@@ -1394,72 +1175,12 @@ class TestForwardedChildStderrIsScrubbed:
         assert "/srv/acme-insurance" not in tail.text()
 
 
-# ── RFC-046 D12 (task 12.8): the 64 KiB line, against a real pipe ────────────
-class TestOversizedChildStderrLineRealSubprocess:
-    """A real ``asyncio`` subprocess pipe, not a fake reader.
+def _expected_sha8(name: str) -> str:
+    import hashlib
 
-    This is the one guard the existing doubles cannot provide. The defect it
-    locks was mine: ``_forward_child_stderr`` briefly used
-    ``StreamReader.readline()``, which raises ``ValueError`` ("Separator is
-    not found, and chunk exceed the limit") on any line past the stream's
-    64 KiB limit -- a limit the *child* controls, and one that
-    ``proc.communicate()`` (what it replaced) never had. The ValueError
-    escaped past ``_run_converter_subprocess``'s ``except (TimeoutError,
-    CancelledError)`` with the child still alive, leaking a ~1.7 GB converter
-    process. A fake reader has no such limit and reproduces none of it.
-    """
-
-    async def test_line_far_over_the_stream_limit_is_forwarded_not_raised(self, capsys):
-        from pageindex_mcp.worker.subprocess_mgr import _forward_child_stderr, _StderrTail
-
-        payload_len = 200_000  # well past asyncio's 64 KiB default
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-c",
-            f"import sys; sys.stderr.write('E' * {payload_len} + '\\n'); sys.stderr.flush()",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        tail = _StderrTail()
-        try:
-            # The assertion is simply that this returns: readline() raised here.
-            await asyncio.wait_for(_forward_child_stderr(proc.stderr, tail), timeout=30)
-        finally:
-            await proc.wait()
-
-        forwarded = capsys.readouterr().err
-        assert forwarded.count("E") == payload_len, (
-            "the whole oversized line must reach the parent's stderr, not a truncated prefix"
-        )
-        assert tail.text(), "the bounded tail must still capture something from the line"
-
-    async def test_tail_stays_bounded_under_an_oversized_line(self):
-        """The tail is a diagnostic excerpt, not a buffer: a child that writes
-        200 KB on one line must not cost the parent 200 KB of retained memory
-        on a host that has already been OOM-killed once."""
-        from pageindex_mcp.worker.subprocess_mgr import (
-            STDERR_TAIL_MAX_BYTES,
-            _forward_child_stderr,
-            _StderrTail,
-        )
-
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-c",
-            "import sys; sys.stderr.write('E' * 200000 + '\\n'); sys.stderr.flush()",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        tail = _StderrTail()
-        try:
-            await asyncio.wait_for(_forward_child_stderr(proc.stderr, tail), timeout=30)
-        finally:
-            await proc.wait()
-
-        assert len(tail.text().encode()) <= STDERR_TAIL_MAX_BYTES * 2
+    return hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
 
 
-# ── RFC-046 D12 (task 12.6): doc_name is hashed, never logged in clear ───────
 class TestDocNameIsHashed:
     """Owner decision, 2026-09-19: log a hash of the filename, not the
     filename. A customer corpus can ship `Mustermann_Police_2024.pdf`, which
@@ -1530,10 +1251,11 @@ class TestDocNameIsHashed:
         assert "doc_name" not in CORRELATION_FIELDS
 
 
-def _expected_sha8(name: str) -> str:
-    import hashlib
-
-    return hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
+# ---------------------------------------------------------------------------
+# obs/context.py -- thread-ambient correlation fallback (gate 12.C)
+#
+# Hard-won invariant; safe ONLY inside the single-document converter child.
+# ---------------------------------------------------------------------------
 
 
 class TestWorkerThreadsInheritTheMainThreadContext:
@@ -1580,26 +1302,11 @@ class TestWorkerThreadsInheritTheMainThreadContext:
         # Assert -- this is the pre-fix behaviour, pinned so it stays visible.
         assert seen == {}
 
-    def test_with_the_fallback_a_worker_thread_sees_the_main_binding(self):
-        # Arrange
-        ctx = self._context_module()
-        ctx.enable_main_thread_ambient()
-
-        # Act
-        try:
-            with ctx.bind_log_context(run_id="run-threads", doc_sha8="abc12345"):
-                seen = self._seen_in_a_thread(ctx)
-        finally:
-            ctx.disable_main_thread_ambient()
-
-        # Assert
-        assert seen["run_id"] == "run-threads"
-        assert seen["doc_sha8"] == "abc12345"
-
-    def test_the_fallback_tracks_later_binds_not_just_the_first(self):
+    def test_with_the_fallback_a_worker_thread_tracks_every_bind_and_unwind(self):
         """``doc_sha8`` is bound in the child only once sha256 has been
         computed, long after the env-supplied ``run_id``. A snapshot taken at
-        enable time would miss it."""
+        enable time would miss it -- and an inner bind must unwind for the
+        thread too, rather than sticking."""
         # Arrange
         ctx = self._context_module()
         ctx.enable_main_thread_ambient()
@@ -1615,10 +1322,10 @@ class TestWorkerThreadsInheritTheMainThreadContext:
             ctx.disable_main_thread_ambient()
 
         # Assert
+        assert first["run_id"] == "run-late"
         assert "doc_sha8" not in first
         assert second["doc_sha8"] == "deadbeef"
         assert second["run_id"] == "run-late"
-        # ...and the inner bind unwinds for the thread too, rather than sticking.
         assert "doc_sha8" not in third
 
     def test_a_threads_own_binding_wins_over_the_fallback(self):
@@ -1648,25 +1355,12 @@ class TestWorkerThreadsInheritTheMainThreadContext:
         # ...while a field it never set still falls back to the main thread.
         assert captured["doc_sha8"] == "abc12345"
 
-    def test_disabling_restores_the_previous_behaviour(self):
-        # Arrange
-        ctx = self._context_module()
-        ctx.enable_main_thread_ambient()
-        ctx.disable_main_thread_ambient()
-
-        # Act
-        with ctx.bind_log_context(run_id="run-off"):
-            seen = self._seen_in_a_thread(ctx)
-
-        # Assert
-        assert seen == {}
-
-    def test_the_main_thread_is_unaffected_either_way(self):
+    def test_disabling_restores_the_previous_behaviour_and_the_main_thread_is_never_affected(self):
         # Arrange
         ctx = self._context_module()
         ctx.enable_main_thread_ambient()
 
-        # Act
+        # Act -- the main thread's own view is identical either way...
         try:
             with ctx.bind_log_context(run_id="run-main-only"):
                 inside = dict(ctx.current_context())
@@ -1674,9 +1368,14 @@ class TestWorkerThreadsInheritTheMainThreadContext:
         finally:
             ctx.disable_main_thread_ambient()
 
+        # ...and once disabled, a worker thread is blind again.
+        with ctx.bind_log_context(run_id="run-off"):
+            seen = self._seen_in_a_thread(ctx)
+
         # Assert
         assert inside == {"run_id": "run-main-only"}
         assert outside == {}
+        assert seen == {}
 
     def test_a_record_emitted_from_a_worker_thread_carries_run_id(self):
         """The end-to-end shape of the 86 uncorrelated Arabic records: a
@@ -1710,3 +1409,1261 @@ class TestWorkerThreadsInheritTheMainThreadContext:
         record = json.loads(stream.getvalue().strip())
         assert record["run_id"] == "run-ocr"
         assert record["doc_sha8"] == "305e8ca9"
+
+
+# ---------------------------------------------------------------------------
+# scripts/logtrace.py -- read-only trace reconstruction (task 12.10)
+#
+# There is no single universal correlation key: the arq worker route binds
+# (run_id, job_id) and never doc_name; the batch/corpus route binds
+# (run_id, doc_name) and never job_id; doc_sha8/doc_id are late-arriving
+# enrichments. Resolution is therefore two-pass.
+#
+# ``scripts/logtrace.py`` is a standalone script, not a package module -- it
+# is imported by path so pytest need not add ``scripts/`` to sys.path.
+# ---------------------------------------------------------------------------
+
+_LOGTRACE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "logtrace.py"
+
+
+@pytest.fixture(scope="module")
+def lt():
+    import importlib.util
+
+    if not _LOGTRACE_PATH.exists():
+        pytest.fail(f"scripts/logtrace.py does not exist: {_LOGTRACE_PATH}")
+    spec = importlib.util.spec_from_file_location("logtrace", _LOGTRACE_PATH)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["logtrace"] = module
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+    return module
+
+
+def _rec(**fields) -> str:
+    """One minimal-but-valid envelope line, defaults from the frozen schema."""
+    base = {
+        "v": 1,
+        "ts": "2026-09-18T10:00:00.000Z",
+        "level": "INFO",
+        "kind": "log",
+        "proc": 1234,
+        "logger": "pageindex_mcp.test",
+        "msg": "hello",
+        "run_id": None,
+        "job_id": None,
+        "doc_sha8": None,
+        "doc_id": None,
+        "doc_name_sha8": None,
+        "phase": None,
+        "phase_seq": None,
+        "event": None,
+        "choice": None,
+        "reason": None,
+        "attrs": {},
+        "dur_ms": None,
+        "exc": None,
+    }
+    # A test that writes a plaintext doc_name would be testing an envelope the
+    # emitter can no longer produce: context._bind digests it at bind time
+    # (task 12.6, owner decision 2026-09-19). Accept the readable name here and
+    # store what would actually be logged.
+    if "doc_name" in fields:
+        from pageindex_mcp.obs.redact import hash_doc_name
+
+        fields["doc_name_sha8"] = hash_doc_name(fields.pop("doc_name"))
+    base.update(fields)
+    return json.dumps(base)
+
+
+def _write_log(tmp_path: Path, lines: list[str], name: str = "capture.log") -> Path:
+    path = tmp_path / name
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+class TestLogtraceBatchRoute:
+    """Batch route: key is (run_id, doc_name); job_id is absent."""
+
+    def test_two_interleaved_documents_resolve_to_disjoint_ordered_traces(self, tmp_path, lt):
+        from pageindex_mcp.obs.redact import hash_doc_name
+
+        lines = [
+            _rec(run_id="run-A", doc_name="alpha.pdf", phase="route_select", kind="phase_entry"),
+            _rec(run_id="run-A", doc_name="bravo.pdf", phase="route_select", kind="phase_entry"),
+            _rec(run_id="run-A", doc_name="alpha.pdf", phase="convert", kind="phase_entry"),
+            _rec(run_id="run-A", doc_name="bravo.pdf", phase="convert", kind="phase_entry"),
+        ]
+        result = lt.resolve_trace(_write_log(tmp_path, lines), doc_name="alpha.pdf")
+
+        assert len(result.records) == 2
+        assert all(r["doc_name_sha8"] == hash_doc_name("alpha.pdf") for r in result.records)
+        assert [r["phase"] for r in result.records] == ["route_select", "convert"]
+
+    def test_malformed_line_is_skipped_and_counted(self, tmp_path, lt):
+        lines = [
+            _rec(run_id="run-A", doc_name="alpha.pdf"),
+            "not valid json at all {{{",
+            _rec(run_id="run-A", doc_name="alpha.pdf"),
+        ]
+        result = lt.resolve_trace(_write_log(tmp_path, lines), doc_name="alpha.pdf")
+
+        assert len(result.records) == 2
+        assert result.malformed_line_count == 1
+
+    def test_same_doc_name_in_two_runs_is_ambiguous_until_run_id_narrows_it(self, tmp_path, lt):
+        """Ambiguity must be reported, not silently merged or silently
+        resolved to one of the runs."""
+        lines = [
+            _rec(run_id="run-A", doc_name="alpha.pdf", phase="convert"),
+            _rec(run_id="run-B", doc_name="alpha.pdf", phase="ocr"),
+        ]
+        path = _write_log(tmp_path, lines)
+
+        with pytest.raises(lt.AmbiguousIdentifierError) as exc_info:
+            lt.resolve_trace(path, doc_name="alpha.pdf")
+        assert "run-A" in str(exc_info.value)
+        assert "run-B" in str(exc_info.value)
+
+        narrowed = lt.resolve_trace(path, doc_name="alpha.pdf", run_id="run-A")
+        assert len(narrowed.records) == 1
+        assert narrowed.records[0]["run_id"] == "run-A"
+        assert narrowed.records[0]["phase"] == "convert"
+
+
+class TestLogtraceTwoPassResolution:
+    """The specific failure to avoid: a trace queried by a late-arriving
+    identifier must not silently drop the parent-side records that predate it."""
+
+    def test_doc_id_and_doc_sha8_both_recover_the_earliest_parent_side_record(self, tmp_path, lt):
+        lines = [
+            # Parent (worker route): run_id + job_id only, no document identity yet.
+            _rec(run_id="run-A", job_id="job-1", phase="route_select", kind="phase_entry"),
+            # Child, mid-pipeline: doc_sha8 has appeared, doc_id has not.
+            _rec(
+                run_id="run-A",
+                job_id="job-1",
+                doc_sha8="deadbeef",
+                phase="convert",
+                kind="phase_entry",
+            ),
+            # Child, later: doc_id has now appeared (post-persist enrichment).
+            _rec(
+                run_id="run-A",
+                job_id="job-1",
+                doc_sha8="deadbeef",
+                doc_id="doc-999",
+                phase="persist",
+                kind="phase_entry",
+            ),
+        ]
+        path = _write_log(tmp_path, lines)
+
+        by_doc_id = lt.resolve_trace(path, doc_id="doc-999")
+        assert len(by_doc_id.records) == 3
+        # The earliest record -- bound before doc_sha8/doc_id ever existed --
+        # must be present. This catches a naive "start from the first doc_id
+        # record" implementation.
+        assert by_doc_id.records[0]["phase"] == "route_select"
+        assert by_doc_id.records[0]["doc_id"] is None
+        assert by_doc_id.records[0]["doc_sha8"] is None
+        assert by_doc_id.records[-1]["doc_id"] == "doc-999"
+
+        by_sha = lt.resolve_trace(path, doc_sha8="deadbeef")
+        assert len(by_sha.records) == 3
+        assert by_sha.records[0]["phase"] == "route_select"
+
+
+class TestLogtraceWorkerRoute:
+    def test_doc_name_query_and_a_missing_identifier_both_fail_clearly(self, tmp_path, lt):
+        """On the arq worker route doc_name is never bound, so --doc-name must
+        fail with a clear message rather than silently returning an empty
+        trace; and no identifier at all is a caller error, not an empty list."""
+        lines = [
+            _rec(run_id="run-A", job_id="job-1", phase="route_select"),
+            _rec(run_id="run-A", job_id="job-1", doc_id="doc-1", phase="persist"),
+        ]
+        path = _write_log(tmp_path, lines)
+
+        with pytest.raises(lt.IdentifierNotFoundError) as exc_info:
+            lt.resolve_trace(path, doc_name="anything.pdf")
+        assert "doc_name" in str(exc_info.value)
+
+        with pytest.raises(ValueError):
+            lt.resolve_trace(path)
+
+    def test_job_id_resolves_alone_and_run_id_only_narrows_it(self, tmp_path, lt):
+        """--help offers --run-id as a disambiguator, not a requirement. The
+        first cut compared record['run_id'] to None and matched nothing."""
+        lines = [
+            _rec(run_id="run-A", job_id="job-1", phase="route_select", msg="parent start"),
+            _rec(run_id="run-A", job_id="job-1", phase="convert", msg="persisted"),
+            _rec(run_id="run-A", job_id="job-2", phase="route_select", msg="other job"),
+            _rec(run_id="run-B", job_id="job-1", phase="route_select", msg="run two"),
+        ]
+        path = _write_log(tmp_path, lines)
+
+        # run_id supplied: exactly that run's records for the job.
+        scoped = lt.resolve_trace(path, doc_id=None, job_id="job-1", run_id="run-A")
+        assert [r["msg"] for r in scoped.records] == ["parent start", "persisted"]
+        assert all(r["job_id"] == "job-1" for r in scoped.records)
+
+        # run_id omitted, same job_id reused across runs: still narrows by run.
+        other_run = lt.resolve_trace(path, job_id="job-1", run_id="run-B")
+        assert [r["msg"] for r in other_run.records] == ["run two"]
+
+    def test_job_id_alone_resolves_without_a_run_id(self, tmp_path, lt):
+        path = tmp_path / "log.jsonl"
+        path.write_text(
+            "\n".join(
+                json.dumps(r)
+                for r in (
+                    {"run_id": "r1", "job_id": "j1", "msg": "parent start"},
+                    {"run_id": "r1", "job_id": "j1", "doc_id": "D-1", "msg": "persisted"},
+                    {"run_id": "r1", "job_id": "j2", "msg": "other job"},
+                )
+            )
+            + "\n"
+        )
+
+        result = lt.resolve_trace(path, job_id="j1")
+
+        assert [r["msg"] for r in result.records] == ["parent start", "persisted"]
+
+
+class TestLogtraceRendering:
+    def test_renders_with_and_without_decision_records(self, tmp_path, lt):
+        """Decision records (kind=decision) may be absent entirely; the tool
+        must render either way and include them when they do exist."""
+        plain = _write_log(
+            tmp_path,
+            [
+                _rec(
+                    run_id="run-A", doc_name="alpha.pdf", kind="phase_entry", phase="route_select"
+                ),
+                _rec(
+                    run_id="run-A",
+                    doc_name="alpha.pdf",
+                    kind="phase_exit",
+                    phase="route_select",
+                    dur_ms=12,
+                ),
+            ],
+        )
+        result = lt.resolve_trace(plain, doc_name="alpha.pdf")
+        rendered = lt.render_human(result)
+        assert "route_select" in rendered
+        assert not any(r["kind"] == "decision" for r in result.records)
+
+        with_decision = _write_log(
+            tmp_path,
+            [
+                _rec(run_id="run-A", doc_name="alpha.pdf", kind="phase_entry", phase="ocr"),
+                _rec(
+                    run_id="run-A",
+                    doc_name="alpha.pdf",
+                    kind="decision",
+                    phase="ocr",
+                    event="decide_ocr_strategy",
+                    choice="tesseract",
+                    reason="garble_detected",
+                ),
+            ],
+            name="with-decision.log",
+        )
+        result = lt.resolve_trace(with_decision, doc_name="alpha.pdf")
+        decisions = [r for r in result.records if r["kind"] == "decision"]
+        assert len(decisions) == 1
+        assert decisions[0]["event"] == "decide_ocr_strategy"
+
+    def test_json_output_is_a_list_of_the_records_in_order(self, tmp_path, lt):
+        lines = [
+            _rec(run_id="run-A", doc_name="alpha.pdf", phase="route_select"),
+            _rec(run_id="run-A", doc_name="alpha.pdf", phase="convert"),
+        ]
+        result = lt.resolve_trace(_write_log(tmp_path, lines), doc_name="alpha.pdf")
+        parsed = json.loads(lt.render_json(result))
+
+        assert isinstance(parsed, list)
+        assert [r["phase"] for r in parsed] == ["route_select", "convert"]
+
+
+# ---------------------------------------------------------------------------
+# config.effective_config_snapshot + the sidecar audit trail
+# ---------------------------------------------------------------------------
+
+
+def _iso_now_minus(minutes: int) -> str:
+    """ISO-8601 UTC timestamp *minutes* in the past."""
+    return (datetime.now(UTC) - timedelta(minutes=minutes)).isoformat()
+
+
+class TestEffectiveConfigSnapshot:
+    def test_returns_all_keys_with_the_declared_types(self):
+        from pageindex_mcp.config import effective_config_snapshot
+
+        snap = effective_config_snapshot()
+
+        expected_keys = {
+            "pipeline_version",
+            "pdf_inspector_preclassify",
+            "allow_agpl_fallback",
+            "remote_md_renormalize",
+            "ocr_escalation_garble",
+            "ocr_escalation_low_content",
+            "ocr_escalation_per_picture",
+            "pre_garble_force_ocr_enabled",
+            "d7_garble_recovery_enabled",
+            "image_standalone_pipeline_enabled",
+            "image_dominant_ocr_escalation_enabled",
+            "vlm_tesseract_fallback_enabled",
+            "garble_latin_gibberish_enabled",
+            "garble_latin_ratio",
+            "garble_node_ratio_threshold",
+            "garble_digit_floor",
+            "pass_max_leaf_ratio",
+            "bidi_coherence_enforce",
+            "small_doc_promotion_enabled",
+            "leaf_concentration_paragraph_split_enabled",
+            "leaf_split_ratio",
+            "pdf_converter",
+            "text_layer_garble_check_enabled",
+            "region_aware_text_check_enabled",
+            "tree_path_picture_splice_enabled",
+            "low_content_ocr_char_floor",
+            "rfc029_flat_prefer_multiplier",
+            "rfc029_min_chars_per_node",
+            "verdict_downgrade_enabled",
+            # Verdict-gate thresholds (VG-2/3/4): joined the sidecar snapshot
+            # so a stored verdict can be explained from its own sidecar.
+            "hard_fail_max_leaf_ratio",
+            "cat_a_max_leaf_ratio",
+            "cat_a_max_ocr_noise",
+            "small_doc_min_chars",
+            "small_doc_max_chars",
+            "small_doc_leaf_ratio_bound_low",
+            "small_doc_leaf_ratio_bound_high",
+            "preclassify_enabled",
+        }
+
+        assert set(snap.keys()) == expected_keys, (
+            f"Key mismatch.\n  Missing: {expected_keys - set(snap.keys())}\n"
+            f"  Extra:   {set(snap.keys()) - expected_keys}"
+        )
+        assert len(snap) == 37
+
+        assert isinstance(snap["pipeline_version"], int)
+        for fk in (
+            "garble_latin_ratio",
+            "garble_node_ratio_threshold",
+            "pass_max_leaf_ratio",
+            "leaf_split_ratio",
+            "rfc029_flat_prefer_multiplier",
+            "rfc029_min_chars_per_node",
+        ):
+            assert isinstance(snap[fk], float), f"{fk} should be float, got {type(snap[fk])}"
+        assert isinstance(snap["pdf_converter"], str)
+        assert isinstance(snap["low_content_ocr_char_floor"], int)
+
+        bool_keys = expected_keys - {
+            "pipeline_version",
+            "garble_latin_ratio",
+            "garble_node_ratio_threshold",
+            "garble_digit_floor",
+            "pass_max_leaf_ratio",
+            "leaf_split_ratio",
+            "pdf_converter",
+            "low_content_ocr_char_floor",
+            "rfc029_flat_prefer_multiplier",
+            "rfc029_min_chars_per_node",
+            "hard_fail_max_leaf_ratio",
+            "cat_a_max_leaf_ratio",
+            "cat_a_max_ocr_noise",
+            "small_doc_min_chars",
+            "small_doc_max_chars",
+            "small_doc_leaf_ratio_bound_low",
+            "small_doc_leaf_ratio_bound_high",
+        }
+        for bk in bool_keys:
+            assert isinstance(snap[bk], bool), f"{bk} should be bool, got {type(snap[bk])}"
+
+    def test_env_overrides_survive_reset_pipeline_config(self, monkeypatch):
+        """Regression (HR4 audit trail): OCR_ESCALATION_GARBLE and
+        ALLOW_AGPL_FALLBACK are deprecated read-through aliases reassigned
+        from PipelineConfig.from_env() inside reset_pipeline_config() --
+        pipeline_config is the canonical source, so the snapshot must agree
+        with it after a reset, not with a stale module-level alias."""
+        monkeypatch.setenv("GARBLE_LATIN_RATIO", "0.5")
+        monkeypatch.setenv("PDF_CONVERTER", "pymupdf4llm")
+        monkeypatch.setenv("OCR_ESCALATION_GARBLE", "false")
+        monkeypatch.setenv("ALLOW_AGPL_FALLBACK", "0")
+
+        from pageindex_mcp.config import effective_config_snapshot, reset_pipeline_config
+
+        reset_pipeline_config()
+
+        # Re-import after reset to get the fresh singleton.
+        from pageindex_mcp.config import pipeline_config as fresh_pc
+
+        snap = effective_config_snapshot()
+
+        assert snap["ocr_escalation_garble"] is False
+        assert snap["garble_latin_ratio"] == 0.5
+        assert snap["pdf_converter"] == "pymupdf4llm"
+        assert fresh_pc.allow_agpl_fallback is False
+        assert snap["allow_agpl_fallback"] is False, (
+            "effective_config_snapshot()['allow_agpl_fallback'] must match "
+            "pipeline_config.allow_agpl_fallback after reset"
+        )
+
+
+class TestSidecarMeta:
+    @patch("pageindex_mcp.storage.minio_ops._confirm_write_visible")
+    @patch("pageindex_mcp.storage.verdict.settings")
+    @patch("pageindex_mcp.storage.minio_ops.get_minio")
+    def test_includes_build_sha_and_effective_config(
+        self, mock_get_minio, mock_settings, mock_confirm
+    ):
+        mock_mc = MagicMock()
+        mock_get_minio.return_value = mock_mc
+        mock_settings.minio_bucket = "test-bucket"
+
+        from pageindex_mcp.storage import save_doc_meta
+
+        meta = {
+            "doc_id": "test-doc",
+            "doc_name": "test.pdf",
+            "source_url": "",
+            "processed_at": "2026-08-11",
+            "build_sha": "abc123",
+            "effective_config": {"pipeline_version": 4, "ocr_escalation": True},
+        }
+        save_doc_meta("test-doc", meta)
+
+        mock_mc.put_object.assert_called_once()
+        # positional: bucket, key, data_stream, length
+        data_stream = mock_mc.put_object.call_args[0][2]
+        written = json.loads(data_stream.read())
+
+        assert written["build_sha"] == "abc123"
+        assert written["effective_config"] == {"pipeline_version": 4, "ocr_escalation": True}
+
+
+class TestProcessDocumentJobStamping:
+    """process_document_job stamps job_start_config / job_start_build_sha on
+    every Redis status transition, including error paths that never reach
+    save_doc_meta."""
+
+    async def test_stamps_job_start_fields_on_success(self, monkeypatch):
+        from pageindex_mcp.worker import job as worker
+        from pageindex_mcp.worker import registry_mirror as _registry_mirror
+
+        hset_calls = []
+        _store: dict = {}
+
+        class FakeRedis:
+            async def hset(self, key, mapping):
+                hset_calls.append(mapping)
+                _store.setdefault(key, {}).update(mapping)
+
+            async def hget(self, key, field):
+                return _store.get(key, {}).get(field)
+
+            async def expire(self, key, ttl):
+                pass
+
+        async def fake_get_async_redis():
+            return FakeRedis()
+
+        async def fake_wait_for_memory(redis):
+            pass
+
+        async def fake_run_converter_subprocess(
+            local_path, *, staging_key=None, job_start_config=None, on_effective_timeout=None
+        ):
+            assert job_start_config is not None
+            return {"doc_id": "doc123"}
+
+        async def fake_upsert_registry_row(
+            doc_id, content_class, *, verdict_fields=None, registry_fields=None
+        ):
+            pass
+
+        monkeypatch.setattr(worker, "get_async_redis", fake_get_async_redis)
+        monkeypatch.setattr(worker, "download_staging", lambda *a: None)
+        monkeypatch.setattr(worker, "wait_for_memory", fake_wait_for_memory)
+        monkeypatch.setattr(worker, "_run_converter_subprocess", fake_run_converter_subprocess)
+        monkeypatch.setattr(_registry_mirror, "_upsert_registry_row", fake_upsert_registry_row)
+        monkeypatch.setattr(worker, "delete_staging", lambda *a: True)
+        monkeypatch.setattr(worker, "asyncio", __import__("asyncio"))
+
+        async def fake_to_thread(fn, *args):
+            return fn(*args)
+
+        monkeypatch.setattr(worker.asyncio, "to_thread", fake_to_thread)
+
+        doc_id = await worker.process_document_job(
+            {"redis": FakeRedis()}, "uploads/staging/job-1/f.pdf", "job-1"
+        )
+
+        assert doc_id == "doc123"
+        assert len(hset_calls) >= 2
+        for mapping in hset_calls:
+            assert "job_start_config" in mapping
+            assert "job_start_build_sha" in mapping
+            json.loads(mapping["job_start_config"])  # must be valid JSON
+
+
+def test_detect_config_drift_table():
+    """client._detect_config_drift compares the job_start_config snapshot
+    against the freshly computed live config; only a genuine difference is
+    reported."""
+    from pageindex_mcp.client import _detect_config_drift
+
+    matching = {"pipeline_version": 4, "ocr_escalation": True}
+    cases = [
+        # (job_start, live, expected)
+        (None, {"a": 1}, None),  # no snapshot -> nothing to compare
+        (matching, dict(matching), None),  # configs match
+        (
+            {"pipeline_version": 4, "ocr_escalation": False},
+            {"pipeline_version": 4, "ocr_escalation": True},
+            {"pipeline_version": 4, "ocr_escalation": False},
+        ),
+    ]
+
+    failures = [
+        f"_detect_config_drift({job_start!r}, {live!r}) -> "
+        f"{_detect_config_drift(job_start, live)!r}, expected {expected!r}"
+        for job_start, live, expected in cases
+        if _detect_config_drift(job_start, live) != expected
+    ]
+    assert not failures, "drift-detection mismatches:\n  " + "\n  ".join(failures)
+
+
+# ---------------------------------------------------------------------------
+# registry_backfill._delete_stale_rows -- the processed_at age guard
+# ---------------------------------------------------------------------------
+
+
+async def _run_delete_stale_rows(registry_rows, minio_doc_ids, **kwargs) -> list[str]:
+    from pageindex_mcp.registry_backfill import _delete_stale_rows
+
+    deleted_ids: list[str] = []
+
+    async def mock_delete_doc(doc_id: str) -> None:
+        deleted_ids.append(doc_id)
+
+    with (
+        patch(
+            "pageindex_mcp.registry.list_all_doc_ids_with_timestamps",
+            AsyncMock(return_value=registry_rows),
+        ),
+        patch("pageindex_mcp.registry.delete_doc", side_effect=mock_delete_doc),
+    ):
+        await _delete_stale_rows(minio_doc_ids, **kwargs)
+    return deleted_ids
+
+
+class TestStaleRowGuard:
+    async def test_age_guard_decision_table(self):
+        """A row absent from the MinIO listing is deleted only once it is
+        older than grace_minutes; a naive (tz-less) processed_at is read as
+        UTC rather than treated as ancient."""
+        present = {"present-1": _iso_now_minus(60), "present-2": _iso_now_minus(60)}
+        naive_recent = (datetime.now(UTC) - timedelta(minutes=3)).strftime("%Y-%m-%dT%H:%M:%S")
+
+        cases = [
+            # (label, rows, minio_ids, kwargs, doc_id, expect_deleted)
+            (
+                "30-min-old row, default grace",
+                {"stale-doc": _iso_now_minus(30), **present},
+                {"present-1", "present-2"},
+                {},
+                "stale-doc",
+                True,
+            ),
+            (
+                "2-min-old row, grace=1",
+                {"borderline-doc": _iso_now_minus(2), **present},
+                {"present-1", "present-2"},
+                {"grace_minutes": 1},
+                "borderline-doc",
+                True,
+            ),
+            (
+                "2-min-old row, grace=5",
+                {"borderline-doc": _iso_now_minus(2), **present},
+                {"present-1", "present-2"},
+                {"grace_minutes": 5},
+                "borderline-doc",
+                False,
+            ),
+            (
+                "naive recent timestamp is UTC, not ancient",
+                {"naive-fresh": naive_recent, **present},
+                {"present-1", "present-2"},
+                {},
+                "naive-fresh",
+                False,
+            ),
+        ]
+
+        failures = []
+        for label, rows, minio_ids, kwargs, doc_id, expect_deleted in cases:
+            deleted = await _run_delete_stale_rows(rows, minio_ids, **kwargs)
+            if (doc_id in deleted) is not expect_deleted:
+                failures.append(
+                    f"{label}: deleted={deleted!r}, expected {doc_id} "
+                    f"{'deleted' if expect_deleted else 'kept'}"
+                )
+        assert not failures, "stale-row age-guard mismatches:\n  " + "\n  ".join(failures)
+
+    async def test_safety_threshold_and_a_failed_listing_both_block_all_deletion(self):
+        """When stale rows exceed _MAX_STALE_DELETE_FRACTION (50%) of the
+        registry, nothing is deleted even if every row is old enough -- and a
+        None listing (Postgres error) must not be read as "everything is
+        stale"."""
+        all_old = {f"doc-{i}": _iso_now_minus(60) for i in range(8)}
+        assert await _run_delete_stale_rows(all_old, set()) == []
+        assert await _run_delete_stale_rows(None, set()) == []
+
+
+# ---------------------------------------------------------------------------
+# Silent-fallback observability counters
+# ---------------------------------------------------------------------------
+
+
+def test_agpl_fallback_counter_not_incremented_when_pymupdf4llm_is_primary(monkeypatch):
+    """Contract: when pymupdf4llm IS the primary (operator_configured) and
+    succeeds, reason='fired' must NOT fire -- that path is covered by
+    reason='operator_configured'."""
+    import importlib.util
+
+    monkeypatch.setenv("ALLOW_AGPL_FALLBACK", "1")
+    monkeypatch.setenv("PDF_CONVERTER", "pymupdf4llm")
+
+    from pageindex_mcp.config import reset_pipeline_config
+
+    reset_pipeline_config()
+
+    before = AGPL_FALLBACK_TOTAL.labels(reason="fired")._value.get()
+
+    with patch.object(importlib.util, "find_spec", return_value=True):
+        chain = pdf_markdown_converters()
+
+    names = [n for n, _, _ in chain]
+    assert names[0] == "pymupdf4llm", "pymupdf4llm should be primary"
+
+    primary_name = chain[0][0]
+    used_converter = primary_name  # primary succeeded
+
+    if (
+        primary_name is not None
+        and used_converter != primary_name
+        and used_converter == "pymupdf4llm"
+    ):
+        AGPL_FALLBACK_TOTAL.labels(reason="fired").inc()
+
+    assert AGPL_FALLBACK_TOTAL.labels(reason="fired")._value.get() == before
+
+
+def test_tessdata_nonlatin_raises_without_counter_increment(monkeypatch, tmp_path):
+    """Contract: when non-Latin tessdata is missing, TessdataUnavailableError
+    is raised and TESSDATA_LATIN_FALLBACK_TOTAL does NOT increment (the code
+    raises before reaching the fallback branch)."""
+    monkeypatch.setenv("TESSDATA_PREFIX", str(tmp_path))
+    monkeypatch.setenv("TESSDATA_ALLOW_DOWNLOAD", "0")
+
+    before = TESSDATA_LATIN_FALLBACK_TOTAL._value.get()
+
+    with pytest.raises(TessdataUnavailableError):
+        ensure_tessdata(["ara"])
+
+    assert TESSDATA_LATIN_FALLBACK_TOTAL._value.get() == before, (
+        "TESSDATA_LATIN_FALLBACK_TOTAL must NOT increment for non-Latin "
+        "TessdataUnavailableError paths"
+    )
+
+
+async def test_bridged_metrics_sync_survives_redis_outage():
+    """Zone-7 dead-metrics bridge: worker-parent-only Counters/Gauges get
+    mirrored through Redis. A Redis outage must degrade the mirror, not the
+    scrape."""
+    from pageindex_mcp import metrics
+
+    async def raising_get_async_redis():
+        raise ConnectionError("redis down")
+
+    with patch("pageindex_mcp.cache.get_async_redis", raising_get_async_redis):
+        await metrics._sync_bridged_metrics_from_redis()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# metrics.py -- the /metrics endpoint and the instrumented call sites
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def metrics_app():
+    """Minimal Starlette app with just the /metrics route."""
+    return Starlette(routes=[Route("/metrics", metrics_response)])
+
+
+@pytest.fixture
+async def metrics_client(metrics_app):
+    async with AsyncClient(transport=ASGITransport(app=metrics_app), base_url="http://test") as c:
+        yield c
+
+
+async def test_metrics_endpoint_serves_prometheus_text_with_app_and_process_metrics(
+    metrics_client,
+):
+    ARQ_QUEUE_DEPTH.set(3)
+    response = await metrics_client.get("/metrics")
+
+    assert response.status_code == 200
+    assert "text/plain" in response.headers["content-type"]
+    assert "0.0.4" in response.headers["content-type"]
+
+    body = response.text
+    assert "pageindex_tool_calls_total" in body or "pageindex_tool_calls" in body
+    assert "pageindex_arq_queue_depth 3.0" in body
+    if sys.platform == "linux":
+        # process_* metrics are Linux-only (prometheus_client reads /proc)
+        assert "process_cpu_seconds_total" in body
+
+
+def _counter_value(counter, labels=None):
+    if labels:
+        return counter.labels(**labels)._value.get()
+    return counter._value.get()
+
+
+class TestToolInstrumentation:
+    async def test_recent_documents_increments_calls_and_updates_the_documents_gauge(self):
+        # Phase 3 audit Issue B: registry-unavailable raises isError:true
+        # (ToolError) instead of returning a JSON envelope, but TOOL_CALLS
+        # still increments unconditionally at the top of the function.
+        from fastmcp.exceptions import ToolError
+
+        before = _counter_value(TOOL_CALLS, {"tool": "recent_documents"})
+        with patch("pageindex_mcp.storage.list_processed_docs", return_value=[]):
+            from pageindex_mcp.tools.documents import recent_documents
+
+            with pytest.raises(ToolError):
+                await recent_documents()
+        assert _counter_value(TOOL_CALLS, {"tool": "recent_documents"}) == before + 1
+
+        # RFC-009 D6: registry-only read path -- DOCUMENTS_TOTAL reflects
+        # registry.count_docs(), not a MinIO listing length.
+        fake_docs = [{"doc_id": "a", "doc_name": "a"}, {"doc_id": "b", "doc_name": "b"}]
+        from pageindex_mcp.tools import documents
+
+        with (
+            patch.object(documents, "_require_registry_ready", new=AsyncMock(return_value=None)),
+            patch("pageindex_mcp.registry.list_docs", new=AsyncMock(return_value=fake_docs)),
+            patch("pageindex_mcp.registry.count_docs", new=AsyncMock(return_value=2)),
+        ):
+            await documents.recent_documents()
+        assert DOCUMENTS_TOTAL._value.get() == 2
+
+    def test_get_document_increments_error_counter_on_failure(self):
+        before = _counter_value(TOOL_ERRORS, {"tool": "get_document"})
+        with (
+            patch("pageindex_mcp.tools.documents.get_doc", side_effect=Exception("boom")),
+            patch("pageindex_mcp.storage.list_processed_docs", return_value=[]),
+        ):
+            from pageindex_mcp.tools.documents import get_document
+
+            get_document("nonexistent")
+        assert _counter_value(TOOL_ERRORS, {"tool": "get_document"}) == before + 1
+
+
+def test_llm_call_increments_counter():
+    before = _counter_value(LLM_CALLS)
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message.content = "test answer"
+
+    # `helpers.rag._llm` does `from ..client import get_openai_client` at call
+    # time, which resolves the name off the `pageindex_mcp.client` package
+    # (__init__.py's re-export), not off `pageindex_mcp.client.llm`. Patching
+    # the `llm` submodule attribute leaves that re-export untouched
+    # (mock-where-defined instead of mock-where-used), so the real client was
+    # constructed and a live LLM call went out. Patch the name actually
+    # consulted by the call site instead.
+    with patch("pageindex_mcp.client.get_openai_client") as MockFactory:
+        MockFactory.return_value.chat.completions.create = AsyncMock(return_value=mock_response)
+        from pageindex_mcp.helpers import _llm
+
+        asyncio.get_event_loop().run_until_complete(_llm("test prompt"))
+
+    assert _counter_value(LLM_CALLS) == before + 1
+
+
+def test_storage_reads_increment_minio_ops():
+    from pageindex_mcp.storage import list_processed_docs, load_doc
+
+    before_list = _counter_value(MINIO_OPS, {"operation": "list"})
+    mock_minio = MagicMock()
+    mock_minio.list_objects.return_value = []
+    with patch("pageindex_mcp.storage.minio_ops.get_minio", return_value=mock_minio):
+        list_processed_docs()
+    assert _counter_value(MINIO_OPS, {"operation": "list"}) == before_list + 1
+
+    before_get = _counter_value(MINIO_OPS, {"operation": "get"})
+    mock_response = MagicMock()
+    mock_response.read.return_value = b'{"structure": []}'
+    mock_minio = MagicMock()
+    mock_minio.get_object.return_value = mock_response
+    with (
+        patch("pageindex_mcp.storage.minio_ops.get_minio", return_value=mock_minio),
+        patch("pageindex_mcp.storage.documents.settings") as mock_settings,
+    ):
+        mock_settings.minio_bucket = "test"
+        load_doc("abc123")
+    assert _counter_value(MINIO_OPS, {"operation": "get"}) == before_get + 1
+
+
+# ---------------------------------------------------------------------------
+# queue_metrics.py -- the arq queue-depth scrape loop
+# ---------------------------------------------------------------------------
+
+
+async def test_read_queue_depth_counts_the_arq_queue():
+    redis = fakeredis.aioredis.FakeRedis()
+    assert await queue_metrics.read_queue_depth(redis) == 0
+
+    await redis.zadd("arq:queue", {"job-a": 1.0, "job-b": 2.0})
+    assert await queue_metrics.read_queue_depth(redis) == 2
+
+
+async def test_scrape_loop_sets_gauge_then_stops():
+    # Arrange
+    redis = fakeredis.aioredis.FakeRedis()
+    await redis.zadd("arq:queue", {"job-a": 1.0})
+
+    # Act: run one tick then cancel
+    task = asyncio.create_task(queue_metrics.queue_depth_scrape_loop(redis, interval=0.01))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Assert
+    assert ARQ_QUEUE_DEPTH._value.get() == 1.0
+
+
+async def test_server_lifespan_starts_and_stops_scrape_task(monkeypatch):
+    # Arrange
+    started = asyncio.Event()
+    stopped = {"cancelled": False}
+
+    async def fake_loop(redis, interval=0.01):
+        started.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            stopped["cancelled"] = True
+            raise
+
+    monkeypatch.setattr(queue_metrics, "queue_depth_scrape_loop", fake_loop)
+
+    from pageindex_mcp.server import _lifespan_with_scrape
+
+    class _DummyApp:
+        pass
+
+    # Act: enter then exit the composed lifespan
+    async with _lifespan_with_scrape(_DummyApp(), _inner=None):
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+    # Assert: task was cancelled on shutdown
+    assert stopped["cancelled"] is True
+
+
+# ---------------------------------------------------------------------------
+# tracing.py -- Langfuse (contract LLM-02, agents/contracts/llm-02.yaml)
+# ---------------------------------------------------------------------------
+
+
+def _fake_settings(**overrides):
+    """Mutable stand-in for the frozen Settings singleton (see test_client)."""
+    base = {
+        "openai_base_url": "https://api.openai.com/v1",
+        "openai_api_key": "test-key",
+        "azure_api_version": None,
+        "llm_provider": "auto",
+        "langfuse_public_key": "",
+        "langfuse_secret_key": "",
+        "langfuse_host": "https://cloud.langfuse.com",
+        "langfuse_trace_content": False,
+    }
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _enabled_settings(**overrides):
+    return _fake_settings(langfuse_public_key="pk-x", langfuse_secret_key="sk-x", **overrides)
+
+
+class _FakeSpanCM:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False  # do not suppress
+
+
+class TestLangfuseTracing:
+    """Contract LLM-02 (LLM-02-C1 .. LLM-02-C5): optional Langfuse tracing
+    that is inert without keys and never breaks the tool when it is on."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_guards(self):
+        """Reset the once-per-process init guard so each test starts clean.
+
+        Scoped to this class deliberately: as a module-level autouse fixture
+        it would fire for every unrelated observability test in this file.
+        """
+        tracing._initialized = False
+        yield
+        tracing._initialized = False
+
+    def test_llm_02_c1_enabled_only_when_both_keys_are_set(self, monkeypatch):
+        """LLM-02-C1: tracing activates only when both keys are set; with none
+        (or only one) it is disabled and init_langfuse is a no-op."""
+        monkeypatch.setattr(tracing, "settings", _fake_settings())
+        assert tracing.langfuse_enabled() is False
+        tracing.init_langfuse()
+        assert tracing._initialized is False  # no singleton constructed
+
+        monkeypatch.setattr(tracing, "settings", _fake_settings(langfuse_public_key="pk-x"))
+        assert tracing.langfuse_enabled() is False
+
+        monkeypatch.setattr(tracing, "settings", _enabled_settings())
+        assert tracing.langfuse_enabled() is True
+
+    def test_llm_02_c2_query_path_instruments_only_on_the_enabled_branch(self, monkeypatch):
+        """LLM-02-C2: enabled => get_openai_client takes the instrumented
+        branch; disabled => the plain LLM-01 branch.
+
+        The ``langfuse.openai`` wrapper instruments ``openai`` globally at
+        import rather than by subclassing, so traced-ness is not visible on
+        the client class. The deterministic signal that the instrumented
+        branch ran is that get_openai_client calls init_langfuse and imports
+        langfuse.openai -- only the enabled branch does either.
+        """
+        from pageindex_mcp import client as client_mod
+
+        called = {"init": 0}
+        monkeypatch.setattr(tracing, "settings", _enabled_settings())
+        monkeypatch.setattr(tracing, "init_langfuse", lambda: called.__setitem__("init", 1))
+
+        # openai/compatible provider
+        monkeypatch.setattr(
+            "pageindex_mcp.client.llm.settings",
+            _fake_settings(
+                llm_provider="compatible", openai_base_url="https://openrouter.ai/api/v1"
+            ),
+        )
+        c = client_mod.get_openai_client()
+        assert called["init"] == 1  # enabled branch ran
+        assert "langfuse.openai" in sys.modules  # instrumentation import triggered
+        assert isinstance(c, openai.AsyncOpenAI)  # SDK-compatible
+        assert str(c.base_url).rstrip("/") == "https://openrouter.ai/api/v1"
+
+        # azure provider still yields an AzureOpenAI client
+        monkeypatch.setattr(
+            "pageindex_mcp.client.llm.settings",
+            _fake_settings(llm_provider="azure", openai_base_url="https://r.openai.azure.com"),
+        )
+        assert isinstance(client_mod.get_openai_client(), openai.AsyncAzureOpenAI)
+
+        # disabled => plain branch, no Langfuse init
+        called["init"] = 0
+        monkeypatch.setattr(tracing, "settings", _fake_settings())
+        monkeypatch.setattr(
+            "pageindex_mcp.client.llm.settings",
+            _fake_settings(openai_base_url="https://api.openai.com/v1"),
+        )
+        plain = client_mod.get_openai_client()
+        assert called["init"] == 0
+        assert isinstance(plain, openai.AsyncOpenAI)
+        assert not isinstance(plain, openai.AsyncAzureOpenAI)
+
+    def test_llm_02_c3_litellm_callback_registered_once_only_when_enabled(self, monkeypatch):
+        """LLM-02-C3: the ingestion path appends 'langfuse_otel' to litellm's
+        callbacks exactly once when enabled, and not at all when disabled."""
+        import litellm
+
+        from pageindex_mcp import client as client_mod
+
+        monkeypatch.setattr(litellm, "callbacks", [], raising=False)
+        monkeypatch.setattr(tracing, "settings", _enabled_settings())
+        tracing._initialized = True  # skip real singleton
+        monkeypatch.setattr(
+            "pageindex_mcp.client.llm.settings",
+            _fake_settings(
+                llm_provider="compatible",
+                openai_base_url="http://localhost:8000/v1",
+                openai_api_key="sk-local",
+            ),
+        )
+
+        client_mod.configure_litellm()
+        assert "langfuse_otel" in litellm.callbacks
+        assert litellm.turn_off_message_logging is True  # masked by default
+
+        # Idempotent: a second call does not duplicate the callback.
+        client_mod.configure_litellm()
+        assert litellm.callbacks.count("langfuse_otel") == 1
+
+        monkeypatch.setattr(litellm, "callbacks", [], raising=False)
+        monkeypatch.setattr(tracing, "settings", _fake_settings())
+        client_mod.configure_litellm()
+        assert "langfuse_otel" not in litellm.callbacks
+
+    def test_llm_02_c4_masks_strings_by_default_and_passes_through_when_enabled(self, monkeypatch):
+        """LLM-02-C4: with trace_content False, _mask redacts strings
+        recursively while numeric/bool/None fields keep their type -- guarding
+        against the mask coercing structured fields (temperature, max_tokens,
+        token counts, flags) into the string sentinel. With trace_content
+        True, data passes through verbatim.
+        """
+        monkeypatch.setattr(tracing, "settings", _fake_settings(langfuse_trace_content=False))
+        assert tracing._mask("secret prompt") == tracing._MASK_SENTINEL
+        assert tracing._mask({"messages": ["a", {"content": "b"}]}) == {
+            "messages": [tracing._MASK_SENTINEL, {"content": tracing._MASK_SENTINEL}]
+        }
+        assert tracing._mask(42) == 42
+        assert tracing._mask(0.7) == 0.7
+        assert tracing._mask(True) is True
+        assert tracing._mask(None) is None
+        assert tracing._mask(
+            {
+                "model": "gpt-4.1",  # string -> masked
+                "temperature": 0.7,  # float -> kept
+                "max_tokens": 256,  # int -> kept
+                "stream": False,  # bool -> kept
+                "usage": {"total_tokens": 123},  # nested numeric -> kept
+            }
+        ) == {
+            "model": tracing._MASK_SENTINEL,
+            "temperature": 0.7,
+            "max_tokens": 256,
+            "stream": False,
+            "usage": {"total_tokens": 123},
+        }
+
+        monkeypatch.setattr(tracing, "settings", _fake_settings(langfuse_trace_content=True))
+        payload = {"messages": ["hello", "world"]}
+        assert tracing._mask("hello") == "hello"
+        assert tracing._mask(payload) == payload
+
+    async def test_llm_02_c5_trace_tool_opens_one_span_when_enabled_and_is_inert_when_not(
+        self, monkeypatch
+    ):
+        """LLM-02-C5: trace_tool groups a tool call's generations under one
+        span named for the tool; disabled it is a transparent no-op."""
+        monkeypatch.setattr(tracing, "settings", _fake_settings())
+        ran = False
+        async with tracing.trace_tool("find_relevant_documents"):
+            ran = True
+        assert ran is True
+
+        entered = {"name": None, "count": 0}
+
+        class _CountingClient:
+            def start_as_current_span(self, name):
+                entered["name"] = name
+                entered["count"] += 1
+                return _FakeSpanCM()
+
+        monkeypatch.setattr(tracing, "settings", _enabled_settings())
+        tracing._initialized = True
+        monkeypatch.setattr("langfuse.get_client", lambda: _CountingClient())
+
+        async with tracing.trace_tool("find_relevant_documents"):
+            pass
+
+        assert entered["name"] == "find_relevant_documents"
+        assert entered["count"] == 1
+
+    async def test_llm_02_c5_body_exception_propagates_when_enabled(self, monkeypatch):
+        """LLM-02-C5: a tool-body exception is NOT swallowed by trace_tool.
+
+        Regression for the double-yield bug: the body is yielded outside the
+        span-setup try, so its exception must propagate to the caller (which
+        records TOOL_ERRORS and re-raises) rather than being caught and
+        re-yielded.
+        """
+
+        class _FakeClient:
+            def start_as_current_span(self, name):
+                return _FakeSpanCM()
+
+        monkeypatch.setattr(tracing, "settings", _enabled_settings())
+        tracing._initialized = True
+        monkeypatch.setattr("langfuse.get_client", lambda: _FakeClient())
+
+        with pytest.raises(ValueError, match="boom"):
+            async with tracing.trace_tool("find_relevant_documents"):
+                raise ValueError("boom")
+
+    async def test_llm_02_c5_tool_still_runs_when_any_tracing_step_fails(self, monkeypatch):
+        """LLM-02-C5 (cubic P2): tracing must never break the tool. Whether
+        the client lookup, the span ``__enter__`` or the span ``__exit__``
+        raises, the body still runs exactly once, untraced."""
+
+        class _BadEnterSpan:
+            def __enter__(self):
+                raise RuntimeError("enter failed")
+
+            def __exit__(self, *exc):
+                return False
+
+        class _BadExitSpan:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                raise RuntimeError("exit failed")
+
+        def _client_boom():
+            raise RuntimeError("no client")
+
+        def _bad_enter_client():
+            return SimpleNamespace(start_as_current_span=lambda name: _BadEnterSpan())
+
+        def _bad_exit_client():
+            return SimpleNamespace(start_as_current_span=lambda name: _BadExitSpan())
+
+        monkeypatch.setattr(tracing, "settings", _enabled_settings())
+
+        for label, factory in (
+            ("span setup raises", _client_boom),
+            ("span __enter__ raises", _bad_enter_client),
+            ("span __exit__ raises", _bad_exit_client),
+        ):
+            tracing._initialized = True
+            monkeypatch.setattr("langfuse.get_client", factory)
+            runs = 0
+            async with tracing.trace_tool("find_relevant_documents"):
+                runs += 1
+            assert runs == 1, f"{label}: body did not run exactly once"
+
+    def test_llm_02_c3_flush_langfuse_runs_whenever_enabled_never_when_disabled(self, monkeypatch):
+        """LLM-02-C3: flush_langfuse runs whenever enabled, even if
+        _initialized is False -- the converters_cli subprocess may flush
+        before the singleton was eagerly constructed, and get_client()
+        lazily returns it, so the flush must not be skipped. Disabled, it
+        must not touch the client at all."""
+        flushed = {"count": 0}
+
+        monkeypatch.setattr(tracing, "settings", _enabled_settings())
+        tracing._initialized = False  # singleton NOT eagerly constructed
+        monkeypatch.setattr(
+            "langfuse.get_client",
+            lambda: SimpleNamespace(flush=lambda: flushed.__setitem__("count", 1)),
+        )
+        tracing.flush_langfuse()
+        assert flushed["count"] == 1  # flushed despite _initialized False
+
+        def _boom():
+            raise AssertionError("get_client must not be called when disabled")
+
+        monkeypatch.setattr(tracing, "settings", _fake_settings())
+        monkeypatch.setattr("langfuse.get_client", _boom)
+        tracing.flush_langfuse()  # must not raise
+
+    def test_llm_02_c3_flush_litellm_tracing_force_flushes_only_the_otel_processor(
+        self, monkeypatch
+    ):
+        """LLM-02-C3: enabled => the langfuse_otel logger's OTel span
+        processor is flushed (litellm exports through a private OTel
+        TracerProvider, so the flush must reach the logger instance's
+        tracer.span_processor.force_flush()). Disabled => a safe no-op that
+        never touches litellm."""
+        from pageindex_mcp import client as client_mod
+
+        monkeypatch.setattr(tracing, "settings", _fake_settings())
+        client_mod.flush_litellm_tracing()  # disabled -> returns without touching litellm
+
+        monkeypatch.setattr(tracing, "settings", _enabled_settings())
+        forced = {"count": 0}
+
+        class _FakeProcessor:
+            def force_flush(self, *a, **k):
+                forced["count"] += 1
+
+        class _FakeTracer:
+            span_processor = _FakeProcessor()
+
+        class LangfuseOtelLogger:  # name matched by the flush helper
+            tracer = _FakeTracer()
+
+        class _Other:  # must be ignored
+            tracer = _FakeTracer()
+
+        monkeypatch.setattr(
+            "litellm.litellm_core_utils.litellm_logging._in_memory_loggers",
+            [_Other(), LangfuseOtelLogger()],
+            raising=False,
+        )
+        client_mod.flush_litellm_tracing()
+        assert forced["count"] == 1  # only the langfuse_otel logger was flushed
+
+    async def test_trace_tool_binds_the_trace_id_into_the_log_context(self, monkeypatch):
+        """R12.3 (RFC-046 D12, task 12.2 remainder): a traced tool call's log
+        records carry its Langfuse trace_id. Without this the two
+        observability surfaces cannot be joined: Langfuse knows the trace, the
+        logs know run_id/job_id/doc_name, and nothing knows both."""
+        from pageindex_mcp.obs.constants import CORRELATION_FIELDS
+        from pageindex_mcp.obs.context import current_context
+
+        # The filter only attaches fields CORRELATION_FIELDS names; binding a
+        # field the envelope does not declare would drop it silently.
+        assert "trace_id" in CORRELATION_FIELDS
+
+        class _FakeClient:
+            def start_as_current_span(self, name):
+                return _FakeSpanCM()
+
+            def get_current_trace_id(self):
+                return "abc123trace"
+
+        monkeypatch.setattr(tracing, "settings", _enabled_settings())
+        tracing._initialized = True
+        monkeypatch.setattr("langfuse.get_client", lambda: _FakeClient())
+
+        seen: dict = {}
+        async with tracing.trace_tool("find_relevant_documents"):
+            seen.update(current_context())
+
+        assert seen.get("trace_id") == "abc123trace"
+        # ...and it is unbound again afterwards: the server process is
+        # long-lived, so a leaked trace_id would tag every later tool call
+        # with the first one.
+        assert "trace_id" not in current_context()
+
+    async def test_trace_tool_runs_the_tool_when_trace_id_lookup_fails(self, monkeypatch):
+        """tracing.py:168's posture: tracing must never break the tool. A
+        langfuse client that raises on trace-id lookup must cost the
+        correlation field, not the tool call."""
+
+        class _FakeClient:
+            def start_as_current_span(self, name):
+                return _FakeSpanCM()
+
+            def get_current_trace_id(self):
+                raise RuntimeError("langfuse exploded")
+
+        monkeypatch.setattr(tracing, "settings", _enabled_settings())
+        tracing._initialized = True
+        monkeypatch.setattr("langfuse.get_client", lambda: _FakeClient())
+
+        ran = False
+        async with tracing.trace_tool("find_relevant_documents"):
+            ran = True
+        assert ran is True

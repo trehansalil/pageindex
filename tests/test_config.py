@@ -393,25 +393,6 @@ _BOOL_ENV_MAP = _pipeline_config_bool_env_map()
 _KNOWN_PARSE_DIVERGENCES: frozenset[str] = frozenset()
 
 
-def _bool_field_params():
-    for field, var in sorted(_BOOL_ENV_MAP.items()):
-        marks = (
-            [
-                pytest.mark.xfail(
-                    strict=True,
-                    reason=(
-                        f"{var} parses with `.lower() == 'true'` instead of "
-                        "`_envbool`, so `=1`, `=yes` and padded values are "
-                        "silent no-ops (RFC-046 D8 / task 3.5)"
-                    ),
-                )
-            ]
-            if field in _KNOWN_PARSE_DIVERGENCES
-            else []
-        )
-        yield pytest.param(field, var, marks=marks, id=field)
-
-
 def test_every_bool_field_is_covered_by_the_parse_property():
     """Guard the guard: no boolean field may escape the property test below.
 
@@ -431,31 +412,38 @@ def test_every_bool_field_is_covered_by_the_parse_property():
     )
 
 
-@pytest.mark.parametrize("field,var", _bool_field_params())
-def test_bool_fields_share_one_parse_predicate(monkeypatch, field, var):
+def test_bool_fields_share_one_parse_predicate(monkeypatch):
     """Property (RFC-042 4.2 / RFC-046 R9): every PipelineConfig boolean
     answers to the same spellings.
 
     An operator who writes ``FLAG=1`` reasonably expects the flag on. Where a
     field's default is ``true``, a divergent parse is worse than inert -- it
     reads ``1`` as falsy and *disables* the feature the operator was enabling.
+
+    Table-driven over every boolean field rather than parametrised: the
+    parse predicate is one shared function, so ~28 collected cases bought
+    nothing a single assertion listing all offenders does not.
     """
     from pageindex_mcp.config import PipelineConfig
 
     truthy = ("1", "true", "TRUE", "True", "yes", " true ")
     falsy = ("0", "false", "no", "")
 
-    divergent = []
-    for raw in truthy:
-        monkeypatch.setenv(var, raw)
-        if getattr(PipelineConfig.from_env(), field) is not True:
-            divergent.append(f"{var}={raw!r} -> False, expected True")
-    for raw in falsy:
-        monkeypatch.setenv(var, raw)
-        if getattr(PipelineConfig.from_env(), field) is not False:
-            divergent.append(f"{var}={raw!r} -> True, expected False")
+    divergent: list[str] = []
+    for field, var in sorted(_BOOL_ENV_MAP.items()):
+        if field in _KNOWN_PARSE_DIVERGENCES:
+            continue
+        for raw in truthy:
+            monkeypatch.setenv(var, raw)
+            if getattr(PipelineConfig.from_env(), field) is not True:
+                divergent.append(f"{field}: {var}={raw!r} -> False, expected True")
+        for raw in falsy:
+            monkeypatch.setenv(var, raw)
+            if getattr(PipelineConfig.from_env(), field) is not False:
+                divergent.append(f"{field}: {var}={raw!r} -> True, expected False")
+        monkeypatch.delenv(var, raising=False)
 
     assert not divergent, (
-        f"R9/D8 (RFC-046): {field} does not use the shared `_envbool` "
-        f"predicate. Divergences: {divergent}"
+        "R9/D8 (RFC-046): these PipelineConfig booleans do not use the shared "
+        f"`_envbool` predicate. Divergences: {divergent}"
     )

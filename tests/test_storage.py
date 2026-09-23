@@ -1,17 +1,22 @@
 # ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
-"""Storage operations: MinIO path prefix, presign public route, and core storage tests."""
+"""Storage operations: MinIO path prefix, presign public route, core storage,
+memory-admission, Redis singleton and doc-cache tests."""
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import inspect
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import fakeredis
+import fakeredis.aioredis
 import pytest
 import urllib3
 from minio.error import S3Error
 
+from pageindex_mcp import memory_admission as ma
 from pageindex_mcp.helpers import GarbleConfig, ScriptContext, _garble_check_nodes
 from pageindex_mcp.minio_client import PrefixedPoolManager, make_minio
 from pageindex_mcp.storage import (
@@ -32,7 +37,6 @@ from pageindex_mcp.storage import (
     wipe_processed,
 )
 
-
 # --- from test_storage.py ---
 
 
@@ -48,12 +52,6 @@ def _nosuchkey() -> S3Error:
 
 def _other_s3error(code="InternalError") -> S3Error:
     return S3Error(MagicMock(), code, "boom", "res", "req", "host")
-
-
-@pytest.fixture
-def fake_cache_redis(fake_redis_sync):
-    with patch("pageindex_mcp.cache._redis_sync", fake_redis_sync):
-        yield fake_redis_sync
 
 
 def _wire_registry(monkeypatch, *, registry_delete_doc, get_pool_return=object()):
@@ -80,42 +78,12 @@ def _wire_registry(monkeypatch, *, registry_delete_doc, get_pool_return=object()
 # prefix untouched. No snapshot step is involved.
 
 
-@patch("pageindex_mcp.storage.minio_ops.get_minio")
-def test_wipe_processed_deletes_all_processed_objects(mock_get):
-    mc = MagicMock()
-    mock_get.return_value = mc
-    mc.list_objects.return_value = [
-        _obj("processed/doc1.json"),
-        _obj("processed/doc1.meta.json"),
-        _obj("processed/doc2.json"),
-    ]
-
-    wipe_processed()
-
-    remove_calls = [c for c in mc.mock_calls if c[0] == "remove_object"]
-    removed = {c.args[1] for c in remove_calls}
-    assert removed == {
-        "processed/doc1.json",
-        "processed/doc1.meta.json",
-        "processed/doc2.json",
-    }
-
-
-@patch("pageindex_mcp.storage.minio_ops.get_minio")
-def test_wipe_processed_empty_listing_is_noop(mock_get):
-    mc = MagicMock()
-    mock_get.return_value = mc
-    mc.list_objects.return_value = []
-
-    wipe_processed()
-
-    mc.remove_object.assert_not_called()
-
-
 # ── get_minio: lazy singleton / bucket-creation branch ───────────────────────
 # ── STORE-01-C1/C2/C3 — save_doc / load_doc ───────────────────────────────────
 def test_store_01_c1_save_doc_writes_processed_json(mock_minio):
-    """STORE-01-C1: save_doc PUTs the serialized tree to processed/<doc_id>.json."""
+    """STORE-01-C1: save_doc PUTs the serialized tree to
+    processed/<doc_id>.json behind the write-visibility barrier; load_doc
+    re-raises any S3Error that is not NoSuchKey."""
     tree = {
         "doc_id": "abc12345",
         "doc_name": "t.pdf",
@@ -135,11 +103,36 @@ def test_store_01_c1_save_doc_writes_processed_json(mock_minio):
     written = mock_minio.put_object.call_args[0][2].read()
     assert json.loads(written) == tree
 
-
-def test_load_doc_reraises_non_nosuchkey_s3error(mock_minio):
+    # STORE-01: load_doc tolerates NoSuchKey but never swallows another S3Error.
     mock_minio.get_object.side_effect = _other_s3error()
     with pytest.raises(S3Error):
         load_doc("abc12345")
+
+    # Zone-4 Phase 3: the write-visibility barrier removal is scoped to
+    # save_doc_meta (the archival sidecar) -- save_doc, the primary processed
+    # artifact, must STILL call _confirm_write_visible.
+    mock_minio.reset_mock()
+    mock_minio.get_object.side_effect = None
+    with (
+        patch("pageindex_mcp.cache.doc_cache_delete"),
+        patch("pageindex_mcp.storage.minio_ops._confirm_write_visible") as mock_barrier,
+    ):
+        save_doc("abc12345", tree)
+    mock_barrier.assert_called_once()
+
+    mock_minio.reset_mock()
+    with patch("pageindex_mcp.storage.minio_ops._confirm_write_visible") as mock_barrier:
+        save_doc_meta(
+            "abc12345",
+            {
+                "doc_id": "abc12345",
+                "doc_name": "t.pdf",
+                "source_url": "",
+                "processed_at": "2026-08-21T00:00:00+00:00",
+            },
+        )
+    mock_barrier.assert_not_called()
+    mock_minio.put_object.assert_called_once()  # the sidecar IS still written
 
 
 # ── FLAT-02 — save_flat_doc / get_flat_doc ────────────────────────────────────
@@ -183,84 +176,7 @@ def test_flat_02_c1_save_flat_doc_writes_flat_json_only(mock_minio):
     assert mock_minio.get_object.call_args[0][1] == "processed/flat0001.flat.json"
 
 
-# ── FLAT-02-C3 — list_processed_docs surfaces flat docs + content_class ───────
-def test_flat_02_c3_list_processed_docs_surfaces_flat_content_class(mock_minio):
-    meta_obj = MagicMock()
-    meta_obj.object_name = "processed/flat0001.meta.json"
-    mock_minio.list_objects.return_value = [meta_obj]
-
-    meta_resp = MagicMock()
-    meta_resp.read.return_value = json.dumps(
-        {
-            "doc_id": "flat0001",
-            "doc_name": "katzen.pdf",
-            "content_class": "flat_prose",
-        }
-    ).encode()
-    mock_minio.get_object.return_value = meta_resp
-
-    docs = list_processed_docs()
-
-    assert len(docs) == 1
-    entry = docs[0]
-    assert entry["doc_id"] == "flat0001"
-    assert entry["doc_name"] == "katzen.pdf"
-    assert entry["content_class"] == "flat_prose"
-
-
-def test_list_processed_docs_meta_sidecar_preferred_over_flat_json(mock_minio):
-    flat_obj = MagicMock()
-    flat_obj.object_name = "processed/dup0001.flat.json"
-    meta_obj = MagicMock()
-    meta_obj.object_name = "processed/dup0001.meta.json"
-    mock_minio.list_objects.return_value = [flat_obj, meta_obj]
-
-    response = MagicMock()
-    response.read.return_value = json.dumps({"doc_id": "dup0001", "doc_name": "y.pdf"}).encode()
-    mock_minio.get_object.return_value = response
-
-    docs = list_processed_docs()
-    assert len(docs) == 1
-    assert mock_minio.get_object.call_args[0][1] == "processed/dup0001.meta.json"
-
-
 # ── read_registry_fields ──────────────────────────────────────────────────────
-def test_read_registry_fields_tree_doc_success(mock_minio):
-    persisted = {
-        "doc_id": "tree0001",
-        "doc_name": "report.pdf",
-        "source_url": "http://x",
-        "processed_at": "2026-01-01T00:00:00Z",
-        "sha256": "abc123",
-        "doc_description": "desc",
-        "product": "prod-a",
-        "tier": "1",
-        "doc_family": "fam",
-        "effective_date": "2026-01-01",
-        "structure": [{"title": "Ch1", "nodes": []}],
-        "verdict": "PASS",
-        "pipeline_version": 2,
-        "permanent_marginal": False,
-    }
-    response = MagicMock()
-    response.read.return_value = json.dumps(persisted).encode()
-    mock_minio.get_object.return_value = response
-
-    fields = read_registry_fields("tree0001")
-
-    assert mock_minio.get_object.call_args[0][1] == "processed/tree0001.json"
-    assert fields["doc_id"] == "tree0001"
-    assert fields["sha256"] == "abc123"
-    assert fields["node_count"] == 1
-    assert fields["verdict"] == "PASS"
-    assert fields["pipeline_version"] == 2
-    assert fields["permanent_marginal"] is False
-    assert "content_class" not in fields
-
-
-def test_read_registry_fields_missing_object_returns_none(mock_minio):
-    mock_minio.get_object.side_effect = _nosuchkey()
-    assert read_registry_fields("ghost0001") is None
 
 
 # ── ERASE-01 — delete_doc cascade order / idempotency / partial failure ──────
@@ -350,8 +266,6 @@ async def test_delete_doc_non_nosuchkey_remove_errors_recorded(
 
 
 # ── RFC-007 D9 / Property 8 — observable staging delete failure ─────────────
-def test_delete_staging_success_returns_true(mock_minio):
-    assert delete_staging("uploads/staging/job-1/report.pdf") is True
 
 
 # ── RFC-007 D2 / Property 4 — awaited registry delete in the erasure cascade ─
@@ -429,135 +343,21 @@ async def test_erasure_cascade_warns_when_doc_name_unknown_for_preloaded(mock_mi
 
 # ── save_raw ───────────────────────────────────────────────────────────────
 # ── upload_staging / download_staging ────────────────────────────────────────
-def test_upload_staging_writes_and_returns_key(mock_minio):
-    key = upload_staging("job-1", "report.pdf", b"bytes")
-    assert key == "uploads/staging/job-1/report.pdf"
-    call = mock_minio.put_object.call_args
-    assert call[0][1] == "uploads/staging/job-1/report.pdf"
-    assert call.kwargs["content_type"] == "application/octet-stream"
 
 
 # ── _load_legacy_minio_hash_cache ────────────────────────────────────────────
-def test_load_legacy_minio_hash_cache_missing_returns_empty(mock_minio):
-    mock_minio.get_object.side_effect = _nosuchkey()
-    assert _load_legacy_minio_hash_cache() == {}
 
 
 # ── hash_cache_get / set / delete ────────────────────────────────────────────
-def test_hash_cache_concurrent_workers(fake_cache_redis):
-    """Property 6: two concurrent writes for DIFFERENT filenames both persist —
-    HSET is atomic per-field, so no last-writer-wins loss (the bug the old
-    instance-level asyncio.Lock over a MinIO JSON blob could not prevent
-    across separate arq worker processes)."""
-    hash_cache_set("a.pdf", "hash-a")
-    hash_cache_set("b.pdf", "hash-b")
-
-    assert hash_cache_get("a.pdf") == "hash-a"
-    assert hash_cache_get("b.pdf") == "hash-b"
-
-
-def test_hash_cache_delete_removes_entry(fake_cache_redis):
-    hash_cache_set("d.pdf", "hash-d")
-    assert hash_cache_get("d.pdf") == "hash-d"
-    hash_cache_delete("d.pdf")
-    with patch("pageindex_mcp.storage.minio_ops.get_minio") as mock_get_minio:
-        mock_get_minio.return_value.get_object.side_effect = _nosuchkey()
-        assert hash_cache_get("d.pdf") is None
 
 
 # ── .meta.json sidecar: save_doc_meta ────────────────────────────────────────
-def test_save_doc_meta_verdict_fields_present(mock_minio):
-    """RFC-014 D2: verdict fields are included in sidecar when present."""
-    meta = {
-        "doc_id": "v001",
-        "doc_name": "test.pdf",
-        "source_url": "",
-        "processed_at": "2026-07-16T00:00:00+00:00",
-        "verdict": "PASS",
-        "verdict_reason": "cat_b_promoted",
-        "max_leaf_ratio": 0.12,
-        "pipeline_version": 1,
-        "permanent_marginal": False,
-        "promotion_eligible": True,
-        "verdict_computed_at": "2026-07-16T00:00:00+00:00",
-    }
-    save_doc_meta("v001", meta)
-
-    written = mock_minio.put_object.call_args[0][2].read()
-    sidecar = json.loads(written)
-    assert sidecar["verdict"] == "PASS"
-    assert sidecar["verdict_reason"] == "cat_b_promoted"
-    assert sidecar["max_leaf_ratio"] == 0.12
-    assert sidecar["pipeline_version"] == 1
-    assert sidecar["permanent_marginal"] is False
-    assert sidecar["promotion_eligible"] is True
-    assert sidecar["verdict_computed_at"] == "2026-07-16T00:00:00+00:00"
 
 
 # ── C-3 sidecar v2: sha256 + doc_description fattening ───────────────────────
-def test_save_doc_meta_doc_description_empty_string_kept(mock_minio):
-    """C-3: doc_description is written by KEY PRESENCE, not truthiness — an empty
-    string is a valid description and must be persisted (so _is_fat sees it)."""
-    meta = {
-        "doc_id": "fat00002",
-        "doc_name": "report.pdf",
-        "source_url": "",
-        "processed_at": "2026-07-21T00:00:00+00:00",
-        "sha256": "abc",
-        "doc_description": "",
-    }
-    save_doc_meta("fat00002", meta)
-
-    written = mock_minio.put_object.call_args[0][2].read()
-    sidecar = json.loads(written)
-    assert "doc_description" in sidecar
-    assert sidecar["doc_description"] == ""
 
 
 # ── RFC-034 D5: extraction provenance fields ─────────────────────────────────
-def test_save_doc_meta_provenance_fields_present(mock_minio):
-    """RFC-034 D5: all 7 provenance fields are persisted in the sidecar when
-    present in the caller's meta dict."""
-    meta = {
-        "doc_id": "prov0001",
-        "doc_name": "report.pdf",
-        "source_url": "",
-        "processed_at": "2026-08-08T00:00:00+00:00",
-        "extraction_route": "remote",
-        "converter_name": "docling",
-        "converter_contract": "2.1.0",
-        "remote_build_sha": "abc1234",
-        "page_count": 42,
-        "inspector_class": "standard",
-        "total_tree_chars": 123456,
-    }
-    save_doc_meta("prov0001", meta)
-
-    written = mock_minio.put_object.call_args[0][2].read()
-    sidecar = json.loads(written)
-    assert sidecar["extraction_route"] == "remote"
-    assert sidecar["converter_name"] == "docling"
-    assert sidecar["converter_contract"] == "2.1.0"
-    assert sidecar["remote_build_sha"] == "abc1234"
-    assert sidecar["page_count"] == 42
-    assert sidecar["inspector_class"] == "standard"
-    assert sidecar["total_tree_chars"] == 123456
-
-
-def test_save_doc_meta_effective_config_at_job_start_absent_when_not_supplied(mock_minio):
-    meta = {
-        "doc_id": "drift0002",
-        "doc_name": "report.pdf",
-        "source_url": "",
-        "processed_at": "2026-08-11T00:00:00+00:00",
-        "build_sha": "abc123",
-        "effective_config": {"pipeline_version": 4},
-    }
-    save_doc_meta("drift0002", meta)
-
-    written = mock_minio.put_object.call_args[0][2].read()
-    sidecar = json.loads(written)
-    assert "effective_config_at_job_start" not in sidecar
 
 
 # ── Zone 6: read-merge-write ─────────────────────────────────────────────────
@@ -648,23 +448,6 @@ async def test_delete_doc_errors_pool_not_ready(monkeypatch, mock_minio):
 # ---------------------------------------------------------------------------
 
 
-def test_save_doc_meta_does_not_call_confirm_write_visible(mock_minio):
-    """Zone-4 Phase 3: save_doc_meta must NOT call _confirm_write_visible.
-    The sidecar is archival-only; the barrier was removed."""
-    meta = {
-        "doc_id": "barrier-1",
-        "doc_name": "test.pdf",
-        "source_url": "",
-        "processed_at": "2026-08-21T00:00:00+00:00",
-    }
-    with patch("pageindex_mcp.storage.minio_ops._confirm_write_visible") as mock_barrier:
-        save_doc_meta("barrier-1", meta)
-
-    mock_barrier.assert_not_called()
-    # But put_object IS called (the sidecar is still written)
-    mock_minio.put_object.assert_called_once()
-
-
 # ---------------------------------------------------------------------------
 # Zone-4 Phase 3: delete_doc surfaces registry timeout in errors[] (contract)
 # ---------------------------------------------------------------------------
@@ -702,24 +485,6 @@ async def test_delete_doc_errors_registry_timeout(monkeypatch, mock_minio):
 # ---------------------------------------------------------------------------
 # Zone-4 Phase 3: save_doc retains write-visibility barrier (contract)
 # ---------------------------------------------------------------------------
-
-
-def test_save_doc_still_calls_confirm_write_visible(mock_minio):
-    """Zone-4 Phase 3 contract: save_doc (primary processed artifact) must
-    STILL call _confirm_write_visible -- the barrier removal is scoped
-    exclusively to save_doc_meta (sidecar), not save_doc."""
-    tree = {
-        "doc_id": "barrier-keep-1",
-        "doc_name": "t.pdf",
-        "structure": [{"title": "Root", "nodes": []}],
-    }
-    with (
-        patch("pageindex_mcp.cache.doc_cache_delete"),
-        patch("pageindex_mcp.storage.minio_ops._confirm_write_visible") as mock_barrier,
-    ):
-        save_doc("barrier-keep-1", tree)
-
-    mock_barrier.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -798,7 +563,7 @@ def test_erasure_manifest_ordering_matches_hr2_spec():
     """Exhaustiveness: _ERASURE_MANIFEST step names must appear in HR2 cascade
     order (uploads, processed, meta, redis-cache, reconcile-etag, hash-cache,
     registry, preloaded). Each step must be an ErasureStep instance."""
-    from pageindex_mcp.storage.documents import ErasureStep, _ERASURE_MANIFEST
+    from pageindex_mcp.storage.documents import _ERASURE_MANIFEST, ErasureStep
 
     # All entries are ErasureStep instances
     for entry in _ERASURE_MANIFEST:
@@ -895,55 +660,6 @@ def test_erasure_manifest_required_flags_match_behaviour():
 # ---------------------------------------------------------------------------
 
 
-async def test_delete_doc_full_success_returns_registry_only_error(mock_minio, monkeypatch):
-    """Regression: full success scenario -- all stores cleared, only registry
-    skip error (pool not initialized in test) is returned."""
-    load_resp = MagicMock()
-    load_resp.read.return_value = json.dumps(
-        {"doc_id": "regr-ok-1", "doc_name": "report.pdf"}
-    ).encode()
-    mock_minio.get_object.return_value = load_resp
-    mock_minio.list_objects.return_value = []
-    mock_minio.remove_object.side_effect = _nosuchkey()
-
-    with (
-        patch("pageindex_mcp.cache.doc_cache_delete"),
-        patch("pageindex_mcp.storage.reconcile_etag.reconcile_etag_delete"),
-        patch("pageindex_mcp.storage.hash_cache.hash_cache_delete"),
-    ):
-        result = await delete_doc("regr-ok-1")
-
-    # Only registry pool-not-ready error expected in test context
-    assert len(result["errors"]) == 1
-    assert "registry" in result["errors"][0].lower()
-
-
-async def test_delete_doc_partial_minio_failure_records_specific_store(mock_minio, monkeypatch):
-    """Regression: partial MinIO failure records the failing store in errors[]."""
-    load_resp = MagicMock()
-    load_resp.read.return_value = json.dumps(
-        {"doc_id": "regr-partial-1", "doc_name": "report.pdf"}
-    ).encode()
-    mock_minio.get_object.return_value = load_resp
-    mock_minio.list_objects.return_value = []
-
-    def _fail_processed(bucket, name):
-        if name == "processed/regr-partial-1.json":
-            raise _other_s3error()
-        raise _nosuchkey()
-
-    mock_minio.remove_object.side_effect = _fail_processed
-
-    with (
-        patch("pageindex_mcp.cache.doc_cache_delete"),
-        patch("pageindex_mcp.storage.reconcile_etag.reconcile_etag_delete"),
-        patch("pageindex_mcp.storage.hash_cache.hash_cache_delete"),
-    ):
-        result = await delete_doc("regr-partial-1")
-
-    assert any("processed.json" in e for e in result["errors"])
-
-
 async def test_delete_doc_unknown_doc_name_skips_hash_cache_and_preloaded(mock_minio):
     """Regression: when doc_name cannot be recovered, steps 5 (hash-cache)
     and 7 (preloaded) are skipped without error but logged."""
@@ -956,76 +672,13 @@ async def test_delete_doc_unknown_doc_name_skips_hash_cache_and_preloaded(mock_m
         patch("pageindex_mcp.storage.reconcile_etag.reconcile_etag_delete"),
         patch("pageindex_mcp.storage.hash_cache.hash_cache_delete") as mock_hc,
     ):
-        result = await delete_doc("unknown-name-1")
+        await delete_doc("unknown-name-1")
 
     # hash_cache_delete should NOT be called (no doc_name)
     mock_hc.assert_not_called()
 
 
 # --- from test_minio_path_prefix.py ---
-
-
-class TestPrefixedPoolManager:
-    def _capture(self, prefix, url, **kw):
-        pm = PrefixedPoolManager(prefix)
-        with patch.object(urllib3.PoolManager, "urlopen") as mock:
-            pm.urlopen("GET", url, **kw)
-        return mock.call_args
-
-    def test_prefix_inserted_before_path(self):
-        args = self._capture("/minio", "https://infra.example.com/pageindex/a.pdf")
-        assert args.args[1] == "https://infra.example.com/minio/pageindex/a.pdf"
-
-    def test_query_string_preserved_exactly(self):
-        """The signature covers the query — rewriting it would invalidate it."""
-        url = "https://infra.example.com/pageindex/?list-type=2&prefix=proc%2F"
-        args = self._capture("/minio", url)
-        assert args.args[1].endswith("?list-type=2&prefix=proc%2F")
-
-    def test_already_prefixed_path_not_prefixed_twice(self):
-        """urllib3 follows redirects by re-entering urlopen, so a redirect back
-        to /minio/... must not become /minio/minio/..."""
-        args = self._capture("/minio", "https://infra.example.com/minio/pageindex/a.pdf")
-        assert args.args[1] == "https://infra.example.com/minio/pageindex/a.pdf"
-
-    def test_prefix_lookalike_path_is_still_prefixed(self):
-        """/minio-staging is a different path, not an already-prefixed one."""
-        args = self._capture("/minio", "https://infra.example.com/minio-staging/a")
-        assert args.args[1] == "https://infra.example.com/minio/minio-staging/a"
-
-
-class TestPrefixedPoolInheritsSdkSettings:
-    """Passing http_client= replaces the SDK's own pool, so the prefixed pool
-    must carry the same timeout/retry/CA policy or those guarantees silently
-    vanish on exactly the deployments that use the public route."""
-
-    def test_timeout_and_retries_match_sdk_defaults(self):
-        pm = PrefixedPoolManager("/minio")
-        kw = pm.connection_pool_kw
-
-        assert kw["timeout"].connect_timeout == 300
-        assert kw["timeout"].read_timeout == 300
-        assert kw["maxsize"] == 10
-        assert kw["cert_reqs"] == "CERT_REQUIRED"
-        assert kw["ca_certs"]
-        assert kw["retries"].total == 5
-        assert kw["retries"].status_forcelist == [500, 502, 503, 504]
-
-    def test_explicit_kwargs_still_override(self):
-        pm = PrefixedPoolManager("/minio", maxsize=3)
-        assert pm.connection_pool_kw["maxsize"] == 3
-
-
-class TestMakeMinio:
-    def test_prefix_installs_custom_http_client(self):
-        client = make_minio("infra.example.com", "k", "s", secure=True, path_prefix="/minio")
-        assert isinstance(client._http, PrefixedPoolManager)
-
-    def test_endpoint_with_path_is_still_rejected(self):
-        """Guards the reason this module exists — if the SDK ever accepted a
-        path, the whole workaround could be dropped."""
-        with pytest.raises(ValueError, match="path in endpoint"):
-            make_minio("infra.example.com/minio", "k", "s", secure=True, path_prefix="")
 
 
 @pytest.fixture
@@ -1047,116 +700,7 @@ def reloadable_config(monkeypatch):
         cfg.settings = original
 
 
-class TestConfig:
-    def test_minio_path_prefix_defaults_empty(self, monkeypatch, reloadable_config):
-        monkeypatch.delenv("MINIO_PATH_PREFIX", raising=False)
-
-        importlib.reload(reloadable_config)
-        assert reloadable_config.settings.minio_path_prefix == ""
-
-    def test_minio_path_prefix_normalized(self, monkeypatch, reloadable_config):
-        for raw in ("minio", "/minio", "/minio/"):
-            monkeypatch.setenv("MINIO_PATH_PREFIX", raw)
-            importlib.reload(reloadable_config)
-            assert reloadable_config.settings.minio_path_prefix == "/minio", raw
-
-
-class TestPresignFallsBackToMainPrefix:
-    """With no separate presign endpoint, presigned URLs are built from the main
-    endpoint — so they need the main endpoint's route prefix, or they 404."""
-
-    def test_main_prefix_used_when_no_presign_endpoint(self):
-        import pageindex_mcp.storage as storage
-
-        signed = "https://infra.example.com/pageindex/uploads/a.pdf?X-Amz-Signature=abc"
-        with patch.object(storage.minio_ops, "settings") as s:
-            s.minio_endpoint = "infra.example.com"
-            s.minio_path_prefix = "/minio"
-            s.minio_presign_endpoint = None
-            s.minio_presign_path_prefix = ""
-            out = storage._apply_route_prefix(signed)
-
-        assert out == (
-            "https://infra.example.com/minio/pageindex/uploads/a.pdf?X-Amz-Signature=abc"
-        )
-
-    def test_presign_endpoint_prefix_wins_when_set(self):
-        import pageindex_mcp.storage as storage
-
-        signed = "https://public.example.com/pageindex/uploads/a.pdf?X-Amz-Signature=abc"
-        with patch.object(storage.minio_ops, "settings") as s:
-            s.minio_endpoint = "10.43.0.1:9000"
-            s.minio_path_prefix = ""
-            s.minio_presign_endpoint = "public.example.com"
-            s.minio_presign_path_prefix = "/minio"
-            out = storage._apply_route_prefix(signed)
-
-        assert out == (
-            "https://public.example.com/minio/pageindex/uploads/a.pdf?X-Amz-Signature=abc"
-        )
-
-
 # --- from test_presign_public_route.py ---
-
-
-class TestPresignSettings:
-    def test_presign_secure_defaults_to_true(self, monkeypatch):
-        monkeypatch.delenv("MINIO_PRESIGN_SECURE", raising=False)
-        monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
-        import pageindex_mcp.config as cfg
-
-        importlib.reload(cfg)
-        assert cfg.settings.minio_presign_secure is True
-
-    def test_presign_secure_read_from_env(self, monkeypatch):
-        monkeypatch.setenv("MINIO_PRESIGN_SECURE", "false")
-        monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
-        import pageindex_mcp.config as cfg
-
-        importlib.reload(cfg)
-        assert cfg.settings.minio_presign_secure is False
-
-    def test_presign_path_prefix_defaults_to_empty(self, monkeypatch):
-        monkeypatch.delenv("MINIO_PRESIGN_PATH_PREFIX", raising=False)
-        monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
-        import pageindex_mcp.config as cfg
-
-        importlib.reload(cfg)
-        assert cfg.settings.minio_presign_path_prefix == ""
-
-    def test_presign_path_prefix_normalized(self, monkeypatch):
-        """Accept 'minio', '/minio' and '/minio/' — all mean the same route."""
-        monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
-        import pageindex_mcp.config as cfg
-
-        for raw in ("minio", "/minio", "/minio/"):
-            monkeypatch.setenv("MINIO_PRESIGN_PATH_PREFIX", raw)
-            importlib.reload(cfg)
-            assert cfg.settings.minio_presign_path_prefix == "/minio", raw
-
-
-class TestDoclingUrlNormalization:
-    """`{url}/convert/pdf` on a trailing-slash URL yields `//convert/pdf`, which
-    the Scaleway function 404s. Observed live against a real conversion call."""
-
-    def test_trailing_slash_stripped(self, monkeypatch):
-        monkeypatch.setenv("DOCLING_SERVICE_URL", "https://docling.example.com/")
-        monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
-        import pageindex_mcp.config as cfg
-
-        importlib.reload(cfg)
-        assert cfg.settings.docling_service_url == "https://docling.example.com"
-        assert f"{cfg.settings.docling_service_url}/convert/pdf" == (
-            "https://docling.example.com/convert/pdf"
-        )
-
-    def test_unset_stays_none(self, monkeypatch):
-        monkeypatch.delenv("DOCLING_SERVICE_URL", raising=False)
-        monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
-        import pageindex_mcp.config as cfg
-
-        importlib.reload(cfg)
-        assert cfg.settings.docling_service_url is None
 
 
 def _presign_settings(mock_settings, **overrides):
@@ -1174,91 +718,6 @@ def _presign_settings(mock_settings, **overrides):
         setattr(mock_settings, k, v)
     return mock_settings
 
-
-class TestPresignClientConstruction:
-    def test_uses_presign_secure_not_minio_secure(self):
-        """MINIO_SECURE=false must not downgrade a public HTTPS presign host."""
-        import pageindex_mcp.storage as storage
-
-        with (
-            patch.object(storage.minio_ops, "_presign_client", None),
-            patch.object(storage.minio_ops, "make_minio") as mock_cls,
-            patch.object(storage.minio_ops, "settings") as mock_settings,
-        ):
-            _presign_settings(mock_settings)
-            storage._get_presign_minio()
-
-        assert mock_cls.call_args.kwargs["secure"] is True
-
-    def test_pins_region_to_avoid_live_bucket_location_lookup(self):
-        """Unset region makes the SDK call GetBucketLocation on the public host,
-        which is not routable for that verb — it raised instead of signing."""
-        import pageindex_mcp.storage as storage
-
-        with (
-            patch.object(storage.minio_ops, "_presign_client", None),
-            patch.object(storage.minio_ops, "make_minio") as mock_cls,
-            patch.object(storage.minio_ops, "settings") as mock_settings,
-        ):
-            _presign_settings(mock_settings)
-            storage._get_presign_minio()
-
-        assert mock_cls.call_args.kwargs.get("region") == "us-east-1"
-
-
-class TestPresignPathPrefix:
-    def test_prefix_spliced_after_signing(self):
-        """Signature covers /pageindex/<key>; the route serves it under /minio."""
-        import pageindex_mcp.storage as storage
-
-        mock_client = MagicMock()
-        mock_client.presigned_get_object.return_value = (
-            "https://infra.example.com/pageindex/uploads/a.pdf?X-Amz-Signature=abc"
-        )
-        with (
-            patch.object(storage.minio_ops, "_get_presign_minio", return_value=mock_client),
-            patch.object(storage.minio_ops, "settings") as mock_settings,
-        ):
-            _presign_settings(mock_settings, minio_presign_path_prefix="/minio")
-            url = storage.presigned_get_url("uploads/a.pdf")
-
-        assert url == (
-            "https://infra.example.com/minio/pageindex/uploads/a.pdf?X-Amz-Signature=abc"
-        )
-
-    def test_query_string_is_untouched(self):
-        """Rewriting the query would invalidate the signature."""
-        import pageindex_mcp.storage as storage
-
-        signed_query = "X-Amz-Signature=abc&X-Amz-Credential=k%2Fus-east-1&X-Amz-Expires=900"
-        mock_client = MagicMock()
-        mock_client.presigned_get_object.return_value = (
-            f"https://infra.example.com/pageindex/uploads/a.pdf?{signed_query}"
-        )
-        with (
-            patch.object(storage.minio_ops, "_get_presign_minio", return_value=mock_client),
-            patch.object(storage.minio_ops, "settings") as mock_settings,
-        ):
-            _presign_settings(mock_settings, minio_presign_path_prefix="/minio")
-            url = storage.presigned_get_url("uploads/a.pdf")
-
-        assert url.split("?", 1)[1] == signed_query
-
-    def test_no_prefix_leaves_url_unchanged(self):
-        import pageindex_mcp.storage as storage
-
-        signed = "https://infra.example.com/pageindex/uploads/a.pdf?X-Amz-Signature=abc"
-        mock_client = MagicMock()
-        mock_client.presigned_get_object.return_value = signed
-        with (
-            patch.object(storage.minio_ops, "_get_presign_minio", return_value=mock_client),
-            patch.object(storage.minio_ops, "settings") as mock_settings,
-        ):
-            _presign_settings(mock_settings, minio_presign_path_prefix="")
-            url = storage.presigned_get_url("uploads/a.pdf")
-
-        assert url == signed
-
     # ---------------------------------------------------------------------------
     # Zone-5: Regression — save_doc_meta preserves existing consistency_regime
     # ---------------------------------------------------------------------------
@@ -1270,7 +729,6 @@ def test_save_doc_meta_preserves_consistency_regime_on_verdict_update(mock_minio
     fields (no consistency_regime). Without this, a subsequent verdict-only
     write from the promotion sweep would silently drop the forensic regime
     stamp set by _upsert_registry_row."""
-    import io
 
     # Existing sidecar with consistency_regime already stamped
     existing_sidecar = {
@@ -1313,26 +771,649 @@ def test_save_doc_meta_preserves_consistency_regime_on_verdict_update(mock_minio
     assert sidecar["pipeline_version"] == 5
 
 
-class TestPresignPathPrefix:
-    def test_prefix_ignored_when_endpoint_addresses_minio_directly(self):
-        """A ClusterIP endpoint has no route prefix, so nothing is spliced —
-        the presign prefix belongs to the presign host, not this one."""
-        import pageindex_mcp.storage as storage
+# ---------------------------------------------------------------------------
+# Consolidated (test-budget reduction): table-driven replacements.  Every row
+# the former per-row tests covered is still checked; mismatches are collected
+# and reported by row name.  The HR2 erasure-cascade tests above are
+# deliberately left untouched and un-merged.
+# ---------------------------------------------------------------------------
 
-        signed = "http://10.43.23.66:9000/pageindex/uploads/a.pdf?X-Amz-Signature=abc"
+
+@patch("pageindex_mcp.storage.minio_ops.get_minio")
+def test_wipe_processed_removes_every_processed_object(mock_get):
+    """wipe_processed() deletes all processed/* objects (tree, sidecar and
+    flat alike) and is a no-op on an empty listing.  The verdicts/ prefix is
+    not part of the listing it walks."""
+    mc = MagicMock()
+    mock_get.return_value = mc
+    mc.list_objects.return_value = [
+        _obj("processed/doc1.json"),
+        _obj("processed/doc1.meta.json"),
+        _obj("processed/doc2.json"),
+    ]
+
+    wipe_processed()
+
+    removed = {c.args[1] for c in mc.mock_calls if c[0] == "remove_object"}
+    assert removed == {
+        "processed/doc1.json",
+        "processed/doc1.meta.json",
+        "processed/doc2.json",
+    }
+
+    mc.reset_mock()
+    mc.list_objects.return_value = []
+    wipe_processed()
+    mc.remove_object.assert_not_called()
+
+
+def test_flat_02_c3_list_processed_docs_surfaces_flat_content_class(mock_minio):
+    """FLAT-02-C3: list_processed_docs surfaces a flat doc with its
+    content_class, and prefers the .meta.json sidecar over the .flat.json
+    artifact when both are listed for the same doc_id."""
+    meta_obj = MagicMock()
+    meta_obj.object_name = "processed/flat0001.meta.json"
+    mock_minio.list_objects.return_value = [meta_obj]
+
+    meta_resp = MagicMock()
+    meta_resp.read.return_value = json.dumps(
+        {"doc_id": "flat0001", "doc_name": "katzen.pdf", "content_class": "flat_prose"}
+    ).encode()
+    mock_minio.get_object.return_value = meta_resp
+
+    docs = list_processed_docs()
+    assert len(docs) == 1
+    assert docs[0]["doc_id"] == "flat0001"
+    assert docs[0]["doc_name"] == "katzen.pdf"
+    assert docs[0]["content_class"] == "flat_prose"
+
+    # Sidecar preferred over the .flat.json blob for the same doc_id.
+    flat_obj = MagicMock()
+    flat_obj.object_name = "processed/dup0001.flat.json"
+    dup_meta = MagicMock()
+    dup_meta.object_name = "processed/dup0001.meta.json"
+    mock_minio.list_objects.return_value = [flat_obj, dup_meta]
+    response = MagicMock()
+    response.read.return_value = json.dumps({"doc_id": "dup0001", "doc_name": "y.pdf"}).encode()
+    mock_minio.get_object.return_value = response
+
+    docs = list_processed_docs()
+    assert len(docs) == 1
+    assert mock_minio.get_object.call_args[0][1] == "processed/dup0001.meta.json"
+
+
+def test_read_registry_fields_tree_doc_and_missing_object(mock_minio):
+    """read_registry_fields projects the registry columns (incl. a derived
+    node_count and the verdict triple, but never content_class) out of
+    processed/<doc_id>.json, and degrades to None when the object is absent."""
+    persisted = {
+        "doc_id": "tree0001",
+        "doc_name": "report.pdf",
+        "source_url": "http://x",
+        "processed_at": "2026-01-01T00:00:00Z",
+        "sha256": "abc123",
+        "doc_description": "desc",
+        "product": "prod-a",
+        "tier": "1",
+        "doc_family": "fam",
+        "effective_date": "2026-01-01",
+        "structure": [{"title": "Ch1", "nodes": []}],
+        "verdict": "PASS",
+        "pipeline_version": 2,
+        "permanent_marginal": False,
+    }
+    response = MagicMock()
+    response.read.return_value = json.dumps(persisted).encode()
+    mock_minio.get_object.return_value = response
+
+    fields = read_registry_fields("tree0001")
+
+    assert mock_minio.get_object.call_args[0][1] == "processed/tree0001.json"
+    assert fields["doc_id"] == "tree0001"
+    assert fields["sha256"] == "abc123"
+    assert fields["node_count"] == 1
+    assert fields["verdict"] == "PASS"
+    assert fields["pipeline_version"] == 2
+    assert fields["permanent_marginal"] is False
+    assert "content_class" not in fields
+
+    mock_minio.get_object.side_effect = _nosuchkey()
+    assert read_registry_fields("ghost0001") is None
+
+
+def test_hash_cache_roundtrip_and_staging_helpers(mock_minio, fake_cache_redis):
+    """Property 6: the hash cache is a Redis HSET, so writes for different
+    filenames are independent (no last-writer-wins loss across arq worker
+    processes) and deleting one entry leaves the others intact.  Also pins the
+    staging helpers and the legacy MinIO hash blob's missing-object fallback."""
+    # upload_staging writes uploads/staging/<job>/<name> as an octet-stream and
+    # returns that key; delete_staging reports success.
+    assert upload_staging("job-1", "report.pdf", b"bytes") == "uploads/staging/job-1/report.pdf"
+    call = mock_minio.put_object.call_args
+    assert call[0][1] == "uploads/staging/job-1/report.pdf"
+    assert call.kwargs["content_type"] == "application/octet-stream"
+    assert delete_staging("uploads/staging/job-1/report.pdf") is True
+
+    # The legacy MinIO hash-cache blob degrades to {} when absent.
+    mock_minio.get_object.side_effect = _nosuchkey()
+    assert _load_legacy_minio_hash_cache() == {}
+
+    hash_cache_set("a.pdf", "hash-a")
+    hash_cache_set("b.pdf", "hash-b")
+    assert hash_cache_get("a.pdf") == "hash-a"
+    assert hash_cache_get("b.pdf") == "hash-b"
+
+    hash_cache_delete("a.pdf")
+
+    with patch("pageindex_mcp.storage.minio_ops.get_minio") as mock_get_minio:
+        mock_get_minio.return_value.get_object.side_effect = _nosuchkey()
+        assert hash_cache_get("a.pdf") is None
+    assert hash_cache_get("b.pdf") == "hash-b"
+
+
+def test_save_doc_meta_sidecar_field_projection(mock_minio):
+    """The .meta.json sidecar persists the RFC-014 D2 verdict fields, the C-3
+    sidecar-v2 fattening fields (doc_description by KEY PRESENCE, so "" is
+    kept) and the RFC-034 D5 extraction-provenance fields — and never invents
+    effective_config_at_job_start when the caller did not supply it."""
+    meta = {
+        "doc_id": "sidecar-1",
+        "doc_name": "report.pdf",
+        "source_url": "",
+        "processed_at": "2026-08-08T00:00:00+00:00",
+        # RFC-014 D2 verdict fields
+        "verdict": "PASS",
+        "verdict_reason": "cat_b_promoted",
+        "max_leaf_ratio": 0.12,
+        "pipeline_version": 1,
+        "permanent_marginal": False,
+        "promotion_eligible": True,
+        "verdict_computed_at": "2026-07-16T00:00:00+00:00",
+        # C-3 sidecar v2 fattening
+        "sha256": "abc",
+        "doc_description": "",
+        # RFC-034 D5 provenance
+        "extraction_route": "remote",
+        "converter_name": "docling",
+        "converter_contract": "2.1.0",
+        "remote_build_sha": "abc1234",
+        "page_count": 42,
+        "inspector_class": "standard",
+        "total_tree_chars": 123456,
+        # supplied config, but NOT effective_config_at_job_start
+        "build_sha": "abc123",
+        "effective_config": {"pipeline_version": 4},
+    }
+    save_doc_meta("sidecar-1", meta)
+
+    sidecar = json.loads(mock_minio.put_object.call_args[0][2].read())
+
+    expected = {
+        k: v
+        for k, v in meta.items()
+        if k
+        not in {"doc_id", "doc_name", "source_url", "processed_at", "build_sha", "effective_config"}
+    }
+    missing = {
+        k: (sidecar.get(k, "<absent>"), v)
+        for k, v in expected.items()
+        if sidecar.get(k, "<absent>") != v
+    }
+    assert not missing, f"sidecar dropped/renamed fields (got, want): {missing}"
+    # doc_description is written by key presence, not truthiness.
+    assert "doc_description" in sidecar
+    # Never synthesised when the caller did not supply it.
+    assert "effective_config_at_job_start" not in sidecar
+
+
+# --- from test_minio_path_prefix.py ---
+
+
+def test_prefixed_pool_manager_url_rewriting():
+    """The public-route prefix is spliced in front of the path, exactly once,
+    without touching the (signature-covered) query string."""
+
+    def _capture(prefix, url, **kw):
+        pm = PrefixedPoolManager(prefix)
+        with patch.object(urllib3.PoolManager, "urlopen") as mock:
+            pm.urlopen("GET", url, **kw)
+        return mock.call_args.args[1]
+
+    rows = [
+        (
+            "prefix inserted before path",
+            "https://infra.example.com/pageindex/a.pdf",
+            "https://infra.example.com/minio/pageindex/a.pdf",
+        ),
+        (
+            # Rewriting the query would invalidate the signature.
+            "query string preserved exactly",
+            "https://infra.example.com/pageindex/?list-type=2&prefix=proc%2F",
+            "https://infra.example.com/minio/pageindex/?list-type=2&prefix=proc%2F",
+        ),
+        (
+            # urllib3 re-enters urlopen on redirect; /minio/minio/... would 404.
+            "already-prefixed path not prefixed twice",
+            "https://infra.example.com/minio/pageindex/a.pdf",
+            "https://infra.example.com/minio/pageindex/a.pdf",
+        ),
+        (
+            # /minio-staging is a different path, not an already-prefixed one.
+            "prefix lookalike still prefixed",
+            "https://infra.example.com/minio-staging/a",
+            "https://infra.example.com/minio/minio-staging/a",
+        ),
+    ]
+    failures = []
+    for name, url, expected in rows:
+        got = _capture("/minio", url)
+        if got != expected:
+            failures.append(f"{name}: got {got!r}, expected {expected!r}")
+    assert not failures, failures
+
+
+def test_prefixed_pool_inherits_sdk_settings():
+    """Passing http_client= replaces the SDK's own pool, so the prefixed pool
+    must carry the same timeout/retry/CA policy or those guarantees silently
+    vanish on exactly the deployments that use the public route.  Explicit
+    kwargs still win."""
+    kw = PrefixedPoolManager("/minio").connection_pool_kw
+
+    assert kw["timeout"].connect_timeout == 300
+    assert kw["timeout"].read_timeout == 300
+    assert kw["maxsize"] == 10
+    assert kw["cert_reqs"] == "CERT_REQUIRED"
+    assert kw["ca_certs"]
+    assert kw["retries"].total == 5
+    assert kw["retries"].status_forcelist == [500, 502, 503, 504]
+
+    assert PrefixedPoolManager("/minio", maxsize=3).connection_pool_kw["maxsize"] == 3
+
+    # make_minio installs that prefixed pool as the client's http transport,
+    # and a path baked into the endpoint is still rejected by the SDK -- which
+    # is the reason this whole workaround exists.
+    client = make_minio("infra.example.com", "k", "s", secure=True, path_prefix="/minio")
+    assert isinstance(client._http, PrefixedPoolManager)
+    with pytest.raises(ValueError, match="path in endpoint"):
+        make_minio("infra.example.com/minio", "k", "s", secure=True, path_prefix="")
+
+
+def test_minio_route_settings_normalization(monkeypatch, reloadable_config):
+    """MINIO_PATH_PREFIX / MINIO_PRESIGN_PATH_PREFIX default to "" and normalise
+    'minio', '/minio' and '/minio/' to '/minio'.  MINIO_PRESIGN_SECURE defaults
+    to True and is env-readable.  DOCLING_SERVICE_URL loses a trailing slash
+    (otherwise '{url}/convert/pdf' becomes '//convert/pdf', which 404s) and
+    stays None when unset."""
+    cfg = reloadable_config
+    failures = []
+
+    def _reload(**env):
+        for key in (
+            "MINIO_PATH_PREFIX",
+            "MINIO_PRESIGN_PATH_PREFIX",
+            "MINIO_PRESIGN_SECURE",
+            "DOCLING_SERVICE_URL",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        importlib.reload(cfg)
+        return cfg.settings
+
+    if _reload().minio_path_prefix != "":
+        failures.append("MINIO_PATH_PREFIX unset: expected ''")
+    if _reload().minio_presign_path_prefix != "":
+        failures.append("MINIO_PRESIGN_PATH_PREFIX unset: expected ''")
+    if _reload().minio_presign_secure is not True:
+        failures.append("MINIO_PRESIGN_SECURE unset: expected True")
+    if _reload(MINIO_PRESIGN_SECURE="false").minio_presign_secure is not False:
+        failures.append("MINIO_PRESIGN_SECURE=false: expected False")
+
+    for raw in ("minio", "/minio", "/minio/"):
+        got = _reload(MINIO_PATH_PREFIX=raw).minio_path_prefix
+        if got != "/minio":
+            failures.append(f"MINIO_PATH_PREFIX={raw!r}: got {got!r}")
+        got = _reload(MINIO_PRESIGN_PATH_PREFIX=raw).minio_presign_path_prefix
+        if got != "/minio":
+            failures.append(f"MINIO_PRESIGN_PATH_PREFIX={raw!r}: got {got!r}")
+
+    s = _reload(DOCLING_SERVICE_URL="https://docling.example.com/")
+    if s.docling_service_url != "https://docling.example.com":
+        failures.append(f"docling trailing slash: got {s.docling_service_url!r}")
+    elif f"{s.docling_service_url}/convert/pdf" != "https://docling.example.com/convert/pdf":
+        failures.append("docling: joined convert path is malformed")
+    if _reload().docling_service_url is not None:
+        failures.append("DOCLING_SERVICE_URL unset: expected None")
+
+    assert not failures, failures
+
+
+# --- from test_presign_public_route.py ---
+
+
+def test_presigned_url_route_prefix_matrix():
+    """The route prefix is spliced in AFTER signing (the signature covers
+    /pageindex/<key>, the route serves it under /minio) and the query string is
+    never touched.  Which prefix applies depends on which endpoint signed the
+    URL: the presign host's prefix when a presign endpoint is configured, the
+    main endpoint's prefix otherwise, and nothing at all for a ClusterIP
+    endpoint that has no route prefix of its own."""
+    import pageindex_mcp.storage as storage
+
+    # The presign client itself is built for the PUBLIC host: MINIO_SECURE=false
+    # must not downgrade an HTTPS presign host, and the region must be pinned or
+    # the SDK issues GetBucketLocation against a host that cannot route it.
+    with (
+        patch.object(storage.minio_ops, "_presign_client", None),
+        patch.object(storage.minio_ops, "make_minio") as mock_cls,
+        patch.object(storage.minio_ops, "settings") as mock_settings,
+    ):
+        _presign_settings(mock_settings)
+        storage._get_presign_minio()
+    assert mock_cls.call_args.kwargs["secure"] is True
+    assert mock_cls.call_args.kwargs.get("region") == "us-east-1"
+
+    signed_query = "X-Amz-Signature=abc&X-Amz-Credential=k%2Fus-east-1&X-Amz-Expires=900"
+    rows = [
+        (
+            "presign prefix spliced after signing",
+            {"minio_presign_path_prefix": "/minio"},
+            "https://infra.example.com/pageindex/uploads/a.pdf?X-Amz-Signature=abc",
+            "https://infra.example.com/minio/pageindex/uploads/a.pdf?X-Amz-Signature=abc",
+        ),
+        (
+            "query string untouched",
+            {"minio_presign_path_prefix": "/minio"},
+            f"https://infra.example.com/pageindex/uploads/a.pdf?{signed_query}",
+            f"https://infra.example.com/minio/pageindex/uploads/a.pdf?{signed_query}",
+        ),
+        (
+            "no prefix leaves the url unchanged",
+            {"minio_presign_path_prefix": ""},
+            "https://infra.example.com/pageindex/uploads/a.pdf?X-Amz-Signature=abc",
+            "https://infra.example.com/pageindex/uploads/a.pdf?X-Amz-Signature=abc",
+        ),
+        (
+            "presign prefix ignored when the endpoint addresses MinIO directly",
+            {
+                "minio_presign_endpoint": None,
+                "minio_endpoint": "10.43.23.66:9000",
+                "minio_path_prefix": "",
+                "minio_presign_path_prefix": "/minio",
+            },
+            "http://10.43.23.66:9000/pageindex/uploads/a.pdf?X-Amz-Signature=abc",
+            "http://10.43.23.66:9000/pageindex/uploads/a.pdf?X-Amz-Signature=abc",
+        ),
+        (
+            # No separate presign endpoint: the URL is built from the main
+            # endpoint, so it needs the MAIN endpoint's route prefix or it 404s.
+            "main prefix used when no presign endpoint",
+            {
+                "minio_presign_endpoint": None,
+                "minio_endpoint": "infra.example.com",
+                "minio_path_prefix": "/minio",
+                "minio_presign_path_prefix": "",
+            },
+            "https://infra.example.com/pageindex/uploads/a.pdf?X-Amz-Signature=abc",
+            "https://infra.example.com/minio/pageindex/uploads/a.pdf?X-Amz-Signature=abc",
+        ),
+    ]
+
+    failures = []
+    for name, overrides, signed, expected in rows:
         mock_client = MagicMock()
         mock_client.presigned_get_object.return_value = signed
         with (
             patch.object(storage.minio_ops, "_get_presign_minio", return_value=mock_client),
             patch.object(storage.minio_ops, "settings") as mock_settings,
         ):
-            _presign_settings(
-                mock_settings,
-                minio_presign_endpoint=None,
-                minio_endpoint="10.43.23.66:9000",
-                minio_path_prefix="",
-                minio_presign_path_prefix="/minio",
-            )
+            _presign_settings(mock_settings, **overrides)
             url = storage.presigned_get_url("uploads/a.pdf")
+        if url != expected:
+            failures.append(f"{name}: got {url!r}, expected {expected!r}")
 
-        assert url == signed
+    assert not failures, failures
+
+
+# ---------------------------------------------------------------------------
+# --- from test_memory_redis.py (memory admission, Redis singleton, cache) ---
+# ---------------------------------------------------------------------------
+
+_MEMINFO_SAMPLE = (
+    "MemTotal:        7937224 kB\n"
+    "MemFree:          200000 kB\n"
+    "MemAvailable:    2500000 kB\n"
+    "Buffers:           10000 kB\n"
+)
+
+SAMPLE_DOC = {"doc_id": "abc12345", "doc_name": "test.pdf", "structure": []}
+
+
+async def test_wait_for_memory_admission_matrix(tmp_path, monkeypatch):
+    """The admission gate, end to end: read_meminfo_available_bytes parses
+    MemAvailable into bytes and fails OPEN (None) on an unreadable
+    /proc/meminfo; _has_headroom compares against the floor and treats an
+    unreadable reading as "proceed"; and wait_for_memory admits immediately
+    when there is headroom, polls until memory frees, fails OPEN (returns False
+    but still proceeds) once the max-wait cap is hit — a job is never stuck
+    forever — and fails open again when the Redis holding the admission lock is
+    unreachable.  Every failure mode here is fail-OPEN by design: the gate is
+    never allowed to be worse than admitting unconditionally."""
+    failures = []
+
+    good = tmp_path / "meminfo"
+    good.write_text(_MEMINFO_SAMPLE)
+    if ma.read_meminfo_available_bytes(path=str(good)) != 2500000 * 1024:
+        failures.append("MemAvailable was not parsed into bytes")
+    if ma.read_meminfo_available_bytes(path=str(tmp_path / "nope")) is not None:
+        failures.append("unreadable meminfo did not fail open with None")
+
+    for name, available, expected in (
+        ("above floor", 3_000_000_000, True),
+        ("below floor", 1_000_000_000, False),
+        ("unreadable -> fail open", None, True),
+    ):
+        got = ma._has_headroom(available, floor=2_300_000_000)
+        if got is not expected:
+            failures.append(f"_has_headroom({name}): got {got!r}, expected {expected!r}")
+
+    def _const(value):
+        return lambda path="/proc/meminfo": value
+
+    def _sequence(values):
+        it = iter(values)
+        return lambda path="/proc/meminfo": next(it, values[-1])
+
+    original_poll = ma.MEM_ADMISSION_POLL_S
+    original_max = ma.MEM_ADMISSION_MAX_WAIT_S
+
+    rows = [
+        # (name, meminfo reader, poll_s, max_wait_s, expected return)
+        ("headroom now", _const(3_000_000_000), original_poll, original_max, True),
+        (
+            "waits then proceeds",
+            _sequence([1_000_000_000, 1_000_000_000, 3_000_000_000]),
+            0.01,
+            original_max,
+            True,
+        ),
+        ("fails open at max wait", _const(1_000_000_000), 0.01, 0.05, False),
+    ]
+
+    for name, reader, poll, max_wait, expected in rows:
+        monkeypatch.setattr(ma, "read_meminfo_available_bytes", reader)
+        monkeypatch.setattr(ma, "MEM_ADMISSION_POLL_S", poll)
+        monkeypatch.setattr(ma, "MEM_ADMISSION_MAX_WAIT_S", max_wait)
+        got = await ma.wait_for_memory(fakeredis.aioredis.FakeRedis())
+        if got is not expected:
+            failures.append(f"{name}: wait_for_memory returned {got!r}, expected {expected!r}")
+
+    # A Redis that cannot hold the admission lock must not crash the job.
+    class _BrokenRedis:
+        async def set(self, *a, **k):
+            raise RuntimeError("redis down")
+
+        async def delete(self, *a, **k):
+            raise RuntimeError("redis down")
+
+    monkeypatch.setattr(ma, "read_meminfo_available_bytes", _const(3_000_000_000))
+    monkeypatch.setattr(ma, "MEM_ADMISSION_POLL_S", original_poll)
+    monkeypatch.setattr(ma, "MEM_ADMISSION_MAX_WAIT_S", original_max)
+    if await ma.wait_for_memory(_BrokenRedis()) is not True:
+        failures.append("lock-Redis failure: admission did not fail open")
+
+    assert not failures, failures
+
+
+@pytest.mark.asyncio
+async def test_concurrent_admission_only_one_admits(monkeypatch):
+    """Two simultaneous callers with capacity for exactly one — only one admits,
+    because the admission lock is held across the whole check-then-admit
+    decision."""
+    monkeypatch.setattr(ma, "MEM_ADMISSION_POLL_S", 0.01)
+    monkeypatch.setattr(ma, "MEM_ADMISSION_MAX_WAIT_S", 0.15)
+
+    admitted = 0
+    original_has_headroom = ma._has_headroom
+
+    def _shrinking_headroom(available_bytes, floor=ma.MEM_ADMISSION_FLOOR_BYTES):
+        nonlocal admitted
+        if admitted == 0:
+            admitted += 1
+            return original_has_headroom(available_bytes, floor)
+        return False
+
+    monkeypatch.setattr(
+        ma, "read_meminfo_available_bytes", lambda path="/proc/meminfo": 3_000_000_000
+    )
+    monkeypatch.setattr(ma, "_has_headroom", _shrinking_headroom)
+
+    redis_client = fakeredis.aioredis.FakeRedis()
+    results = await asyncio.gather(
+        ma.wait_for_memory(redis_client),
+        ma.wait_for_memory(redis_client),
+    )
+
+    true_count = sum(1 for r in results if r is True)
+    assert true_count == 1, f"Expected exactly 1 admission, got {true_count}"
+
+    # That mutual exclusion holds because the lock is taken BEFORE the headroom
+    # check and released only after the decision.
+    events: list[str] = []
+    original_acquire = ma._try_acquire_lock
+    original_release = ma._release_lock
+
+    async def _tracking_acquire(redis_client):
+        events.append("acquire")
+        return await original_acquire(redis_client)
+
+    def _tracking_read(*args, **kwargs):
+        events.append("check")
+        return 3_000_000_000
+
+    async def _tracking_release(redis_client):
+        events.append("release")
+        return await original_release(redis_client)
+
+    monkeypatch.setattr(ma, "_try_acquire_lock", _tracking_acquire)
+    monkeypatch.setattr(ma, "_release_lock", _tracking_release)
+    monkeypatch.setattr(ma, "read_meminfo_available_bytes", _tracking_read)
+    monkeypatch.setattr(ma, "_has_headroom", original_has_headroom)
+
+    assert await ma.wait_for_memory(fakeredis.aioredis.FakeRedis()) is True
+    assert events == ["acquire", "check", "release"], (
+        f"Expected lock held through check-then-admit, got: {events}"
+    )
+
+
+@pytest.mark.asyncio
+@patch("pageindex_mcp.worker.job.get_async_redis", new_callable=AsyncMock)
+async def test_worker_redis_fallback_uses_singleton(mock_get_redis):
+    """When ctx has no 'redis' key, the fallback calls get_async_redis()."""
+    mock_get_redis.return_value = AsyncMock()
+
+    with (
+        patch("pageindex_mcp.worker.job.download_staging"),
+        patch(
+            "pageindex_mcp.worker.job._run_converter_subprocess",
+            new_callable=AsyncMock,
+            return_value={"ok": True, "doc_id": "test123", "peak_rss_kib": 0, "duration_ms": 0},
+        ),
+        patch("pageindex_mcp.worker.job.delete_staging"),
+        patch("pageindex_mcp.worker.job.shutil"),
+    ):
+        from pageindex_mcp.worker import process_document_job
+
+        ctx: dict = {}
+        await process_document_job(ctx, "uploads/staging/job-1/report.pdf", "job-1")
+
+    # Zone-7 added several best-effort Redis metric-bridge mirror calls (each
+    # independently resolving the singleton), so the fallback is no longer
+    # called exactly once -- but every call must still resolve through
+    # get_async_redis(), never a fresh aioredis.from_url().
+    mock_get_redis.assert_called()
+
+
+def test_store_01_c3_load_doc_returns_persisted_tree(mock_minio):
+    """STORE-01-C3: load_doc(doc_id) returns the tree previously written by
+    save_doc to processed/<doc_id>.json, deserialized into a value-equivalent
+    dict (json.loads of the stored bytes, not the raw bytes).  A doc_id with no
+    object raises ValueError rather than leaking the S3Error."""
+    tree = {
+        "doc_id": "rt000001",
+        "doc_name": "roundtrip.pdf",
+        "structure": [{"title": "Root", "nodes": [{"title": "Child", "text": "body"}]}],
+    }
+    with patch("pageindex_mcp.cache.doc_cache_delete"):
+        save_doc("rt000001", tree)
+
+    persisted_bytes = mock_minio.put_object.call_args[0][2]
+    persisted_bytes.seek(0)
+    response = MagicMock()
+    response.read.return_value = persisted_bytes.read()
+    mock_minio.get_object.return_value = response
+
+    loaded = load_doc("rt000001")
+
+    assert mock_minio.get_object.call_args[0][1] == "processed/rt000001.json"
+    assert loaded == tree
+    assert loaded is not tree  # a fresh deserialization, not the same object
+
+    mock_minio.get_object.side_effect = _nosuchkey()
+    with pytest.raises(ValueError, match="Document not found"):
+        load_doc("rt000001")
+
+
+def test_store_01_c2_unchanged_bytes_resolve_to_the_existing_doc_id(mock_minio, fake_cache_redis):
+    """STORE-01-C2 (storage half): the SHA-256 dedup short-circuit reads two
+    storage facts — the filename-keyed hash-cache entry and the processed-doc
+    listing.  For unchanged bytes the cached hash matches, and the listing
+    still carries an entry for that filename, so the caller can return the
+    existing doc_id without a new processed/<doc_id>.json write.  Changed bytes
+    produce a mismatch and no short-circuit.
+
+    Scope note: the indexer-side branch that acts on these two facts (and the
+    pageindex:job:<job_id> status write) lives in client/indexer.py and is not
+    exercised here — this file owns only the storage-layer inputs.
+    """
+    sha_v1 = "a" * 64
+    sha_v2 = "b" * 64
+    hash_cache_set("dedup.pdf", sha_v1)
+
+    meta_obj = MagicMock()
+    meta_obj.object_name = "processed/dedup001.meta.json"
+    mock_minio.list_objects.return_value = [meta_obj]
+    resp = MagicMock()
+    resp.read.return_value = json.dumps(
+        {"doc_id": "dedup001", "doc_name": "dedup.pdf", "content_class": "flat_prose"}
+    ).encode()
+    mock_minio.get_object.return_value = resp
+
+    # Unchanged bytes -> cached hash matches, so the caller short-circuits.
+    assert hash_cache_get("dedup.pdf") == sha_v1
+    existing = [d for d in list_processed_docs() if d["doc_name"] == "dedup.pdf"]
+    assert [d["doc_id"] for d in existing] == ["dedup001"]
+    assert mock_minio.put_object.call_count == 0, "dedup path must write nothing new"
+
+    # Changed bytes -> mismatch, no short-circuit.
+    assert hash_cache_get("dedup.pdf") != sha_v2

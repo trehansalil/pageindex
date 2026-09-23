@@ -76,42 +76,6 @@ def _settings(**overrides):
 
 
 # ── process_document_job: happy path & error propagation ────────────────────
-async def test_process_document_job_calls_index(mock_redis):
-    staging_key = "uploads/staging/job-1/report.pdf"
-    ctx = {"redis": mock_redis}
-    child_result = {"ok": True, "doc_id": "abc12345", "peak_rss_kib": 0, "duration_ms": 0}
-    with (
-        patch(
-            "pageindex_mcp.worker.job._run_converter_subprocess",
-            AsyncMock(return_value=child_result),
-        ) as mock_sub,
-        patch("pageindex_mcp.worker.job.download_staging") as mock_dl,
-    ):
-        with patch("pageindex_mcp.worker.job.delete_staging"):
-            with patch("pageindex_mcp.worker.job.shutil"):
-                result = await process_document_job(ctx, staging_key, "job-1")
-
-    assert result == "abc12345"
-    mock_dl.assert_called_once_with(staging_key, ANY)
-    mock_sub.assert_awaited_once()
-
-
-async def test_process_document_job_propagates_errors(mock_redis):
-    staging_key = "uploads/staging/job-1/report.pdf"
-    ctx = {"redis": mock_redis}
-    with (
-        patch(
-            "pageindex_mcp.worker.job._run_converter_subprocess",
-            AsyncMock(side_effect=ConverterChildError(1, "boom")),
-        ),
-        patch("pageindex_mcp.worker.job.download_staging"),
-    ):
-        with patch("pageindex_mcp.worker.job.delete_staging"):
-            with patch("pageindex_mcp.worker.job.shutil"):
-                with pytest.raises(ConverterChildError):
-                    await process_document_job(ctx, staging_key, "job-1")
-
-
 # ── process_document_job: DLQ / retry semantics ──────────────────────────────
 async def test_worker_01_c3_final_failure_pushed_to_dlq(fake_redis):
     """WORKER-01-C3: a ConverterChildError on the final retry (job_try == MAX_TRIES)
@@ -158,7 +122,10 @@ async def test_process_document_job_generic_exception_not_dlq_on_non_final_try(f
 
 # ── process_document_job: flat-document content_class (FLAT-04) ─────────────
 async def test_flat_04_c1_normal_result_writes_no_content_class(fake_redis):
-    """FLAT-04-C1 (boundary): a normal tree-document result WITHOUT a
+    """WORKER-01-C1 + FLAT-04-C1 (boundary): the happy path of
+    process_document_job -- the staged file is downloaded, handed to the
+    converter child, and the job hash is written status=done with the doc_id
+    (WORKER-01-C1) -- and a normal tree-document result WITHOUT a
     content_class key must NOT write a content_class field to the job hash —
     proving the mapping is built conditionally (no empty/None value)."""
     staging_key = "uploads/staging/job-tree/report.pdf"
@@ -169,14 +136,17 @@ async def test_flat_04_c1_normal_result_writes_no_content_class(fake_redis):
         patch(
             "pageindex_mcp.worker.job._run_converter_subprocess",
             AsyncMock(return_value=child_result),
-        ),
-        patch("pageindex_mcp.worker.job.download_staging"),
+        ) as mock_sub,
+        patch("pageindex_mcp.worker.job.download_staging") as mock_dl,
         patch("pageindex_mcp.worker.job.delete_staging"),
         patch("pageindex_mcp.worker.job.shutil"),
     ):
         result = await process_document_job(ctx, staging_key, "job-tree")
 
     assert result == "tree5678"
+    # Happy-path wiring: the staged object is downloaded and handed to the child.
+    mock_dl.assert_called_once_with(staging_key, ANY)
+    mock_sub.assert_awaited_once()
     state = await fake_redis.hgetall("pageindex:job:job-tree")
     assert state["status"] == "done"
     assert state["doc_id"] == "tree5678"
@@ -215,15 +185,15 @@ def _fake_proc(returncode=None, pid=999):
     return proc
 
 
-async def test_kill_group_noop_when_already_exited():
-    proc = _fake_proc(returncode=0)
+async def test_kill_group_escalation():
+    """Both branches of _kill_group: an already-exited child is left alone,
+    and a live one is SIGTERMed then SIGKILLed once the grace elapses."""
+    exited = _fake_proc(returncode=0)
     with patch("pageindex_mcp.worker.subprocess_mgr.os.getpgid") as mock_getpgid:
-        await _kill_group(proc)
+        await _kill_group(exited)
     mock_getpgid.assert_not_called()
 
-
-async def test_kill_group_sigkill_after_sigterm_timeout():
-    proc = _fake_proc(returncode=None)
+    live = _fake_proc(returncode=None)
     with (
         patch("pageindex_mcp.worker.subprocess_mgr.os.getpgid", return_value=111),
         patch("pageindex_mcp.worker.subprocess_mgr.os.killpg") as mock_killpg,
@@ -232,7 +202,7 @@ async def test_kill_group_sigkill_after_sigterm_timeout():
             AsyncMock(side_effect=[TimeoutError(), None]),
         ),
     ):
-        await _kill_group(proc, grace=0.01)
+        await _kill_group(live, grace=0.01)
     assert mock_killpg.call_args_list[0].args == (111, signal.SIGTERM)
     assert mock_killpg.call_args_list[1].args == (111, signal.SIGKILL)
 
@@ -298,44 +268,51 @@ def _fake_subprocess(returncode, stdout=b"", stderr=b""):
     return proc
 
 
-async def test_run_converter_subprocess_success():
+async def test_run_converter_subprocess_result_translation():
+    """The three terminal shapes of a converter child, asserted together:
+    a valid JSON result (with the peak-RSS gauge mirrored), unparseable stdout,
+    and a non-zero exit with no stdout (no error_class to classify)."""
+    failures = []
+
     stdout = json.dumps({"ok": True, "doc_id": "d1", "peak_rss_kib": 12345}).encode()
-    proc = _fake_subprocess(0, stdout=stdout)
     with (
         patch(
             "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
-            AsyncMock(return_value=proc),
+            AsyncMock(return_value=_fake_subprocess(0, stdout=stdout)),
         ),
         patch("pageindex_mcp.worker.subprocess_mgr.CONVERTER_PEAK_RSS_KIB") as mock_gauge,
     ):
         result = await _run_converter_subprocess("/tmp/x.pdf")
-    assert result["doc_id"] == "d1"
-    mock_gauge.set.assert_called_once_with(12345)
+    if result["doc_id"] != "d1":
+        failures.append(f"success: doc_id={result['doc_id']!r}")
+    try:
+        mock_gauge.set.assert_called_once_with(12345)
+    except AssertionError as exc:
+        failures.append(f"success: peak-RSS gauge not mirrored ({exc})")
 
-
-async def test_run_converter_subprocess_invalid_json_raises():
-    proc = _fake_subprocess(0, stdout=b"not json")
-    with (
-        patch(
-            "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
-            AsyncMock(return_value=proc),
-        ),
-        pytest.raises(ConverterChildError, match="invalid JSON"),
+    with patch(
+        "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
+        AsyncMock(return_value=_fake_subprocess(0, stdout=b"not json")),
     ):
-        await _run_converter_subprocess("/tmp/x.pdf")
+        try:
+            await _run_converter_subprocess("/tmp/x.pdf")
+            failures.append("invalid JSON: no ConverterChildError raised")
+        except ConverterChildError as exc:
+            if "invalid JSON" not in str(exc):
+                failures.append(f"invalid JSON: wrong message {str(exc)!r}")
 
-
-async def test_run_converter_subprocess_generic_nonzero_no_stdout():
-    proc = _fake_subprocess(1, stdout=b"", stderr=b"traceback")
-    with (
-        patch(
-            "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
-            AsyncMock(return_value=proc),
-        ),
-        pytest.raises(ConverterChildError) as excinfo,
+    with patch(
+        "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
+        AsyncMock(return_value=_fake_subprocess(1, stdout=b"", stderr=b"traceback")),
     ):
-        await _run_converter_subprocess("/tmp/x.pdf")
-    assert excinfo.value.error_class is None
+        try:
+            await _run_converter_subprocess("/tmp/x.pdf")
+            failures.append("nonzero exit: no ConverterChildError raised")
+        except ConverterChildError as exc:
+            if exc.error_class is not None:
+                failures.append(f"nonzero exit: error_class={exc.error_class!r}, expected None")
+
+    assert not failures, "converter-child result translation: " + "; ".join(failures)
 
 
 # ── RFC-038 D1: confidence gate alignment ────────────────────────────────────
@@ -350,57 +327,61 @@ def _fake_subprocess_with_handshake(handshake: dict, stdout=b""):
     return proc
 
 
-@pytest.mark.parametrize(
-    ("confidence", "expect_multiplier"),
-    [
-        (0.50, False),
-        (INSPECTOR_CONFIDENCE_THRESHOLD, True),
-        (0.89, False),
-    ],
-)
-async def test_timeout_multiplier_requires_confidence_threshold(confidence, expect_multiplier):
+async def test_timeout_multiplier_requires_confidence_threshold():
     """RFC-038 D1: the 16.5x timeout multiplier only applies when the
     pdf-inspector classification confidence meets INSPECTOR_CONFIDENCE_THRESHOLD,
-    matching the forced-OCR gate in client/indexer.py."""
-    handshake = {
-        "handshake": True,
-        "is_docling_route": False,
-        "pdf_classification": {"pdf_type": "scanned", "confidence": confidence},
-    }
-    stdout = json.dumps({"ok": True, "doc_id": "d1", "peak_rss_kib": 1}).encode()
-    proc = _fake_subprocess_with_handshake(handshake, stdout=stdout)
-    with (
-        patch(
-            "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
-            AsyncMock(return_value=proc),
-        ),
-        _preclassify_on(),
-        patch("pageindex_mcp.worker.subprocess_mgr.CONVERTER_PEAK_RSS_KIB"),
-    ):
-        result = await _run_converter_subprocess("/tmp/x.pdf")
-    if expect_multiplier:
-        assert result["_effective_timeout"] == min(CHILD_TIMEOUT * 16.5, MAX_EFFECTIVE_TIMEOUT)
-    else:
-        assert result["_effective_timeout"] == CHILD_TIMEOUT
+    matching the forced-OCR gate in client/indexer.py -- which must read the
+    very same constant rather than a locally hardcoded copy.
 
-
-def test_indexer_uses_same_threshold():
-    """RFC-038 D1: indexer.py's forced-OCR gate imports the same
-    INSPECTOR_CONFIDENCE_THRESHOLD constant used by subprocess_mgr.py's
-    timeout multiplier, rather than a locally hardcoded value."""
+    Table-driven over the confidence dimension: every offending row is named.
+    """
     from pageindex_mcp.client import indexer as _indexer_mod
     from pageindex_mcp.worker.constants import (
         INSPECTOR_CONFIDENCE_THRESHOLD as _constants_threshold,
     )
 
-    assert _indexer_mod.INSPECTOR_CONFIDENCE_THRESHOLD is _constants_threshold
+    assert _indexer_mod.INSPECTOR_CONFIDENCE_THRESHOLD is _constants_threshold, (
+        "indexer.py's forced-OCR gate must import the shared threshold constant"
+    )
+
+    extended = min(CHILD_TIMEOUT * 16.5, MAX_EFFECTIVE_TIMEOUT)
+    cases = [
+        (0.50, CHILD_TIMEOUT),
+        (INSPECTOR_CONFIDENCE_THRESHOLD, extended),
+        (0.89, CHILD_TIMEOUT),
+    ]
+    failures = []
+    for confidence, expected in cases:
+        handshake = {
+            "handshake": True,
+            "is_docling_route": False,
+            "pdf_classification": {"pdf_type": "scanned", "confidence": confidence},
+        }
+        stdout = json.dumps({"ok": True, "doc_id": "d1", "peak_rss_kib": 1}).encode()
+        proc = _fake_subprocess_with_handshake(handshake, stdout=stdout)
+        with (
+            patch(
+                "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
+                AsyncMock(return_value=proc),
+            ),
+            _preclassify_on(),
+            patch("pageindex_mcp.worker.subprocess_mgr.CONVERTER_PEAK_RSS_KIB"),
+        ):
+            result = await _run_converter_subprocess("/tmp/x.pdf")
+        if result["_effective_timeout"] != expected:
+            failures.append(
+                f"confidence={confidence}: _effective_timeout="
+                f"{result['_effective_timeout']}, expected {expected}"
+            )
+    assert not failures, "confidence-gate rows: " + "; ".join(failures)
 
 
 # ── RFC-038 D4: effective timeout cap ────────────────────────────────────────
-async def test_effective_timeout_capped_at_max():
+async def test_effective_timeout_capped_at_max_and_cap_is_configurable():
     """RFC-038 D4: the chunked Docling timeout and the 16.5x inspector
-    multiplier can compound to an absurd value; the effective_timeout applied
-    to the child must be capped at MAX_EFFECTIVE_TIMEOUT."""
+    multiplier compound to an absurd value, so the effective_timeout handed to
+    the child is capped at MAX_EFFECTIVE_TIMEOUT -- and that cap is itself
+    overridable for deployments with exceptionally large documents."""
     handshake = {
         "handshake": True,
         "is_docling_route": True,
@@ -408,11 +389,11 @@ async def test_effective_timeout_capped_at_max():
         "pdf_classification": {"pdf_type": "scanned", "confidence": 0.95},
     }
     stdout = json.dumps({"ok": True, "doc_id": "d1", "peak_rss_kib": 1}).encode()
-    proc = _fake_subprocess_with_handshake(handshake, stdout=stdout)
+
     with (
         patch(
             "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
-            AsyncMock(return_value=proc),
+            AsyncMock(return_value=_fake_subprocess_with_handshake(handshake, stdout=stdout)),
         ),
         _preclassify_on(),
         patch("pageindex_mcp.worker.subprocess_mgr.CONVERTER_PEAK_RSS_KIB"),
@@ -420,28 +401,15 @@ async def test_effective_timeout_capped_at_max():
         result = await _run_converter_subprocess("/tmp/x.pdf")
     assert result["_effective_timeout"] == MAX_EFFECTIVE_TIMEOUT
 
-
-async def test_timeout_cap_configurable_via_env(monkeypatch):
-    """RFC-038 D4: MAX_EFFECTIVE_TIMEOUT can be overridden via environment
-    variable for deployments with exceptionally large documents."""
-    monkeypatch.setenv("MAX_EFFECTIVE_TIMEOUT", "100")
-    handshake = {
-        "handshake": True,
-        "is_docling_route": True,
-        "chunk_count": 100,
-        "pdf_classification": {"pdf_type": "scanned", "confidence": 0.95},
-    }
-    stdout = json.dumps({"ok": True, "doc_id": "d1", "peak_rss_kib": 1}).encode()
-    proc = _fake_subprocess_with_handshake(handshake, stdout=stdout)
+    # The cap lives in worker/timeouts.py, the single seam both production and
+    # the property tests go through (RFC-046 D11, task 3.10).
     with (
         patch(
             "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
-            AsyncMock(return_value=proc),
+            AsyncMock(return_value=_fake_subprocess_with_handshake(handshake, stdout=stdout)),
         ),
         _preclassify_on(),
         patch("pageindex_mcp.worker.subprocess_mgr.CONVERTER_PEAK_RSS_KIB"),
-        # The cap now lives in worker/timeouts.py, the single seam both
-        # production and the property tests go through (RFC-046 D11, task 3.10).
         patch("pageindex_mcp.worker.timeouts.MAX_EFFECTIVE_TIMEOUT", 100),
     ):
         result = await _run_converter_subprocess("/tmp/x.pdf")
@@ -533,94 +501,90 @@ async def test_handshake_parse_failure_preserves_conservative_deadline():
 # through ``effective_child_timeout()`` for the same reason.
 
 
-@given(chunk_count=st.integers(min_value=2, max_value=200))
-@settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
-def test_chunked_timeout_reserves_full_overhead_floor(chunk_count):
-    """Property 11 (RFC-046 D11): a chunked conversion's budget is the inner
-    per-chunk budget PLUS the single-pass floor, never the larger of the two.
+@given(
+    chunk_count=st.integers(min_value=1, max_value=500),
+    is_docling_route=st.booleans(),
+    multiplier=st.sampled_from([1.0, INSPECTOR_OCR_MULTIPLIER]),
+)
+@settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
+def test_effective_child_timeout_contract(chunk_count, is_docling_route, multiplier):
+    """Property 11 (RFC-046 D11), the whole contract of the production
+    ``effective_child_timeout()`` in one table of invariants:
 
-    ``CHILD_TIMEOUT`` is the allowance for everything that is not Docling
-    conversion -- model load, OCR, tree build, LLM calls. The pre-3.11
-    ``max(CHILD_TIMEOUT, dynamic_timeout)`` let the per-chunk budget *swallow*
-    that allowance: at chunk_count=3 it granted 4800s of which 4500s was chunk
-    budget, leaving 300s for everything else. This asserts the floor survives.
+    * a non-Docling route, and the single-pass (chunk_count=1) Docling case,
+      get exactly the unchanged CHILD_TIMEOUT floor;
+    * a chunked conversion's budget is the inner per-chunk budget PLUS that
+      floor, never the larger of the two -- the pre-3.11 ``max()`` let the
+      per-chunk budget swallow the allowance for model load, OCR, tree build
+      and LLM calls;
+    * however many multipliers compound, the value handed to the child is
+      bounded by MAX_EFFECTIVE_TIMEOUT, with ``capped`` reporting it truly;
+    * documented consequence (not an aspiration): 16.5 * CHILD_TIMEOUT already
+      exceeds the cap at chunk_count=1, so every inspector-detected scanned PDF
+      receives exactly the cap and the chunk-proportional budget has no effect
+      on that route. Changing the cap, the multiplier or CHILD_TIMEOUT surfaces
+      that interaction here instead of silently re-tuning the OCR route.
+
+    This calls the PRODUCTION function on purpose: an earlier cut re-implemented
+    the formula in the test body and a mutation run left it green.
     """
     from pageindex_mcp.converters.docling_conv import _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
     from pageindex_mcp.worker.timeouts import effective_child_timeout
 
-    result = effective_child_timeout(chunk_count=chunk_count, is_docling_route=True)
-    inner_chunk_budget = chunk_count * _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
-    headroom = result.requested - inner_chunk_budget
-
-    assert headroom >= CHILD_TIMEOUT, (
-        f"chunk_count={chunk_count}: requested={result.requested}s leaves only "
-        f"{headroom}s above the {inner_chunk_budget}s inner chunk budget, but the "
-        f"single-pass floor CHILD_TIMEOUT={CHILD_TIMEOUT}s must survive intact for "
-        f"model load, OCR, tree build and LLM calls"
-    )
-
-
-def test_single_chunk_timeout_is_the_unchanged_floor():
-    """chunk_count=1 is the single-pass case: exactly CHILD_TIMEOUT, the
-    behaviour that predates chunking. 3.11 must not have moved it."""
-    from pageindex_mcp.worker.timeouts import effective_child_timeout
-
-    assert effective_child_timeout(chunk_count=1, is_docling_route=True).requested == CHILD_TIMEOUT
-
-
-def test_non_docling_route_gets_the_bare_floor():
-    """A non-Docling route has no chunks, so no per-chunk budget applies."""
-    from pageindex_mcp.worker.timeouts import effective_child_timeout
-
-    assert effective_child_timeout(chunk_count=7, is_docling_route=False).requested == CHILD_TIMEOUT
-
-
-@given(
-    chunk_count=st.integers(min_value=1, max_value=500),
-    multiplier=st.sampled_from([1.0, INSPECTOR_OCR_MULTIPLIER]),
-)
-@settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
-def test_effective_timeout_never_exceeds_the_outer_cap(chunk_count, multiplier):
-    """Property 11 (RFC-046 D11): however many multipliers compound, the value
-    handed to the child is bounded by MAX_EFFECTIVE_TIMEOUT."""
-    from pageindex_mcp.worker.timeouts import effective_child_timeout
-
-    result = effective_child_timeout(
-        chunk_count=chunk_count, is_docling_route=True, ocr_multiplier=multiplier
-    )
-    assert result.effective <= MAX_EFFECTIVE_TIMEOUT
-    assert result.effective == min(result.requested, MAX_EFFECTIVE_TIMEOUT)
-    assert result.capped is (result.requested > MAX_EFFECTIVE_TIMEOUT)
-
-
-@given(chunk_count=st.integers(min_value=1, max_value=500))
-@settings(max_examples=25, suppress_health_check=[HealthCheck.function_scoped_fixture])
-def test_inspector_multiplier_pins_every_scanned_pdf_to_the_cap(chunk_count):
-    """Documented consequence, not an aspiration: the 16.5x inspector
-    multiplier is applied BEFORE the cap, and 16.5 * CHILD_TIMEOUT already
-    exceeds MAX_EFFECTIVE_TIMEOUT at chunk_count=1. So every inspector-detected
-    scanned PDF receives exactly the cap, and the chunk-proportional budget has
-    no effect whatsoever on that route.
-
-    This test exists so that changing the cap, the multiplier or CHILD_TIMEOUT
-    surfaces the interaction instead of silently re-tuning the OCR route.
-    """
-    from pageindex_mcp.worker.timeouts import effective_child_timeout
-
     result = effective_child_timeout(
         chunk_count=chunk_count,
-        is_docling_route=True,
-        ocr_multiplier=INSPECTOR_OCR_MULTIPLIER,
+        is_docling_route=is_docling_route,
+        ocr_multiplier=multiplier,
     )
-    assert result.capped
-    assert result.effective == MAX_EFFECTIVE_TIMEOUT
+    failures = []
+
+    if multiplier == 1.0:
+        if not is_docling_route or chunk_count == 1:
+            if result.requested != CHILD_TIMEOUT:
+                failures.append(
+                    f"single-pass floor moved: requested={result.requested}s, "
+                    f"expected CHILD_TIMEOUT={CHILD_TIMEOUT}s "
+                    f"(is_docling_route={is_docling_route}, chunk_count={chunk_count})"
+                )
+        else:
+            inner = chunk_count * _CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S
+            headroom = result.requested - inner
+            if headroom < CHILD_TIMEOUT:
+                failures.append(
+                    f"chunk_count={chunk_count}: requested={result.requested}s leaves only "
+                    f"{headroom}s above the {inner}s inner chunk budget, but the single-pass "
+                    f"floor CHILD_TIMEOUT={CHILD_TIMEOUT}s must survive intact"
+                )
+    elif not (result.capped and result.effective == MAX_EFFECTIVE_TIMEOUT):
+        failures.append(
+            f"inspector multiplier at chunk_count={chunk_count}: capped={result.capped}, "
+            f"effective={result.effective}s, expected exactly the "
+            f"{MAX_EFFECTIVE_TIMEOUT}s cap"
+        )
+
+    if result.effective != min(result.requested, MAX_EFFECTIVE_TIMEOUT):
+        failures.append(f"effective={result.effective}s is not min(requested, cap)")
+    if result.capped is not (result.requested > MAX_EFFECTIVE_TIMEOUT):
+        failures.append(f"capped={result.capped} disagrees with requested={result.requested}s")
+
+    assert not failures, "; ".join(failures)
 
 
 def test_production_uses_the_extracted_function():
-    """subprocess_mgr must not re-derive the formula inline: the mutation that
-    fooled the first cut of these tests was only possible because the
-    computation lived in a coroutine body with no callable seam."""
+    """Two source-level invariants that no behavioural test can catch.
+
+    (1) subprocess_mgr must not re-derive the timeout formula inline: the
+    mutation that fooled the first cut of these tests was only possible because
+    the computation lived in a coroutine body with no callable seam.
+
+    (2) RFC-038 D3 / Design Property 3: JOB_TIMEOUT, CHILD_TIMEOUT,
+    CHILD_GRACE_SECONDS and REAP_GRACE must be defined exactly once, in
+    worker/constants.py -- no other worker module may hold its own module-level
+    assignment of these names.
+    """
     import inspect
+    import pathlib
+    import re
 
     from pageindex_mcp.worker import subprocess_mgr
 
@@ -629,6 +593,23 @@ def test_production_uses_the_extracted_function():
         "_run_converter_subprocess must call effective_child_timeout() rather "
         "than computing the budget inline"
     )
+
+    worker_dir = pathlib.Path(__file__).resolve().parents[1] / "src" / "pageindex_mcp" / "worker"
+    constants_path = worker_dir / "constants.py"
+    names = ("JOB_TIMEOUT", "CHILD_TIMEOUT", "CHILD_GRACE_SECONDS", "REAP_GRACE")
+    assignment_re = re.compile(r"^_?(" + "|".join(names) + r")\s*(?::[^=]+)?=", re.MULTILINE)
+
+    for path in worker_dir.glob("*.py"):
+        if path == constants_path:
+            continue
+        matches = assignment_re.findall(path.read_text())
+        assert not matches, f"{path} defines duplicate timing constant(s): {matches}"
+
+    constants_text = constants_path.read_text()
+    for name in names:
+        assert re.search(rf"^{name}\s*:", constants_text, re.MULTILINE), (
+            f"{name} missing from worker/constants.py"
+        )
 
 
 # ── RFC-038 Task 3.1: integration tests (D1+D2+D4) ───────────────────────────
@@ -656,13 +637,13 @@ def _fake_subprocess_e2e(handshake: dict, stdout: bytes, *, communicate_delay: f
     return proc
 
 
-async def test_scanned_pdf_below_threshold_no_extended_timeout(fake_redis):
-    """RFC-038 D1 (Property 1): a scanned PDF classified below
-    INSPECTOR_CONFIDENCE_THRESHOLD must NOT receive the 16.5x timeout budget --
-    end-to-end through process_document_job, effective_timeout_at in Redis
-    stays at the conservative default deadline."""
-    staging_key = "uploads/staging/job-below/report.pdf"
-    ctx = {"redis": fake_redis}
+async def test_scanned_pdf_deadline_tracks_the_confidence_gate(fake_redis):
+    """RFC-038 D1+D2 (Properties 1+2) end-to-end through process_document_job:
+    a scanned PDF classified BELOW INSPECTOR_CONFIDENCE_THRESHOLD keeps the
+    conservative effective_timeout_at in Redis, while one AT/ABOVE the
+    threshold gets the 16.5x budget -- persisted before the converter child
+    finishes running, not after."""
+    # --- below the threshold: no extension -------------------------------
     handshake = {
         "handshake": True,
         "is_docling_route": False,
@@ -683,25 +664,19 @@ async def test_scanned_pdf_below_threshold_no_extended_timeout(fake_redis):
         patch("pageindex_mcp.worker.job.delete_staging"),
         patch("pageindex_mcp.worker.job.shutil"),
     ):
-        result = await process_document_job(ctx, staging_key, "job-below")
+        result = await process_document_job(
+            {"redis": fake_redis}, "uploads/staging/job-below/report.pdf", "job-below"
+        )
 
     assert result == "below1"
     state = await fake_redis.hgetall("pageindex:job:job-below")
     deadline = int(state["effective_timeout_at"])
-    # No multiplier applied -- deadline stays within the conservative
-    # JOB_TIMEOUT + REAP_GRACE budget stamped at processing start, not the
-    # inflated CHILD_TIMEOUT * 16.5 + REAP_GRACE budget.
+    # The conservative JOB_TIMEOUT + REAP_GRACE budget stamped at processing
+    # start, not the inflated CHILD_TIMEOUT * 16.5 + REAP_GRACE one.
     assert deadline <= before + JOB_TIMEOUT + REAP_GRACE + 5
     assert deadline < before + CHILD_TIMEOUT * 16.5
 
-
-async def test_scanned_pdf_above_threshold_extended_timeout(fake_redis):
-    """RFC-038 D1+D2 (Properties 1+2): a scanned PDF classified at/above
-    INSPECTOR_CONFIDENCE_THRESHOLD gets the 16.5x timeout budget, and Redis'
-    effective_timeout_at reflects that extended deadline -- persisted before
-    the converter child finishes running."""
-    staging_key = "uploads/staging/job-above/report.pdf"
-    ctx = {"redis": fake_redis}
+    # --- at/above the threshold: extended, and persisted mid-flight -------
     handshake = {
         "handshake": True,
         "is_docling_route": False,
@@ -715,6 +690,7 @@ async def test_scanned_pdf_above_threshold_extended_timeout(fake_redis):
     async def _watch_hgetall():
         # Poll Redis while the (delayed) subprocess is still "running" to
         # prove the deadline lands before completion, not after.
+        state = {}
         for _ in range(50):
             state = await fake_redis.hgetall("pageindex:job:job-above")
             # The conservative deadline is stamped from job.py's own
@@ -741,7 +717,9 @@ async def test_scanned_pdf_above_threshold_extended_timeout(fake_redis):
         patch("pageindex_mcp.worker.job.shutil"),
     ):
         job_result, _watch_result = await asyncio.gather(
-            process_document_job(ctx, staging_key, "job-above"),
+            process_document_job(
+                {"redis": fake_redis}, "uploads/staging/job-above/report.pdf", "job-above"
+            ),
             _watch_hgetall(),
         )
 
@@ -781,54 +759,13 @@ async def test_reaper_respects_early_persisted_deadline(fake_redis):
     assert "reaped_at" not in state
 
 
-@settings(
-    max_examples=200,
-    deadline=500,
-    suppress_health_check=[HealthCheck.function_scoped_fixture],
-)
-@given(
-    is_docling_route=st.booleans(),
-    chunk_count=st.integers(min_value=1, max_value=500),
-    pdf_type=st.sampled_from(["scanned", "image_based", "text", "unknown"]),
-    confidence=st.floats(min_value=0.0, max_value=1.0),
-)
-def test_property_timeout_always_bounded(is_docling_route, chunk_count, pdf_type, confidence):
-    """RFC-038 D4 (Property 4): for any handshake combination -- chunked
-    Docling route, inspector classification, confidence -- the effective
-    timeout surfaced to the caller never exceeds MAX_EFFECTIVE_TIMEOUT."""
-    handshake = {
-        "handshake": True,
-        "is_docling_route": is_docling_route,
-        "chunk_count": chunk_count,
-        "pdf_classification": {"pdf_type": pdf_type, "confidence": confidence},
-    }
-    stdout = json.dumps({"ok": True, "doc_id": "pbt1", "peak_rss_kib": 1}).encode()
-    proc = _fake_subprocess_with_handshake(handshake, stdout=stdout)
-
-    async def _run():
-        with (
-            patch(
-                "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
-                AsyncMock(return_value=proc),
-            ),
-            _preclassify_on(),
-            patch("pageindex_mcp.worker.subprocess_mgr.CONVERTER_PEAK_RSS_KIB"),
-        ):
-            return await _run_converter_subprocess("/tmp/x.pdf")
-
-    result = asyncio.run(_run())
-    assert result["_effective_timeout"] <= MAX_EFFECTIVE_TIMEOUT
-
-
 # ── worker concurrency: max_jobs / clamping (WORKER-02-C1, C5) ──────────────
-def test_worker_02_c1_max_jobs_is_one():
+def test_worker_02_c1_c5_max_jobs_is_one_and_reads_the_clamped_value():
     """WORKER-02-C1: the worker caps concurrency at one job so a single heavy
-    Docling job is never stacked with another (peak-memory protection)."""
+    Docling job is never stacked with another (peak-memory protection).
+    WORKER-02-C5: the clamp is worthless if WorkerSettings reads the raw env
+    itself, so it must be the clamped MAX_JOBS value and within the ceiling."""
     assert WorkerSettings.max_jobs == 1
-
-
-def test_worker_02_c5_worker_settings_uses_the_clamped_value():
-    """The clamp is worthless if WorkerSettings reads the raw env itself."""
     assert WorkerSettings.max_jobs == MAX_JOBS
     assert 1 <= WorkerSettings.max_jobs <= MAX_JOBS_CEILING
 
@@ -904,7 +841,9 @@ async def test_upsert_registry_row_success_mirrors_metric():
 
 
 # ── registry metric-mirroring helpers ────────────────────────────────────────
-async def test_mirror_registry_metric_to_redis_success():
+async def test_mirror_registry_metrics_to_redis():
+    """The metric mirror writes the value through to Redis, and its
+    write-failure sibling swallows a Redis outage rather than failing the job."""
     fake = fakeredis.aioredis.FakeRedis(decode_responses=True)
     with patch(
         "pageindex_mcp.worker.registry_mirror.get_async_redis", AsyncMock(return_value=fake)
@@ -912,8 +851,6 @@ async def test_mirror_registry_metric_to_redis_success():
         await _mirror_registry_metric_to_redis("some:key", "42")
     assert await fake.get("some:key") == "42"
 
-
-async def test_mirror_registry_write_failure_to_redis_swallows_errors():
     with patch(
         "pageindex_mcp.worker.registry_mirror.get_async_redis",
         AsyncMock(side_effect=RuntimeError("down")),
@@ -922,7 +859,10 @@ async def test_mirror_registry_write_failure_to_redis_swallows_errors():
 
 
 # ── startup / shutdown ────────────────────────────────────────────────────────
-async def test_startup_registry_init_failure_skips_backfill():
+async def test_lifecycle_degrades_gracefully():
+    """startup() must survive a registry init failure (skipping the backfill
+    rather than crashing the worker), and shutdown() must be a no-op when
+    there is no Redis handle and the registry is disabled."""
     with (
         patch(
             "pageindex_mcp.worker.lifecycle.settings",
@@ -932,12 +872,9 @@ async def test_startup_registry_init_failure_skips_backfill():
         patch("pageindex_mcp.registry.init_registry", AsyncMock(side_effect=RuntimeError("boom"))),
         patch("pageindex_mcp.registry_backfill.run_auto_backfill", AsyncMock()) as mock_backfill,
     ):
-        ctx = {}
-        await startup(ctx)  # must not raise
+        await startup({})  # must not raise
     mock_backfill.assert_not_awaited()
 
-
-async def test_shutdown_noop_when_no_redis_and_registry_disabled():
     with patch("pageindex_mcp.worker.lifecycle.settings", _settings(registry_enabled=False)):
         await shutdown({})  # must not raise
 
@@ -948,158 +885,66 @@ async def test_shutdown_noop_when_no_redis_and_registry_disabled():
 # ── Zone-4: process_document_job ordering contract (wiring) ──────────────────
 
 
-async def test_process_document_job_calls_upsert_registry_row_after_child(fake_redis):
-    """Wiring: process_document_job imports and calls _upsert_registry_row
-    from worker.registry_mirror after the converter child succeeds. This
-    verifies the import exists and the call is reachable on the happy path."""
-    staging_key = "uploads/staging/job-wire/report.pdf"
-    ctx = {"redis": fake_redis}
-    child_result = {
-        "ok": True,
-        "doc_id": "wire-1",
-        "peak_rss_kib": 0,
-        "duration_ms": 0,
-        "verdict_fields": {"verdict": "PASS"},
-    }
-    upsert_mock = AsyncMock()
+async def test_process_document_job_forwards_child_fields_to_upsert(fake_redis):
+    """Wiring (Zone-4 ordering / Zone-7 dual-write consistency):
+    process_document_job calls _upsert_registry_row from worker.registry_mirror
+    after the converter child succeeds, forwarding the doc_id positionally and
+    the child's verdict_fields / registry_fields as keyword arguments -- passing
+    None for a field an older child binary did not emit.
 
-    with (
-        patch(
-            "pageindex_mcp.worker.job._run_converter_subprocess",
-            AsyncMock(return_value=child_result),
+    Table-driven over the child-result shapes; every offending row is named.
+    """
+    rich_fields = {"doc_name": "report.pdf", "sha256": "abc123", "node_count": 5}
+    cases = [
+        (
+            "job-rf",
+            {
+                "ok": True,
+                "doc_id": "rf-wire-1",
+                "peak_rss_kib": 0,
+                "duration_ms": 0,
+                "verdict_fields": {"verdict": "PASS"},
+                "registry_fields": rich_fields,
+            },
+            {"verdict_fields": {"verdict": "PASS"}, "registry_fields": rich_fields},
         ),
-        patch("pageindex_mcp.worker.job.download_staging"),
-        patch("pageindex_mcp.worker.job.delete_staging"),
-        patch("pageindex_mcp.worker.job.shutil"),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._upsert_registry_row",
-            upsert_mock,
+        (
+            "job-norf",
+            {"ok": True, "doc_id": "norf-1", "peak_rss_kib": 0, "duration_ms": 0},
+            {"verdict_fields": None, "registry_fields": None},
         ),
-    ):
-        result = await process_document_job(ctx, staging_key, "job-wire")
+    ]
 
-    assert result == "wire-1"
-    upsert_mock.assert_awaited_once()
-    call_kwargs = upsert_mock.await_args
-    # Positional args: (doc_id, content_class)
-    assert call_kwargs[0][0] == "wire-1"
-    # verdict_fields kwarg passed through from child result
-    assert call_kwargs[1]["verdict_fields"] == {"verdict": "PASS"}
+    failures = []
+    for job_id, child_result, expected_kwargs in cases:
+        upsert_mock = AsyncMock()
+        with (
+            patch(
+                "pageindex_mcp.worker.job._run_converter_subprocess",
+                AsyncMock(return_value=child_result),
+            ),
+            patch("pageindex_mcp.worker.job.download_staging"),
+            patch("pageindex_mcp.worker.job.delete_staging"),
+            patch("pageindex_mcp.worker.job.shutil"),
+            patch("pageindex_mcp.worker.registry_mirror._upsert_registry_row", upsert_mock),
+        ):
+            result = await process_document_job(
+                {"redis": fake_redis}, f"uploads/staging/{job_id}/report.pdf", job_id
+            )
 
-
-async def test_process_document_job_passes_registry_fields_to_upsert(fake_redis):
-    """Wiring: process_document_job extracts registry_fields from child result
-    and passes it to _upsert_registry_row. Zone-7 dual-write consistency."""
-    staging_key = "uploads/staging/job-rf/report.pdf"
-    ctx = {"redis": fake_redis}
-    child_result = {
-        "ok": True,
-        "doc_id": "rf-wire-1",
-        "peak_rss_kib": 0,
-        "duration_ms": 0,
-        "verdict_fields": {"verdict": "PASS"},
-        "registry_fields": {
-            "doc_name": "report.pdf",
-            "sha256": "abc123",
-            "node_count": 5,
-        },
-    }
-    upsert_mock = AsyncMock()
-
-    with (
-        patch(
-            "pageindex_mcp.worker.job._run_converter_subprocess",
-            AsyncMock(return_value=child_result),
-        ),
-        patch("pageindex_mcp.worker.job.download_staging"),
-        patch("pageindex_mcp.worker.job.delete_staging"),
-        patch("pageindex_mcp.worker.job.shutil"),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._upsert_registry_row",
-            upsert_mock,
-        ),
-    ):
-        result = await process_document_job(ctx, staging_key, "job-rf")
-
-    assert result == "rf-wire-1"
-    upsert_mock.assert_awaited_once()
-    call_kwargs = upsert_mock.await_args
-    assert call_kwargs[1]["registry_fields"] == {
-        "doc_name": "report.pdf",
-        "sha256": "abc123",
-        "node_count": 5,
-    }
-    assert call_kwargs[1]["verdict_fields"] == {"verdict": "PASS"}
-
-
-async def test_process_document_job_no_registry_fields_passes_none(fake_redis):
-    """Wiring: when child result lacks registry_fields (old binary),
-    _upsert_registry_row is called with registry_fields=None."""
-    staging_key = "uploads/staging/job-norf/report.pdf"
-    ctx = {"redis": fake_redis}
-    child_result = {
-        "ok": True,
-        "doc_id": "norf-1",
-        "peak_rss_kib": 0,
-        "duration_ms": 0,
-    }
-    upsert_mock = AsyncMock()
-
-    with (
-        patch(
-            "pageindex_mcp.worker.job._run_converter_subprocess",
-            AsyncMock(return_value=child_result),
-        ),
-        patch("pageindex_mcp.worker.job.download_staging"),
-        patch("pageindex_mcp.worker.job.delete_staging"),
-        patch("pageindex_mcp.worker.job.shutil"),
-        patch(
-            "pageindex_mcp.worker.registry_mirror._upsert_registry_row",
-            upsert_mock,
-        ),
-    ):
-        result = await process_document_job(ctx, staging_key, "job-norf")
-
-    assert result == "norf-1"
-    upsert_mock.assert_awaited_once()
-    call_kwargs = upsert_mock.await_args
-    assert call_kwargs[1]["registry_fields"] is None
-    assert call_kwargs[1]["verdict_fields"] is None
-
-
-def test_upsert_registry_row_importable_from_worker():
-    """Wiring: _upsert_registry_row must be importable from
-    pageindex_mcp.worker (re-exported in __init__.py or directly)."""
-    from pageindex_mcp.worker import _upsert_registry_row as fn
-
-    assert callable(fn)
-
-
-def test_no_duplicate_timeout_definitions():
-    """RFC-038 D3 / Design Property 3: JOB_TIMEOUT, CHILD_TIMEOUT,
-    CHILD_GRACE_SECONDS, and REAP_GRACE must be defined exactly once, in
-    worker/constants.py -- no other module may hold its own module-level
-    assignment of these names."""
-    import pathlib
-    import re
-
-    worker_dir = pathlib.Path(__file__).resolve().parents[1] / "src" / "pageindex_mcp" / "worker"
-    constants_path = worker_dir / "constants.py"
-    names = ("JOB_TIMEOUT", "CHILD_TIMEOUT", "CHILD_GRACE_SECONDS", "REAP_GRACE")
-    assignment_re = re.compile(r"^_?(" + "|".join(names) + r")\s*(?::[^=]+)?=", re.MULTILINE)
-
-    for path in worker_dir.glob("*.py"):
-        if path == constants_path:
+        if result != child_result["doc_id"]:
+            failures.append(f"{job_id}: returned {result!r}")
+        if upsert_mock.await_count != 1:
+            failures.append(f"{job_id}: _upsert_registry_row awaited {upsert_mock.await_count}x")
             continue
-        text = path.read_text()
-        matches = assignment_re.findall(text)
-        assert not matches, f"{path} defines duplicate timing constant(s): {matches}"
+        args, kwargs = upsert_mock.await_args
+        if args[0] != child_result["doc_id"]:
+            failures.append(f"{job_id}: doc_id passed as {args[0]!r}")
+        for key, value in expected_kwargs.items():
+            if kwargs.get(key) != value:
+                failures.append(f"{job_id}: {key}={kwargs.get(key)!r}, expected {value!r}")
 
-    constants_text = constants_path.read_text()
-    for name in names:
-        assert re.search(rf"^{name}\s*:", constants_text, re.MULTILINE), (
-            f"{name} missing from worker/constants.py"
-        )
+    assert not failures, "registry dual-write wiring: " + "; ".join(failures)
 
 
 # --- from test_llm_retry.py ---
@@ -1108,76 +953,54 @@ def test_no_duplicate_timeout_definitions():
 class TestIsRetryableLlmError:
     """_is_retryable_llm_error classifies exceptions correctly."""
 
-    def test_connection_error_is_retryable(self):
-        retryable, status = _is_retryable_llm_error(ConnectionError("refused"))
-        assert retryable is True
-        assert status is None
+    def test_classification_table(self):
+        """One row per exception shape the classifier must recognise: transport
+        errors and 429/5xx are retryable, 4xx and unknown errors are not, and
+        litellm's stringly-typed timeout is matched by message. Every offending
+        row is named in the failure."""
 
-    def test_timeout_error_is_retryable(self):
-        retryable, status = _is_retryable_llm_error(TimeoutError("timed out"))
-        assert retryable is True
-        assert status is None
+        def _with_status(message, status):
+            exc = Exception(message)
+            exc.status_code = status
+            return exc
 
-    def test_429_is_retryable(self):
-        exc = Exception("rate limited")
-        exc.status_code = 429
-        retryable, status = _is_retryable_llm_error(exc)
-        assert retryable is True
-        assert status == 429
-
-    def test_500_is_retryable(self):
-        exc = Exception("server error")
-        exc.status_code = 500
-        retryable, status = _is_retryable_llm_error(exc)
-        assert retryable is True
-        assert status == 500
-
-    def test_502_is_retryable(self):
-        exc = Exception("bad gateway")
-        exc.status_code = 502
-        retryable, status = _is_retryable_llm_error(exc)
-        assert retryable is True
-        assert status == 502
-
-    def test_400_not_retryable(self):
-        exc = Exception("bad request")
-        exc.status_code = 400
-        retryable, status = _is_retryable_llm_error(exc)
-        assert retryable is False
-        assert status == 400
-
-    def test_401_not_retryable(self):
-        exc = Exception("unauthorized")
-        exc.status_code = 401
-        retryable, status = _is_retryable_llm_error(exc)
-        assert retryable is False
-        assert status == 401
-
-    def test_litellm_timeout_string_match(self):
-        exc = Exception("litellm.Timeout: connection timeout after 30s")
-        retryable, status = _is_retryable_llm_error(exc)
-        assert retryable is True
-        assert status is None
-
-    def test_unknown_error_not_retryable(self):
-        exc = ValueError("something else entirely")
-        retryable, status = _is_retryable_llm_error(exc)
-        assert retryable is False
-        assert status is None
+        cases = [
+            ("ConnectionError", ConnectionError("refused"), True, None),
+            ("TimeoutError", TimeoutError("timed out"), True, None),
+            ("429", _with_status("rate limited", 429), True, 429),
+            ("500", _with_status("server error", 500), True, 500),
+            ("502", _with_status("bad gateway", 502), True, 502),
+            ("400", _with_status("bad request", 400), False, 400),
+            ("401", _with_status("unauthorized", 401), False, 401),
+            (
+                "litellm timeout string",
+                Exception("litellm.Timeout: connection timeout after 30s"),
+                True,
+                None,
+            ),
+            ("unknown", ValueError("something else entirely"), False, None),
+        ]
+        failures = []
+        for name, exc, expect_retryable, expect_status in cases:
+            retryable, status = _is_retryable_llm_error(exc)
+            if retryable is not expect_retryable:
+                failures.append(f"{name}: retryable={retryable}, expected {expect_retryable}")
+            if status != expect_status:
+                failures.append(f"{name}: status={status!r}, expected {expect_status!r}")
+        assert not failures, "retryability rows: " + "; ".join(failures)
 
 
 class TestLlmWithRetry:
     """_llm_with_retry handles retry, exhaustion, fallback."""
 
     @pytest.mark.asyncio
-    async def test_success_on_first_attempt(self):
+    async def test_success_without_and_after_a_retry(self):
+        """A call that succeeds outright is made exactly once; one that fails
+        with a retryable error and then succeeds is made exactly twice."""
         call_fn = AsyncMock(return_value="tree_result")
-        result = await _llm_with_retry(call_fn, max_retries=3, fallback_base_url="")
-        assert result == "tree_result"
+        assert await _llm_with_retry(call_fn, max_retries=3, fallback_base_url="") == "tree_result"
         assert call_fn.call_count == 1
 
-    @pytest.mark.asyncio
-    async def test_retry_then_success(self):
         exc = Exception("rate limited")
         exc.status_code = 429
         call_fn = AsyncMock(side_effect=[exc, "recovered"])
@@ -1188,13 +1011,19 @@ class TestLlmWithRetry:
 
     @pytest.mark.asyncio
     async def test_exhaustion_raises_llm_transient_failure(self):
-        exc = ConnectionError("refused")
-        call_fn = AsyncMock(side_effect=exc)
-        with patch("pageindex_mcp.client.llm.asyncio.sleep", new_callable=AsyncMock):
-            with pytest.raises(LLMTransientFailure) as exc_info:
-                await _llm_with_retry(call_fn, max_retries=2, fallback_base_url="")
-        assert exc_info.value.attempts == 2
-        assert "refused" in exc_info.value.last_error
+        """Exhausting the retries raises LLMTransientFailure carrying the
+        attempt count and last error -- including the max_retries=1 boundary,
+        where exactly one attempt is made."""
+        for max_retries in (2, 1):
+            call_fn = AsyncMock(side_effect=ConnectionError("refused"))
+            with (
+                patch("pageindex_mcp.client.llm.asyncio.sleep", new_callable=AsyncMock),
+                pytest.raises(LLMTransientFailure) as exc_info,
+            ):
+                await _llm_with_retry(call_fn, max_retries=max_retries, fallback_base_url="")
+            assert exc_info.value.attempts == max_retries
+            assert call_fn.call_count == max_retries
+            assert "refused" in exc_info.value.last_error
 
     @pytest.mark.asyncio
     async def test_non_retryable_propagates_immediately(self):
@@ -1224,15 +1053,6 @@ class TestLlmWithRetry:
         assert result == "fallback_ok"
         assert results[-1] == "https://fallback.example.com"
 
-    @pytest.mark.asyncio
-    async def test_max_retries_one_single_attempt(self):
-        exc = ConnectionError("refused")
-        call_fn = AsyncMock(side_effect=exc)
-        with pytest.raises(LLMTransientFailure) as exc_info:
-            await _llm_with_retry(call_fn, max_retries=1, fallback_base_url="")
-        assert exc_info.value.attempts == 1
-        assert call_fn.call_count == 1
-
 
 class TestLlmTransientFailure:
     """LLMTransientFailure exception carries diagnostic fields."""
@@ -1244,9 +1064,9 @@ class TestLlmTransientFailure:
         assert "3 attempt" in str(e)
         assert "rate limited" in str(e)
 
-    def test_none_status(self):
-        e = LLMTransientFailure(attempts=2, last_status=None, last_error="timeout")
-        assert e.last_status is None
+        # A transport-level failure has no HTTP status to report.
+        transport = LLMTransientFailure(attempts=2, last_status=None, last_error="timeout")
+        assert transport.last_status is None
 
 
 # ---------------------------------------------------------------------------
@@ -1262,37 +1082,26 @@ async def _feed(data: bytes) -> asyncio.StreamReader:
 
 
 @pytest.mark.asyncio
-async def test_stderr_forwarder_handles_a_line_over_the_stream_limit(capsys):
-    """asyncio.StreamReader.readline() raises ValueError on a line over
-    64 KiB. proc.communicate() -- which 12.3 replaced -- used read() and had
-    no such limit, so a readline()-based reader would have introduced a new
-    crash path that escapes _run_converter_subprocess with the child alive."""
-    # Arrange
-    from pageindex_mcp.worker.subprocess_mgr import _StderrTail, _forward_child_stderr
+async def test_pipe_readers_are_not_bound_by_the_readline_limit(capsys):
+    """asyncio.StreamReader.readline() raises ValueError on a line over 64 KiB.
+    proc.communicate() -- which task 12.3 replaced -- used read() and had no
+    such limit, so a readline()-based reader would have introduced a new crash
+    path that escapes _run_converter_subprocess with the child alive. Both
+    replacement readers must therefore swallow an oversized line, and the
+    bounded stderr tail must stay bounded while still forwarding the text."""
+    from pageindex_mcp.worker.subprocess_mgr import (
+        _drain_remaining_stdout,
+        _forward_child_stderr,
+        _StderrTail,
+    )
 
-    oversized = b"X" * 200_000 + b"\n"
     tail = _StderrTail()
-
-    # Act
-    await _forward_child_stderr(await _feed(oversized), tail)
-
-    # Assert -- no ValueError, and the bounded tail stayed bounded
+    await _forward_child_stderr(await _feed(b"X" * 200_000 + b"\n"), tail)
     assert len(tail.text()) <= 4000
     assert "X" in capsys.readouterr().err
 
-
-@pytest.mark.asyncio
-async def test_stdout_drain_handles_a_line_over_the_stream_limit():
-    # Arrange
-    from pageindex_mcp.worker.subprocess_mgr import _drain_remaining_stdout
-
     oversized = b"Y" * 200_000 + b"\n"
-
-    # Act
-    drained = await _drain_remaining_stdout(await _feed(oversized))
-
-    # Assert
-    assert drained == oversized
+    assert await _drain_remaining_stdout(await _feed(oversized)) == oversized
 
 
 @pytest.mark.asyncio
