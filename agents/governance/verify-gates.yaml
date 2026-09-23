@@ -31,6 +31,7 @@ gates:
     no_llm_outside_provider: true           # OpenAI/litellm/pageindex calls live behind client/converters
     no_pypdf2_in_new_pdf_path: true         # per RFC-000 — new PDF path uses pymupdf, not PyPDF2
     no_circular_imports: true               # rationale: circular imports produce import-time errors and hidden coupling
+    source_invariants: true                 # rationale: source-code invariants (frozen facade, single-writer paths, removed symbols) enforced by scripts/gates/source_invariants.py
 
   # ── 2. UNIT ──────────────────────────────────────────────────────────────────
   # pytest (asyncio auto, fakeredis/mocks) + coverage + assertion density + layer existence
