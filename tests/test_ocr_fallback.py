@@ -340,7 +340,11 @@ def _image_branch(
         patch.object(
             indexer_mod,
             "settings",
-            dataclasses.replace(indexer_mod.settings, surya_fallback_enabled=enabled),
+            dataclasses.replace(
+                indexer_mod.settings,
+                surya_fallback_enabled=enabled,
+                vlm_fallback=False,
+            ),
         ),
     ):
         yield SimpleNamespace(
@@ -396,8 +400,8 @@ class TestSuryaImageFallbackWiring:
             state, client = _make_image_state(), _make_image_client()
             with _image_branch(**kwargs) as h:
                 _run_image_branch(client, state, tmp_path, name=f"{label}.png")
-            if h.surya.called:
-                failures.append(f"{label}: Surya was called")
+            # Pre-VT gate event must match; post-VT may call Surya again
+            # when validate_tree condemns the tree (RFC-048 Amendment).
             choices = [e["choice"] for e in _fallback_events(h.decision)]
             if choices != [expected_choice]:
                 failures.append(f"{label}: choices {choices} != [{expected_choice!r}]")

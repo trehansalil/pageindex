@@ -314,6 +314,12 @@ services:
       retries: 10
       start_period: 60s
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 3g
+        reservations:
+          memory: 1g
 
 volumes:
   redis_data:

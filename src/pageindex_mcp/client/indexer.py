@@ -1567,9 +1567,11 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         _POST_VT_TRIGGERS = {
             TreeDefect.GARBLING, TreeDefect.NODE_GARBLING, TreeDefect.DEPTH_LOW,
         }
+        _surya_already_ran = state.ocr_engine == str(OcrEngine.SURYA)
         if (
             ext in _IMAGE_EXTS
             and not state.ok
+            and not _surya_already_ran
             and state.gate_result
             and state.gate_result.all_defects
             and state.gate_result.all_defects & _POST_VT_TRIGGERS
@@ -1635,13 +1637,15 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
 
             _surya_score = _surya_ch if not _surya_gb else 0
             _vlm_score = _vlm_ch if not _vlm_gb else 0
+            _current_chars = state.total_chars if hasattr(state, "total_chars") else 0
+            _min_recovery = max(MIN_STANDALONE_IMAGE_MD_CHARS, _current_chars)
 
-            if _surya_score > 0 or _vlm_score > 0:
+            if _surya_score > _min_recovery or _vlm_score > _min_recovery:
                 if _vlm_score >= _surya_score and _vlm_md:
                     _winner = "vlm"
                     _best_text = _vlm_md
                     _best_is_md = True
-                elif _surya_text:
+                elif _surya_text and _surya_score > _min_recovery:
                     _winner = "surya"
                     _best_text = _surya_text
                     _best_is_md = False
