@@ -37,6 +37,7 @@ SPACE = "CITRA"
 TITLE_RE = re.compile(r"<!--\s*Title:\s*(.+?)\s*-->", re.IGNORECASE)
 SPACE_RE = re.compile(r"<!--\s*Space:", re.IGNORECASE)
 MD_LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]+)\)")
+WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
 
 
 def _detect_github_url() -> str:
@@ -157,6 +158,35 @@ def rewrite_links(
     return MD_LINK_RE.sub(_replace, text)
 
 
+def _build_stem_map(title_map: dict[Path, str]) -> dict[str, str]:
+    """Build {filename_stem: page_title} from the path-keyed title_map."""
+    stem_map: dict[str, str] = {}
+    for path, title in title_map.items():
+        stem_map[path.stem] = title
+    return stem_map
+
+
+def rewrite_wikilinks(
+    text: str,
+    stem_map: dict[str, str],
+    confluence_base: str,
+) -> str:
+    """Rewrite [[target|display]] and [[target]] to Confluence markdown links."""
+
+    def _replace(m: re.Match) -> str:
+        target = m.group(1).strip()
+        display = (m.group(2) or target).strip()
+
+        if target in stem_map:
+            page_title = stem_map[target]
+            url = confluence_display_url(confluence_base, SPACE, page_title)
+            return f"[{display}]({url})"
+
+        return m.group(0)
+
+    return WIKILINK_RE.sub(_replace, text)
+
+
 def main() -> None:
     if len(sys.argv) < 3:
         print(f"Usage: {sys.argv[0]} <tmpdir> <file1> [file2 ...]", file=sys.stderr)
@@ -171,6 +201,7 @@ def main() -> None:
     branch = _get_default_branch()
 
     title_map = build_title_map()
+    stem_map = _build_stem_map(title_map)
 
     for src in files:
         try:
@@ -180,6 +211,7 @@ def main() -> None:
             continue
 
         rewritten = rewrite_links(text, src, title_map, confluence_base, github_url, branch)
+        rewritten = rewrite_wikilinks(rewritten, stem_map, confluence_base)
 
         try:
             rel = src.resolve().relative_to(ROOT_DIR)
