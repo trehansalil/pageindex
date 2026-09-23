@@ -27,6 +27,7 @@ mappings:
       - test_bidi.py
       - test_flat.py
       - test_garble.py
+      - test_quarantine.py
       - test_density_gate.py
       - test_obs_logging.py
       - test_hr3_zdr_egress.py
@@ -105,6 +106,7 @@ mappings:
       - test_verdict.py
       - test_gates.py
       - test_registry.py
+      - test_quarantine.py
       - test_integration.py          # RFC-043 D1/D5: e2e recovery + erasure
 
   storage/verdict.py:
