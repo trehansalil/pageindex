@@ -6,7 +6,7 @@
 id: "RFC-049"
 title: "Contract Drift Remediation"
 type: rfc
-status: accepted
+status: implemented
 date: "2026-09-23"
 plan-impact: "no"
 tags:

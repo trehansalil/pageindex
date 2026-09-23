@@ -6,7 +6,7 @@
 id: "tasks-rfc049-contract-drift-remediation"
 title: "Tasks: Contract Drift Remediation"
 type: tasks
-status: accepted
+status: implemented
 date: "2026-09-23"
 tags:
   - tasks
@@ -520,10 +520,15 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
 
   *Wave 3*
 
-  - [ ] <a id="91-set-rfc-status-accepted"></a>9.1 Set the status to implemented
+  - [x] <a id="91-set-rfc-status-accepted"></a>9.1 Set the status to implemented
 
     - The RFC-049, design and tasks files are already `accepted` (approved for build, iter 3). At close-out, set all three frontmatter `status` fields to **`implemented`**, and confirm that the RFC [Traceability](../rfcs/049-contract-drift-remediation.md#traceability) rows point at these files.
     - The anchor ID `91-set-rfc-status-accepted` is kept for link stability.
+    - **Done 2026-09-23.** All three frontmatter `status` fields set to `implemented` (line 9 of each file; the `status: draft` lines inside the fenced Appendix Z history blocks are untouched by design). Traceability confirmed: the **Design** and **Tasks** rows both resolve to `[[design-rfc049-contract-drift-remediation]]` / `[[tasks-rfc049-contract-drift-remediation]]` with their 2026-09-23 amendment markers; `scripts/erase-quarantine.sh` named in the *Amends* row exists; and the `CLAUDE.md` HR2/HR5 amendment the *Amends* row lists as "pending human approval" landed in git `86643e4`.
+    - ⚠️ **Closed with [7.5c](#75c-configure-the-quarantine-lifecycle-ttl) carved out — explicit user decision, 2026-09-23.** The [dependency graph](#task-dependency-graph) declares close-out `depends_on: ["8.2", "7.9", "7.5c"]`. 8.2 and 7.9 are done; 7.5c is **not**, and the status was set to `implemented` anyway on the user's instruction, with 7.5c re-scoped as a tracked operator follow-up rather than a blocker.
+      - Re-verified live at close-out, not carried from the 7.5c note: bucket `pageindex` at `localhost:9000` returns `get_bucket_lifecycle() → None` and `get_bucket_versioning().status → None`. **No 30-day bound on `quarantine/` exists in any environment**, and the remote k3s MinIO was not reachable from this run (`.env.active` is on the local profile; `mc` is not installed on this host).
+      - Consequence, restated so it is not lost behind an `implemented` label: [Design Property 12a](../designs/design-rfc049-contract-drift-remediation.md#property-12a-quarantine-is-bounded-in-time) rests on [7.5a](#75a-clear-quarantine-on-successful-persist) (clear-on-success) **alone**. That bounds only documents that are later re-ingested successfully; a document rejected once and never re-ingested is retained indefinitely. Every other RFC-049 property is unaffected.
+      - Owner remains **Salil Trehan** (operator/infra). An in-code `set_bucket_lifecycle` is still deliberately not proposed.
     - _Requirements:_ all of [R1–R4](../rfcs/049-contract-drift-remediation.md#requirements)
     - _Properties:_ P1–P12, P12a, P12b, P12c, P12d ([Design Correctness Properties](../designs/design-rfc049-contract-drift-remediation.md#correctness-properties))
 

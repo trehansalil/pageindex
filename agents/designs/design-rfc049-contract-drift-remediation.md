@@ -6,7 +6,7 @@
 id: "design-rfc049-contract-drift-remediation"
 title: "Design: Contract Drift Remediation"
 type: design
-status: accepted
+status: implemented
 date: "2026-09-23"
 tags:
   - design
