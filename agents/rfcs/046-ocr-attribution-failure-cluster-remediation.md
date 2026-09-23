@@ -2,7 +2,7 @@
 id: RFC-046
 title: OCR Attribution & Failure-Cluster Remediation
 type: rfc
-status: draft
+status: accepted
 date: 2026-09-12
 plan-impact: no
 tags:

@@ -2,12 +2,24 @@
 id: RFC-047
 title: Gate-Layer Correctness
 type: rfc
-status: draft
+status: implemented
 date: 2026-09-22
 plan-impact: no
-tags: [rfc, gate-correctness, verdict, garble-detection, density-gate, flat-routing]
-aliases: [RFC-047, Gate-Layer Correctness]
-governs: ["[[design-rfc047-gate-layer-correctness]]", "[[tasks-rfc047-gate-layer-correctness]]"]
+tags:
+  [
+    rfc,
+    gate-correctness,
+    verdict,
+    garble-detection,
+    density-gate,
+    flat-routing
+  ]
+aliases: [ RFC-047, Gate-Layer Correctness ]
+governs:
+  [
+    "[[design-rfc047-gate-layer-correctness]]",
+    "[[tasks-rfc047-gate-layer-correctness]]"
+  ]
 supersedes: []
 ---
 
