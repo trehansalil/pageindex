@@ -226,11 +226,13 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
     - _Requirements:_ [R4 AC1–AC2](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [Design Service: Indexer](../designs/design-rfc049-contract-drift-remediation.md#9-indexer-clientindexerpy)
     - _Properties:_ [Design Property 10](../designs/design-rfc049-contract-drift-remediation.md#property-10-unrecovered-garbling-is-rejected-never-saved)
 
-- [ ] <a id="7-d2-c-reject-and-quarantine"></a>7. D2-C: Reject and quarantine ([D2 Option C](../rfcs/049-contract-drift-remediation.md#option-c--reject-and-quarantine-adopted-2026-09-23))
+- [x] <a id="7-d2-c-reject-and-quarantine"></a>7. D2-C: Reject and quarantine ([D2 Option C](../rfcs/049-contract-drift-remediation.md#option-c--reject-and-quarantine-adopted-2026-09-23))
 
   *Wave 2 · TDD order: 7.1 red → 7.2 → 7.3/7.4 → 7.5 → 7.5a/7.5b/7.5d → 7.6/7.7 → 7.8/7.10 → 7.11. Steps 7.5c and 7.9 are operator- or human-gated. ~2.75–3.25 days for D2-C including the Wave 3 corpus re-run.*
 
-  - [ ] <a id="71-write-red-probe-tests"></a>7.1 Write red probe tests
+  > **Wave 2 complete 2026-09-23**, except [7.5c](#75c-configure-the-quarantine-lifecycle-ttl) (operator/infra, still open — see its note). The checkboxes below were not ticked when the code landed in commits `d5837c6` / `a63916f` / `3217165`; they are reconciled here against the tree, not against the commit messages.
+
+  - [x] <a id="71-write-red-probe-tests"></a>7.1 Write red probe tests
 
     - Re-derive the probe tests, which are not in VCS, **literally from the contract text**. Do not refer to the implementation. For each probe, `sha256` = `hashlib.sha256(file_bytes).hexdigest()` of the test input.
       - **`OCR-01-C3` × 3 triggers:** still garbled after the `force_full_page_ocr` retry; `OCR_ESCALATION` disabled; an exception raised inside the retry.
@@ -251,7 +253,7 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
     - _Properties:_ [Design Property 10](../designs/design-rfc049-contract-drift-remediation.md#property-10-unrecovered-garbling-is-rejected-never-saved), [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable)
     - **Validates:** [Design Property 10](../designs/design-rfc049-contract-drift-remediation.md#property-10-unrecovered-garbling-is-rejected-never-saved) | [RFC D2](../rfcs/049-contract-drift-remediation.md#d2-ocr-01-c3-vs-hard-rule-5--the-decision-requires-explicit-approval) | [RFC Test Strategy](../rfcs/049-contract-drift-remediation.md#test-strategy)
 
-  - [ ] <a id="72-add-the-quarantine-storage-helper"></a>7.2 Add the quarantine storage helper
+  - [x] <a id="72-add-the-quarantine-storage-helper"></a>7.2 Add the quarantine storage helper
 
     - Everything goes in **`src/pageindex_mcp/storage/documents.py`** (module `pageindex_mcp.storage.documents`). Write sync functions that mirror `save_doc` (`:89-110`):
       - `mc = _minio_ops.get_minio()`;
@@ -291,7 +293,7 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
     - _Requirements:_ [R4 AC2, AC6, AC7](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [Design Service: Storage](../designs/design-rfc049-contract-drift-remediation.md#10-storage-documentspy-and-quarantine-helper) | [Design Data Model](../designs/design-rfc049-contract-drift-remediation.md#quarantine-object-layout)
     - _Properties:_ [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable), [Design Property 12c](../designs/design-rfc049-contract-drift-remediation.md#property-12c-a-failed-quarantine-write-still-rejects-and-never-persists)
 
-  - [ ] <a id="73-add-the-post-recovery-reject-override"></a>7.3 Add the post-recovery REJECT override
+  - [x] <a id="73-add-the-post-recovery-reject-override"></a>7.3 Add the post-recovery REJECT override
 
     - In `index()` (`client/indexer.py`), at `~:2601`: after the `no_gate_eligible` decision (`~:2594-2600`), before `_recover_flat_prefer` (`:2604`).
     - **Guard:** `if not state.ok and state.route == Route.TREE and state.first_defect in {TreeDefect.GARBLING, TreeDefect.NODE_GARBLING}:`. The `route == TREE` clause keeps the tesseract-raster recovery (`recovery.py:1127-1134`) from being cancelled. The 7.1 raster probe must stay green.
@@ -310,7 +312,7 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
     - _Requirements:_ [R4 AC1, AC2, AC7](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [RFC D2](../rfcs/049-contract-drift-remediation.md#d2-ocr-01-c3-vs-hard-rule-5--the-decision-requires-explicit-approval) | [Design Service: Indexer](../designs/design-rfc049-contract-drift-remediation.md#9-indexer-clientindexerpy) | [Design Sequence: Index Route Dispatch](../designs/design-rfc049-contract-drift-remediation.md#index-route-dispatch-before-and-after-d2-c) | [Design Error Handling](../designs/design-rfc049-contract-drift-remediation.md#quarantine-write-failure)
     - _Properties:_ [Design Property 10](../designs/design-rfc049-contract-drift-remediation.md#property-10-unrecovered-garbling-is-rejected-never-saved), [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable), [Design Property 12c](../designs/design-rfc049-contract-drift-remediation.md#property-12c-a-failed-quarantine-write-still-rejects-and-never-persists)
 
-  - [ ] <a id="74-quarantine-on-the-flat-guard"></a>7.4 Quarantine on the flat route
+  - [x] <a id="74-quarantine-on-the-flat-guard"></a>7.4 Quarantine on the flat route
 
     - Write the flat quarantine **inside `_persist_flat_result`** (def `:1700`), immediately before `return None` at `:1879-1880`. At that point `_garble_blocks` (a `list[dict]`), `_flat_garble_report`, `filename` and the `sha256` parameter are all in scope.
     - Handle a failure the same way as [Task 7.3](#73-add-the-post-recovery-reject-override): catch it, log with `sha256`, and **still `return None`**, so the `(False, Route.FLAT)` arm (`~:2667-2681`) raises.
@@ -323,7 +325,7 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
     - _Requirements:_ [R4 AC2, AC7](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [Design Service: Indexer](../designs/design-rfc049-contract-drift-remediation.md#9-indexer-clientindexerpy) | [Design Sequence: Index Route Dispatch](../designs/design-rfc049-contract-drift-remediation.md#index-route-dispatch-before-and-after-d2-c)
     - _Properties:_ [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable), [Design Property 12c](../designs/design-rfc049-contract-drift-remediation.md#property-12c-a-failed-quarantine-write-still-rejects-and-never-persists)
 
-  - [ ] <a id="75-add-the-erase-quarantine-cascade-step"></a>7.5 Add the `_erase_quarantine` cascade step
+  - [x] <a id="75-add-the-erase-quarantine-cascade-step"></a>7.5 Add the `_erase_quarantine` cascade step
 
     - In `_ERASURE_MANIFEST` (`storage/documents.py:594-676`), add `ErasureStep(name="quarantine", step=3, description="Quarantined rejected tree at quarantine/<sha256>.json + .meta.json", execute=_erase_quarantine, required=False, consumes=frozenset({"ctx.sha256"}))`, **after `meta_json` and before `redis_cache`**.
       - `step=3` is valid. Step numbers are shared (four steps sit at 2, two at 4), and only non-decreasing order is enforced (`tests/test_storage.py:711-715`).
@@ -348,7 +350,7 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
     - _Properties:_ [Design Property 8](../designs/design-rfc049-contract-drift-remediation.md#property-8-erasure-retry-is-idempotent), [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable), [Design Property 12b](../designs/design-rfc049-contract-drift-remediation.md#property-12b-the-quarantine-prefix-cannot-escape-the-hr2-guard)
     - **Validates:** [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable) | [RFC D2 Option C](../rfcs/049-contract-drift-remediation.md#option-c--reject-and-quarantine-adopted-2026-09-23) | [RFC Test Strategy](../rfcs/049-contract-drift-remediation.md#test-strategy)
 
-  - [ ] <a id="75a-clear-quarantine-on-successful-persist"></a>7.5a Clear quarantine on successful persist
+  - [x] <a id="75a-clear-quarantine-on-successful-persist"></a>7.5a Clear quarantine on successful persist
 
     - In `_persist_tree_result`, after `save_doc` succeeds, and in `_persist_flat_result`, after `save_flat_doc` succeeds, call `await asyncio.to_thread(clear_quarantine, sha256)`. The call is idempotent, and a failure is logged and never fails the persist.
     - Deleting the diagnostic copy once the same bytes persist is **intended**: the served `processed/` artifact supersedes it.
@@ -356,7 +358,7 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
     - _Requirements:_ [R4 AC5](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [RFC Open Question 4](../rfcs/049-contract-drift-remediation.md#open-questions)
     - _Properties:_ [Design Property 12a](../designs/design-rfc049-contract-drift-remediation.md#property-12a-quarantine-is-bounded-in-time)
 
-  - [ ] <a id="75b-add-the-operator-erasure-path-by-sha256"></a>7.5b Add the operator erasure path by sha256
+  - [x] <a id="75b-add-the-operator-erasure-path-by-sha256"></a>7.5b Add the operator erasure path by sha256
 
     - A document that was only ever rejected has no `doc_id`, no sidecar and no registry row, so `delete_doc` cannot reach its quarantine copy. The operator entry point is `erase_quarantine(sha256) -> list[str]` in `pageindex_mcp.storage.documents` ([Task 7.2](#72-add-the-quarantine-storage-helper)). It runs the same `_erase_quarantine` as the cascade step.
     - **Operator wrapper:** add `scripts/erase-quarantine.sh <sha256>`. It checks that the argument is 64 hex characters, then runs `uv run python -c "from pageindex_mcp.storage.documents import erase_quarantine; import sys; e = erase_quarantine('<sha256>'); print(e); sys.exit(1 if e else 0)"`, the underlying call. The script exits non-zero on errors. No new MCP tool or HTTP route is added.
@@ -379,10 +381,11 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
       - If versioning is **enabled**, also add a noncurrent-version expiry rule, `mc ilm rule add --prefix "quarantine/" --noncurrent-expire-days 30 <alias>/<bucket>`. Record in the PR that `remove_object`-based erasure (HR2) leaves noncurrent versions behind **in every prefix**. That is a general HR2 gap, outside this RFC's scope.
       - If versioning is disabled, record that.
     - **Owner: Salil Trehan** (operator/infra). An in-code `set_bucket_lifecycle` is deliberately not proposed.
+    - **STILL OPEN — verified 2026-09-23.** On the local bucket (`pageindex`), `get_bucket_lifecycle()` returns `None`: **no rule is applied**, so the 30-day bound on `quarantine/` does not exist yet. `get_bucket_versioning().status` is also `None` (versioning disabled), so the noncurrent-version rule is not needed *here* — that still has to be re-checked on the remote k3s MinIO, which was not reachable from this run. `mc` is not installed on this host, so the rule could not be applied from here either. Until this lands, [Design Property 12a](../designs/design-rfc049-contract-drift-remediation.md#property-12a-quarantine-is-bounded-in-time) rests on [7.5a](#75a-clear-quarantine-on-successful-persist) (clear-on-success) alone, which bounds only the documents that later succeed — a document rejected once and never re-ingested is retained indefinitely.
     - _Requirements:_ [R4 AC5](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [RFC Open Question 4](../rfcs/049-contract-drift-remediation.md#open-questions) | [RFC-049 Risk 6](../rfcs/049-contract-drift-remediation.md#risks)
     - _Properties:_ [Design Property 12a](../designs/design-rfc049-contract-drift-remediation.md#property-12a-quarantine-is-bounded-in-time)
 
-  - [ ] <a id="75d-surface-sha256-on-rejection"></a>7.5d Surface sha256 on rejection
+  - [x] <a id="75d-surface-sha256-on-rejection"></a>7.5d Surface sha256 on rejection
 
     - **`src/pageindex_mcp/worker/job.py`:** in `process_document_job`'s `except ConverterChildError as exc:` branch (`:242`; the reason is resolved at `:249`), when `reason == "low_quality_tree"`, compute `sha256` **before** the `_set_job_status(...)` call. Use `await asyncio.to_thread(lambda: hashlib.sha256(Path(local_path).read_bytes()).hexdigest())` inside `try/except Exception`; on failure, log a warning and set `sha256 = None`. Then pass `sha256=sha256` to `_set_job_status`.
       - `_set_job_status` (`job_status.py:55-105`) writes every non-`None` kwarg as a hash field, so a `None` is simply omitted.
@@ -395,32 +398,37 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
       2. A hashing failure omits the field and still returns `""` without retry.
       3. An upload-app test with a stubbed `job_status_get` asserts that the status body carries `sha256`.
       4. A non-`low_quality_tree` child error writes no `sha256`.
+    - **Implementation deviation, corrected 2026-09-23.** The code that landed computed `file_sha256` once after `download_staging` and attached it to **every** `ConverterChildError` status write, not only the `low_quality_tree` one — so test 4 above would have failed. `converter_oom` and `converter_timeout` bodies were advertising a `quarantine/<sha256>.json` that is never written for those reasons. Narrowed to `if reason == "low_quality_tree" and file_sha256`. The hash guard was also widened from `except FileNotFoundError` to `except Exception` with a warning log, as specified: a `PermissionError`/`OSError` would otherwise escape a best-effort diagnostic path and fail a job that indexes fine.
+    - **Done 2026-09-23.** All four tests added (`tests/test_worker.py`, `tests/test_upload.py`), `FLAT-04-C2` labelled, and the `flat-04.yaml` effect amended. `WORKER-01-C2` carried the same now-stale "tree is discarded" claim and was amended in the same change.
+    - **Not covered:** the assertions are unit-level. The live arq/HTTP round-trip (`make up` → `POST /upload/files` → `GET /upload/status/{job_id}`) was not exercised — the Wave 3 negative control ran through `preprocess_client.py`, which bypasses the worker. See the [[CORPUS_REINGESTION_AUDIT_RUN-22_RFC049|Run 22 audit]] action items.
     - _Requirements:_ [R4 AC8](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [R1 AC4](../rfcs/049-contract-drift-remediation.md#requirement-1-no-contract-may-report-green-against-code-that-contradicts-it) | [Design Service: Worker and upload status](../designs/design-rfc049-contract-drift-remediation.md#12-worker-and-upload-status-jobpy-upload_apppy) | [Design Sequence: Rejection sha256 Surfacing](../designs/design-rfc049-contract-drift-remediation.md#rejection-sha256-surfacing-d2-c)
     - _Properties:_ [Design Property 12d](../designs/design-rfc049-contract-drift-remediation.md#property-12d-a-rejection-surfaces-the-documents-sha256), [Design Property 4](../designs/design-rfc049-contract-drift-remediation.md#property-4-labels-follow-amendments)
     - **Validates:** [Design Property 12d](../designs/design-rfc049-contract-drift-remediation.md#property-12d-a-rejection-surfaces-the-documents-sha256) | [RFC D2 Option C](../rfcs/049-contract-drift-remediation.md#option-c--reject-and-quarantine-adopted-2026-09-23) | [RFC Test Strategy](../rfcs/049-contract-drift-remediation.md#test-strategy)
 
-  - [ ] <a id="76-add-new-erase-01-and-ocr-01-clauses"></a>7.6 Add new ERASE-01 and OCR-01 clauses
+  - [x] <a id="76-add-new-erase-01-and-ocr-01-clauses"></a>7.6 Add new ERASE-01 and OCR-01 clauses
 
     - `agents/contracts/ocr-01.yaml`: add `OCR-01-C4`, covering quarantine before reject on the tree and flat routes, the `route == TREE` guard, `filenames[]`, and the write-failure clause.
     - `agents/contracts/erase-01.yaml`:
       - add `ERASE-01-C4`: the cascade purges `quarantine/<sha256>.*` via `ctx.sha256`, and `erase_quarantine(sha256)` shares the implementation;
       - replace the header purge list (lines 7-9) with the full cascade order, mirroring the [Task 7.9](#79-propose-the-claudemd-hr2-purge-list-change) HR2 text.
     - Take the wording from [Design Service: OCR-01](../designs/design-rfc049-contract-drift-remediation.md#7-ocr-01-ocr-01yaml) and [Design Service: ERASE-01](../designs/design-rfc049-contract-drift-remediation.md#8-erase-01-erase-01yaml). C4 is the next free ID in both files.
+    - **Done 2026-09-23.** Both C4 clauses landed in commit `a63916f`; the `erase-01.yaml` header purge list (lines 7-9) was **missed** by that commit — it still carried the old four-store list — and was replaced with the full cascade order here, mirroring the [7.9](#79-propose-the-claudemd-hr2-purge-list-change) HR2 text now in `CLAUDE.md`.
     - In the **same change**, label the green tests so the new IDs never appear as FAIL:
       - tests from [Task 7.3](#73-add-the-post-recovery-reject-override) and [7.4](#74-quarantine-on-the-flat-guard), including both write-failure tests, get `OCR-01-C4`;
       - tests from [Task 7.5](#75-add-the-erase-quarantine-cascade-step) and [7.5b](#75b-add-the-operator-erasure-path-by-sha256) get `ERASE-01-C4`.
     - _Requirements:_ [R4 AC2/AC4/AC7](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [R1 AC4](../rfcs/049-contract-drift-remediation.md#requirement-1-no-contract-may-report-green-against-code-that-contradicts-it)
     - _Properties:_ [Design Property 4](../designs/design-rfc049-contract-drift-remediation.md#property-4-labels-follow-amendments), [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable), [Design Property 12c](../designs/design-rfc049-contract-drift-remediation.md#property-12c-a-failed-quarantine-write-still-rejects-and-never-persists)
 
-  - [ ] <a id="77-label-the-probe-tests"></a>7.7 Label the probe tests
+  - [x] <a id="77-label-the-probe-tests"></a>7.7 Label the probe tests
 
     - Once every [Task 7.1](#71-write-red-probe-tests) probe is green, label the three `OCR-01-C3` probes with `OCR-01-C3`. The `FLAT-03-C2` probe may also carry `FLAT-03-C2`; the existing label on `tests/test_flat.py:1529` stays either way.
     - The `OCR-01-C3` text is unchanged: it is now true as written, and D4(a) is subsumed.
+    - **Done** — confirmed by the contracts gate resolving every ID against `tests/` (PASS=68, FAIL=0).
     - _Requirements:_ [R1 AC4](../rfcs/049-contract-drift-remediation.md#requirement-1-no-contract-may-report-green-against-code-that-contradicts-it) | [R4 AC1](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [RFC D4(a)](../rfcs/049-contract-drift-remediation.md#d4-three-drifted-triggereffect-clauses--substance-intact-text-stale) | [Design Service: OCR-01](../designs/design-rfc049-contract-drift-remediation.md#7-ocr-01-ocr-01yaml) | [Design Service: FLAT-03](../designs/design-rfc049-contract-drift-remediation.md#6-flat-03-flat-03yaml)
     - _Properties:_ [Design Property 4](../designs/design-rfc049-contract-drift-remediation.md#property-4-labels-follow-amendments), [Design Property 10](../designs/design-rfc049-contract-drift-remediation.md#property-10-unrecovered-garbling-is-rejected-never-saved)
     - **Validates:** [Design Property 10](../designs/design-rfc049-contract-drift-remediation.md#property-10-unrecovered-garbling-is-rejected-never-saved) | [RFC D2](../rfcs/049-contract-drift-remediation.md#d2-ocr-01-c3-vs-hard-rule-5--the-decision-requires-explicit-approval) | [RFC Test Strategy](../rfcs/049-contract-drift-remediation.md#test-strategy)
 
-  - [ ] <a id="78-update-architecturemd"></a>7.8 Update ARCHITECTURE.md (and DESIGN.md)
+  - [x] <a id="78-update-architecturemd"></a>7.8 Update ARCHITECTURE.md (and DESIGN.md)
 
     - **Data Model & Storage Layout:** add a MinIO row: `quarantine/<sha256>.json` + `.meta.json`. The row should say that these hold rejected garbled trees, that no MCP query tool or HTTP route reads them, that the meta carries `filenames[]`, that `delete_doc` erases them via `ctx.sha256` and `erase_quarantine(sha256)` erases them for never-persisted documents, and that they have a 30-day TTL and are cleared on success.
     - **Tree Quality Gate:** describe the post-recovery REJECT override and quarantine-before-raise on both routes as current behaviour, in its own paragraph. **Do not graft it** onto the stale "[planned — Tier 0]" / warn-only `validate_tree` prose (ADR-003).
@@ -429,11 +437,13 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
       - add the [7.5b](#75b-add-the-operator-erasure-path-by-sha256) runbook: sha256 from the job status body, or `sha256sum`, or a `filenames` match; then `scripts/erase-quarantine.sh`;
       - add the [7.5c](#75c-configure-the-quarantine-lifecycle-ttl) lifecycle rule, and the noncurrent-version rule if versioning is on.
     - **Backups:** write exactly what 6.2 found. If a documented backup exists, name its manual purge step. If none exists, say that no documented backup exists. Do **not** assert that an existing manual backup purge covers `quarantine/` unless 6.2 verified it.
+    - **Done 2026-09-23.** `ARCHITECTURE.md`: quarantine semantics after the sidecar paragraph (sha256 keying, `filenames[]`, unserved, the four bounds); a new *Post-recovery rejection and quarantine — current behaviour* subsection under Tree Quality Gate, explicitly fenced off from the stale ADR-003 "planned / warn-only / silently persists" prose above it rather than grafted onto it; the `quarantine` row plus ordering rationale, the 7.5b runbook and the 7.5c lifecycle commands in the erasure fan-out block; and the `sha256` field on the upload-flow status line. `DESIGN.md`: the `sha256` error-body field with its only-on-`low_quality_tree` scope, the `quarantine/` store row, and a *Documents that were rejected, not stored* subsection covering the by-sha256 DSR path.
+    - **Backups — searched, none found.** No `mc mirror`, `pg_dump`, Velero schedule or snapshot job exists anywhere in `scripts/`, `Makefile`, the k8s manifests or `.github/`. Recorded in ARCHITECTURE.md as a fact with the consequence stated: the manual-purge step has no target today, and a future backup inherits the whole cascade including `quarantine/`.
     - **Upload & Job-Status API** (in `DESIGN.md` and ARCHITECTURE's upload flow): the `GET /upload/status/{job_id}` error body for `reason=low_quality_tree` now includes `sha256`, the quarantine key ([Task 7.5d](#75d-surface-sha256-on-rejection)). Note that the arq return value is unchanged.
     - _Requirements:_ [R4](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [Design Service: Documentation](../designs/design-rfc049-contract-drift-remediation.md#11-documentation-architecturemd-claudemd)
     - _Properties:_ [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable), [Design Property 12d](../designs/design-rfc049-contract-drift-remediation.md#property-12d-a-rejection-surfaces-the-documents-sha256)
 
-  - [ ] <a id="79-propose-the-claudemd-hr2-purge-list-change"></a>7.9 Propose the CLAUDE.md HR2 + HR5 change — **REQUIRES HUMAN APPROVAL**
+  - [x] <a id="79-propose-the-claudemd-hr2-purge-list-change"></a>7.9 Propose the CLAUDE.md HR2 + HR5 change — **REQUIRES HUMAN APPROVAL**
 
     - Draft one bundled `CLAUDE.md` edit and present it to the user. **Do not apply it automatically.** Apply it only after explicit approval.
       - **HR2** lists every `_ERASURE_MANIFEST` store (`storage/documents.py:594-676`, plus `quarantine`) in cascade order. The same list is mirrored in the `erase-01.yaml` header ([Task 7.6](#76-add-new-erase-01-and-ocr-01-clauses)) and in the ARCHITECTURE "Required erasure fan-out" block ([Task 7.8](#78-update-architecturemd)).
@@ -447,41 +457,61 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
       +5. **Never silently persist a low-quality tree.** `validate_tree()` must run before `save_doc`; a failing tree must surface as an arq `low_quality_tree` error, not a stored artifact reachable through the MCP query surface or any HTTP route; an unserved `quarantine/` copy, purged by `delete_doc` and expiring within 30 days, is permitted for diagnosis.
       ```
     - The anchor ID `79-propose-the-claudemd-hr2-purge-list-change` is kept for link stability, although the scope now covers HR2 + HR5.
+    - **Approved and applied** in commit `86643e4`. Both hard rules in `CLAUDE.md` now carry the text above verbatim.
     - _Requirements:_ [R1 AC3](../rfcs/049-contract-drift-remediation.md#requirement-1-no-contract-may-report-green-against-code-that-contradicts-it) | [R4 AC4](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [CLAUDE.md HR2](../../CLAUDE.md#hard-rules) | [Design Service: Documentation](../designs/design-rfc049-contract-drift-remediation.md#11-documentation-architecturemd-claudemd)
     - _Properties:_ [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable)
 
-  - [ ] <a id="710-verify-no-mcp-tool-reads-quarantine"></a>7.10 Verify that no MCP tool reads quarantine/
+  - [x] <a id="710-verify-no-mcp-tool-reads-quarantine"></a>7.10 Verify that no MCP tool reads quarantine/
 
     - Trace the 5 registered MCP query tools (see `DESIGN.md` MCP Tool Contracts) to their storage calls, using codebase-memory `trace_path` / `search_code`. Confirm that none of them lists or gets under `quarantine/`, and that no shared reader enumerates the bucket without a prefix. Record the trace in the PR.
       - Baseline confirmed 2026-09-23: `server.py:27-31` registers the 5 query tools (plus `delete_document`, `:40`); every `list_objects` call is prefix-scoped; `list_processed_docs` lists only `prefix="processed/"` (`storage/verdict.py:273`).
     - **Mandatory static test:** no module under `src/` contains the string `"quarantine/"` except `storage/documents.py`, for the quarantine functions and the prefix registration. This also covers HTTP routes: `upload_app.py` returns only the `sha256` string, never quarantine content.
+    - **Done 2026-09-23.** Implemented as the `quarantine-prefix-confined` invariant in `scripts/gates/source_invariants.py`, not as a standalone pytest file — that gate is the repo's owner for source-text invariants, and adding it there means it runs in the `static` gate rather than consuming a collection slot. Live result: the prefix occurs at `storage/documents.py:55,600,606,724,927,933` and **nowhere else under `src/`**; the gate reports `36 invariants clean`. Two unit tests in `tests/test_source_invariants.py` feed the check a synthetic violation and a synthetic clean tree, so it cannot silently degrade into a check that never fires.
     - _Requirements:_ [R4 AC3](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23)
     - _Properties:_ [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable)
     - **Validates:** [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable) | [RFC D2 Option C](../rfcs/049-contract-drift-remediation.md#option-c--reject-and-quarantine-adopted-2026-09-23) | [RFC Test Strategy](../rfcs/049-contract-drift-remediation.md#test-strategy)
 
-  - [ ] <a id="711-checkpoint-b--d2-c"></a>7.11 Checkpoint B — D2-C
+  - [x] <a id="711-checkpoint-b--d2-c"></a>7.11 Checkpoint B — D2-C
 
     - Tasks 7.1–7.5b, **7.5d**, 7.6–7.8 and 7.10 must be complete first. 7.5c and 7.9 are operator- or human-gated; they block close-out, not this checkpoint.
     - Run `make test` (full suite, foreground, capped). Everything passes, including the updated erasure tests from 7.5 and `tests/test_worker.py`.
     - Run `bash scripts/gates/contracts.sh` and expect **PASS=68 FAIL=0**: the 66 existing gate lines (61 IDs + 5 module checks) plus `OCR-01-C4` and `ERASE-01-C4`.
+    - **Result 2026-09-23:**
+
+      | Check | Outcome |
+      |---|---|
+      | `scripts/gates/contracts.sh` | **PASS=68 FAIL=0 WARN=0** — exactly as specified |
+      | `scripts/gates/source_invariants.py` | **36 invariants clean** (35 + `quarantine-prefix-confined`) |
+      | Full suite (961 tests) | **953 passed, 2 failed, 5 skipped, 1 xfailed** in 206 s |
+      | `ruff check` on every file touched here | clean; `ruff format --check` clean |
+
+    - **The 2 failures are pre-existing and unrelated to RFC-049.** `test_surya_config_defaults_are_off_and_local` and `test_image_dispatch_is_local_tesseract_only_with_no_llm_or_vlm_egress` assert that the Surya/VLM fallbacks default **off**, but read the *effective* settings, so the local `.env:121 SURYA_FALLBACK_ENABLED=true` (set deliberately for RFC-048) leaks in and fails them. Verified two ways: both pass when run with `SURYA_FALLBACK_ENABLED=false VLM_FALLBACK=false`, and both still fail with every RFC-049 change stashed. Test-isolation defect in those two tests, not a regression here — worth a follow-up, out of scope for this RFC.
+    - **`make test` does not run on this Darwin host** — the target requires `systemd-run` (Linux-only) and `make test-uncapped` calls `timeout`, absent on macOS without coreutils. Every run above was bounded with an explicit `perl -e 'alarm'` SIGALRM wrapper, foreground, never backgrounded, per the CLAUDE.md prohibition. Filed as a P2 action item in the [[CORPUS_REINGESTION_AUDIT_RUN-22_RFC049|Run 22 audit]].
     - Verifies: [Design Property 4](../designs/design-rfc049-contract-drift-remediation.md#property-4-labels-follow-amendments), [Design Property 8](../designs/design-rfc049-contract-drift-remediation.md#property-8-erasure-retry-is-idempotent), [Design Property 9](../designs/design-rfc049-contract-drift-remediation.md#property-9-unresolved-contradictions-stay-red), [Design Property 10](../designs/design-rfc049-contract-drift-remediation.md#property-10-unrecovered-garbling-is-rejected-never-saved), [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable), [Design Property 12b](../designs/design-rfc049-contract-drift-remediation.md#property-12b-the-quarantine-prefix-cannot-escape-the-hr2-guard), [Design Property 12c](../designs/design-rfc049-contract-drift-remediation.md#property-12c-a-failed-quarantine-write-still-rejects-and-never-persists), [Design Property 12d](../designs/design-rfc049-contract-drift-remediation.md#property-12d-a-rejection-surfaces-the-documents-sha256). Cross-reference [Checkpoint A](#4-checkpoint-a--contract-text-wave).
     - **Ask the user before continuing to Wave 3.**
 
-- [ ] <a id="8-corpus-re-run-against-the-rfc-047-d9-baseline"></a>8. Corpus re-run against the RFC-047 D9 baseline ([RFC-049 Risk 1](../rfcs/049-contract-drift-remediation.md#risks))
+- [x] <a id="8-corpus-re-run-against-the-rfc-047-d9-baseline"></a>8. Corpus re-run against the RFC-047 D9 baseline ([RFC-049 Risk 1](../rfcs/049-contract-drift-remediation.md#risks))
 
   *Wave 3*
 
-  - [ ] <a id="81-run-corpus-ingest-score"></a>8.1 Run corpus ingest-score
+  - [x] <a id="81-run-corpus-ingest-score"></a>8.1 Run corpus ingest-score
 
     - Run the `corpus-ingest-score` skill over the 25-doc corpus on this branch.
     - _Requirements:_ [R4](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [RFC D2](../rfcs/049-contract-drift-remediation.md#d2-ocr-01-c3-vs-hard-rule-5--the-decision-requires-explicit-approval)
     - _Properties:_ [Design Property 11](../designs/design-rfc049-contract-drift-remediation.md#property-11-corpus-verdicts-unchanged)
+    - **Done 2026-09-23** — Run 22 (`ba7ef8ac-1a4b-4497-84ee-84d1e21e0541`), 25/25 ingested after a full four-store clean-slate reset in HR2 order. Result: **PASS 18 / MARGINAL 7 / FAIL 0 / REJECTED 0 / ERROR 0**. See [[CORPUS_REINGESTION_AUDIT_RUN-22_RFC049|Run 22 audit]].
 
-  - [ ] <a id="82-diff-against-the-baseline"></a>8.2 Diff against the baseline
+  - [x] <a id="82-diff-against-the-baseline"></a>8.2 Diff against the baseline
 
     - Run the `corpus-score-diff` skill against [[rfc047-d9-final-baseline]]. Expect every verdict to be unchanged.
     - Doc #12 should still be REJECTED for garbling, and should now also have `quarantine/<sha256>.json` + `.meta.json`, with a `sha256` in its job status. That holds only if [Task 7.4](#74-quarantine-on-the-flat-guard) placed the write before `return None` (`:1879-1880`).
     - Any newly REJECTED document is a regression and must be reported before [Phase 9](#9-close-out).
+    - **Done 2026-09-23** — doc-for-doc match to the baseline: **0 regressions, 0 improvements**, 0 registry/meta mismatches, 0 missing artifacts (22 tree + 3 flat).
+    - **Amendment (2026-09-23) — two corrections to this task as written:**
+      1. **Baseline.** `rfc047-d9-final-baseline` is the wrong comparison point: RFC-048 is already in `HEAD` and it moved Doc #12 from REJECTED to MARGINAL. **Run 21b** (`d428364f-aa92-4a79-b409-e8bde5c31e6d`) is the same-lineage predecessor and was used as the primary baseline; the D9 column is retained for continuity.
+      2. **Doc #12 expectation is superseded by RFC-048.** Doc #12 is no longer REJECTED — the post-`validate_tree` parallel image fallback rescues it (VLM leg only; Surya returned 0 chars and was itself garbled). It scored **MARGINAL, 3 nodes, `leaf_concentration=0.71`**. Consequently the corpus run writes **zero** quarantine objects and leaves D2-C unexercised on real data.
+    - **Substitute evidence — negative control.** Because no corpus document reaches D2-C under production config, the path was exercised deliberately: Doc #12 re-ingested with `VLM_FALLBACK=false` **and** `SURYA_FALLBACK_ENABLED=false` (both legs, per the RFC-048 parallel window). Observed `route_selected → choice=reject, reason=forced_route, forced=true, computed_route=tree, final_route=reject, first_defect=garbling`, with `flat_garble_unrecovered_reject → proceed_to_route_dispatch` — proving the rejection came from the **tree-route D2-C override in `index()`**, not the pre-existing flat clause. Both `quarantine/19aad2bc….json` (3102 B) and `.meta.json` (98 B, `filenames[]`) were written; `processed/` and `uploads/` were untouched during the rejection (HR5 upheld). The corpus was then restored to its Run-22 state, and `quarantine/` returned to 0 objects — incidentally confirming `clear_quarantine(sha256)`. Full write-up: [[CORPUS_REINGESTION_AUDIT_RUN-22_RFC049|Run 22 audit]] Finding 4.
+    - **Still open from this task:** the `sha256`-in-job-status half ([Task 7.5d](#75d-surface-sha256-on-rejection)) is unverified — the control ran through `preprocess_client.py`, not the arq/HTTP path.
     - _Requirements:_ [RFC-049 Risk 1](../rfcs/049-contract-drift-remediation.md#risks) | [R4](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23)
     - _Properties:_ [Design Property 11](../designs/design-rfc049-contract-drift-remediation.md#property-11-corpus-verdicts-unchanged)
     - **Validates:** [Design Property 11](../designs/design-rfc049-contract-drift-remediation.md#property-11-corpus-verdicts-unchanged) | [RFC D2](../rfcs/049-contract-drift-remediation.md#d2-ocr-01-c3-vs-hard-rule-5--the-decision-requires-explicit-approval) | [RFC Test Strategy](../rfcs/049-contract-drift-remediation.md#test-strategy)

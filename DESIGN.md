@@ -384,9 +384,22 @@ machine-distinguishable marker on the status response.
   "status": "error",
   "filename": "AKB.pdf",
   "reason": "low_quality_tree",
-  "detail": "depth=1, node_count=1 — tree below quality threshold"
+  "detail": "depth=1, node_count=1 — tree below quality threshold",
+  "sha256": "19aad2bc853d145653012ce6b78c10541db4a90e14e7f779a321878e75934163"
 }
 ```
+
+`sha256` (RFC-049 D2-C) appears **only** when `reason` is `low_quality_tree`, and it is the
+quarantine key: the rejected tree is at `quarantine/<sha256>.json`. It is the caller's only handle on
+that object — a document that was only ever rejected has no `doc_id`, so it cannot be named any other
+way, and an erasure request for it is serviced by sha256 (see *Erasure / DSR Operation*). It is
+deliberately absent from `converter_oom` and `converter_timeout` bodies, which write no quarantine
+copy; advertising a key for an object that does not exist would be worse than omitting it.
+
+The field is best-effort. If the staged bytes cannot be hashed the key is simply absent, and the
+rejection is otherwise unchanged — still terminal, still no retry, still no DLQ push. The arq return
+value is unchanged (`""`); the sha256 lives in the persisted Redis job hash, which
+`GET /upload/status/{job_id}` returns verbatim.
 
 Returns HTTP 404 if the job key has expired (> 24 h) or never existed.
 
@@ -473,6 +486,7 @@ fan-out operation, not a single API call.
 | MinIO `preloaded/` | `preloaded/<filename>` — if ingested via `preprocess_client.py` |
 | MinIO `processed/` | `processed/<doc_id>.json` — indexed tree |
 | MinIO `processed/` | `processed/<doc_id>.meta.json` — metadata sidecar |
+| MinIO `quarantine/` | `quarantine/<sha256>.json` + `.meta.json` — a rejected garbled tree, keyed by sha256, never by `doc_id` (RFC-049 D2-C) |
 | MinIO `hashes/` | Entry in `hashes/processed_hashes.json` — dedup record |
 | Redis | `pageindex:doc:<doc_id>` cache entry — call `DEL` or `cache.delete_doc(doc_id)` |
 | Redis | `pageindex:job:<job_id>` job record — call `DEL` (if job_id known) |
@@ -489,6 +503,32 @@ fan-out operation, not a single API call.
 3. If the document was ingested via `preloaded/`, also remove `preloaded/<filename>`.
 4. **Delete the `doc_registry` row from Postgres: `DELETE FROM doc_registry WHERE doc_id = $1` (RFC-006 D3 / HR2). This is step 6 of `delete_doc()` in `storage.py` and runs automatically when `REGISTRY_ENABLED=true` and `POSTGRES_DSN` is set. Verify completion if `REGISTRY_ENABLED=false` — the row must still be purged manually.**
 5. Confirm with a `GET /upload/status` poll (or MinIO `stat`) that the objects are gone.
+
+### Documents that were rejected, not stored
+
+Step 1 assumes a `doc_id` exists. For a document whose ingest was **rejected** for garbling, none
+does — no tree, no sidecar, no registry row — yet its bytes are still on disk under
+`quarantine/<sha256>.json`. A DSR request that only walks `doc_id` values would miss it entirely.
+
+The erasure path for these is by sha256:
+
+1. Recover the sha256 by whichever handle the requester left behind:
+   - the `sha256` field in the rejected job's `GET /upload/status/{job_id}` body;
+   - `sha256sum <file>`, if the original file is available;
+   - or list `quarantine/*.meta.json` and match the requester's filename against each object's
+     `filenames` array.
+2. Run `scripts/erase-quarantine.sh <sha256>`. It validates the argument as 64 hex characters, calls
+   `erase_quarantine(sha256)` — the same implementation the `delete_doc` cascade uses — and exits
+   non-zero if any delete reported an error.
+3. Purge any documented backup manually per HR2. As of 2026-09-23 no documented backup exists.
+
+No MCP tool or HTTP route exposes this; it is an operator-only path, by design, because the
+quarantine store is unserved.
+
+Two mechanisms bound the store without an operator doing anything: `clear_quarantine(sha256)` deletes
+the copy as soon as the same bytes later persist successfully, and a 30-day MinIO lifecycle rule on
+the `quarantine/` prefix expires whatever remains. Neither is a substitute for an erasure request —
+they are a ceiling on how long an unrequested copy can linger.
 
 ### Manual backup-purge step (required)
 

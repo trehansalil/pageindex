@@ -181,6 +181,8 @@ process_document_job(ctx, staging_key, job_id)           worker.py:31
         │
         ▼
 GET /upload/status/{job_id}  →  {status: done|pending|error, doc_id|error}
+                                 + sha256  when reason=low_quality_tree  (the
+                                   quarantine key; RFC-049 D2-C — see DESIGN.md)
 ```
 
 ### Format dispatch  (`client.py:94-134`)
@@ -317,6 +319,41 @@ raise LowQualityTree(reason)
 > until calibrated, run the gate in warn-only mode (counter increments, no `error` status) to avoid
 > false rejections.
 
+### Post-recovery rejection and quarantine — current behaviour  (RFC-049 D2-C)
+
+> Everything above this heading is the original ADR-003 *proposal*, including the warn-only mode and
+> the "silently persists" framing. This subsection describes what the code does today; where the two
+> disagree, this one is current.
+
+A failing gate does not reject immediately. `validate_tree()` produces a `TreeGateResult`, and
+`index()` first runs the OCR/recovery ladder — `decide_route()` maps a garble defect to
+`retry_ocr → Route.TREE` so recovery can dispatch. When several defects fire at once, the garble
+defect is **promoted to primary** precisely so this dispatch happens, which means the order of
+`trigger_defects` in a log line says nothing about the route taken.
+
+Rejection is what happens when that ladder runs out. After recovery, `index()` applies a
+`force_route=Route.REJECT` override guarded on `not state.ok and state.route == Route.TREE and
+state.first_defect ∈ {GARBLING, NODE_GARBLING}`: garbling that survived every recovery attempt is
+not a tree worth keeping, and HR5 forbids persisting it. `_persist_flat_result` carries the
+equivalent clause for the flat route. Both write the quarantine copy **before** raising
+`LowQualityTreeError`, so a tree can never be lost without a diagnostic trace:
+
+```
+index() → recovery ladder exhausted, first_defect still garbling
+   └─ save_quarantine(sha256, tree, [filename])   →  quarantine/<sha256>.json + .meta.json
+   └─ raise LowQualityTreeError(reason)
+        ├─ save_doc / save_flat_doc are NOT called — nothing reaches processed/
+        ├─ worker sets {status:error, reason:low_quality_tree, sha256:<quarantine key>}
+        └─ LOW_QUALITY_TREES + QUARANTINE_WRITES_TOTAL{result} counters
+```
+
+A failed quarantine write is logged and swallowed: the rejection still raises and the tree is still
+never persisted. Losing the diagnostic copy is acceptable; serving a garbled tree is not.
+
+In practice the override is rarely reached. On the 25-document corpus (Run 22) it fired **zero**
+times, because RFC-048's post-`validate_tree` image fallback recovers the one document that used to
+reach it. The path is exercised deliberately instead — see the Run-22 audit's negative control.
+
 ---
 
 ## Cross-Document Graph & Versioning
@@ -393,6 +430,23 @@ The `.meta.json` sidecar (`storage.py:122`, fields `doc_id`/`doc_name`/`source_u
 lets `list_processed_docs` page the collection without downloading full trees — important as the
 corpus grows.
 
+The `quarantine/` prefix (RFC-049 D2-C) holds trees that were **rejected**, not stored. It is keyed
+by the document's **sha256**, not its `doc_id`, because a document that was only ever rejected never
+receives a `doc_id`: there is no registry row and no sidecar to resolve. The `.meta.json` there
+carries a single `filenames[]` array — the names that produced these bytes — which is the operator's
+only way back from a user's complaint to the object.
+
+Nothing serves it. None of the five registered MCP query tools and no HTTP route reads under
+`quarantine/`; every `list_objects` call in the codebase is prefix-scoped, and the
+`quarantine-prefix-confined` source invariant fails the build if the prefix literal appears in any
+module other than `storage/documents.py`. That confinement is what makes the copy compatible with
+HR5: an unserved diagnostic artifact, not a stored one.
+
+It is bounded in two directions. `delete_doc` purges it as a cascade step via `ctx.sha256`
+(see *Compliance* below), `erase_quarantine(sha256)` purges it for documents that never got a
+`doc_id`, `clear_quarantine(sha256)` deletes it the moment the same bytes later persist
+successfully, and a 30-day MinIO lifecycle rule expires whatever remains.
+
 ### Processed tree document  (`processed/<doc_id>.json`)
 
 ```jsonc
@@ -451,6 +505,7 @@ erase_document(doc_id):
    ✓ MinIO  processed/<doc_id>.json                 delete
    ✓ MinIO  processed/<doc_id>.meta.json            delete
    ✓ MinIO  uploads/<doc_id>/*                      delete (all objects)
+   ✓ MinIO  quarantine/<sha256>.json + .meta.json   delete via ctx.sha256 (RFC-049 D2-C)
    + MinIO  preloaded/<filename>                    delete if this doc was preloaded
    + MinIO  hashes/processed_hashes.json            remove the {filename: sha256} entry  ← currently MISSED
    + MinIO  processed/graph.json                    remove this doc's nodes/edges        [Tier 2]
@@ -458,8 +513,47 @@ erase_document(doc_id):
    ! Backups / object-store snapshots               MANUAL purge — operator responsibility, DOCUMENTED, never automatic
 ```
 
+The `quarantine` step runs **after `meta_json` and before `redis_cache`**, which is not arbitrary:
+`_erase_verdicts` resolves `ctx.sha256` from the verdict sidecar (falling back to
+`registry.get_doc_sha256`) *before* `_erase_meta_json` deletes that sidecar, and the value then
+persists on the `ErasureContext`. Running quarantine any earlier would have no sha256 to work with;
+any later would break HR2's MinIO-before-Redis ordering. The step is `required=False` — a document
+that was never quarantined has nothing to delete and must not register a partial purge.
+
+**Erasing a document that was only ever rejected.** Such a document has no `doc_id`, no sidecar and
+no registry row, so `delete_doc` cannot reach it. The operator path is by sha256:
+
+1. Get the sha256 from the rejected job's `GET /upload/status/{job_id}` body, or from
+   `sha256sum <file>`, or by listing `quarantine/*.meta.json` and matching the requester's filename
+   against each object's `filenames` array.
+2. Run `scripts/erase-quarantine.sh <sha256>` (a thin wrapper over `erase_quarantine(sha256)`, which
+   shares the cascade's implementation). It exits non-zero if any delete errors.
+3. Purge any documented backup manually, per HR2 — see below.
+
+No new MCP tool or HTTP route is added for this; it is deliberately an operator-only path.
+
+**Retention.** Quarantine is bounded by a MinIO lifecycle rule, applied per environment by the
+operator (owner: Salil Trehan) rather than by in-code `set_bucket_lifecycle`:
+
+```
+mc ilm rule add --prefix "quarantine/" --expire-days 30 <alias>/<bucket>
+mc ilm rule ls <alias>/<bucket>                      # verify
+mc version info <alias>/<bucket>                     # if versioning is ON, also:
+mc ilm rule add --prefix "quarantine/" --noncurrent-expire-days 30 <alias>/<bucket>
+```
+
+> If bucket versioning is enabled, note that `remove_object`-based erasure leaves noncurrent
+> versions behind **in every prefix**, not just this one. That is a general HR2 gap and is tracked
+> outside RFC-049.
+
 Backup purging is explicitly the operator's responsibility and must be documented in the runbook; it
 is never performed automatically. **[high — AWS Bedrock RTBF guidance.]**
+
+> **Backup status (verified 2026-09-23): no documented backup exists.** There is no `mc mirror`,
+> `pg_dump`, Velero schedule or snapshot job anywhere in `scripts/`, `Makefile`, the k8s manifests or
+> CI. The manual-purge step above therefore has no target today. This is recorded as fact, not as
+> reassurance: the moment a backup *is* introduced, it inherits the whole cascade — `quarantine/`
+> included — and this note must be replaced with the purge procedure.
 
 ### LLM-provider data-residency routing  (ADR-005)
 
