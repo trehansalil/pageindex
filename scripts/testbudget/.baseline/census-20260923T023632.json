@@ -1,0 +1,1456 @@
+{
+  "timestamp": 1790130990.0195823,
+  "commit": "c04a048d1a02be9bb3cde26d677f6fe944ce9a7e",
+  "branch": "ICR-97-rfc48-surya-image-fallback",
+  "files": 27,
+  "collected": 941,
+  "defs": 930,
+  "asserts": 2223,
+  "assert_density": 2.39,
+  "param_decorators": 4,
+  "param_rows": 9,
+  "hard_skips": 1,
+  "src_files": 72,
+  "test_src_ratio": 0.375,
+  "coverage_pct": null,
+  "runtime_s": null,
+  "peak_rss_mb": null,
+  "collected_is_estimate": false,
+  "per_file": [
+    {
+      "path": "tests/test_bidi.py",
+      "defs": 56,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 114,
+      "raises": 6,
+      "skips": 0,
+      "classes": 44,
+      "lines": 1836,
+      "collected": 56,
+      "parse_error": "",
+      "assert_density": 2.04
+    },
+    {
+      "path": "tests/test_cache.py",
+      "defs": 7,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 21,
+      "raises": 1,
+      "skips": 0,
+      "classes": 0,
+      "lines": 180,
+      "collected": 7,
+      "parse_error": "",
+      "assert_density": 3.0
+    },
+    {
+      "path": "tests/test_client.py",
+      "defs": 29,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 78,
+      "raises": 22,
+      "skips": 0,
+      "classes": 5,
+      "lines": 1155,
+      "collected": 29,
+      "parse_error": "",
+      "assert_density": 2.69
+    },
+    {
+      "path": "tests/test_config.py",
+      "defs": 18,
+      "params": 3,
+      "param_rows": 6,
+      "asserts": 29,
+      "raises": 1,
+      "skips": 0,
+      "classes": 0,
+      "lines": 450,
+      "collected": 27,
+      "parse_error": "",
+      "assert_density": 1.61
+    },
+    {
+      "path": "tests/test_converters.py",
+      "defs": 77,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 227,
+      "raises": 23,
+      "skips": 1,
+      "classes": 13,
+      "lines": 2899,
+      "collected": 77,
+      "parse_error": "",
+      "assert_density": 2.95
+    },
+    {
+      "path": "tests/test_density_gate.py",
+      "defs": 29,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 90,
+      "raises": 4,
+      "skips": 0,
+      "classes": 27,
+      "lines": 1248,
+      "collected": 29,
+      "parse_error": "",
+      "assert_density": 3.1
+    },
+    {
+      "path": "tests/test_flat.py",
+      "defs": 51,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 103,
+      "raises": 5,
+      "skips": 0,
+      "classes": 16,
+      "lines": 1580,
+      "collected": 51,
+      "parse_error": "",
+      "assert_density": 2.02
+    },
+    {
+      "path": "tests/test_garble.py",
+      "defs": 55,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 135,
+      "raises": 2,
+      "skips": 0,
+      "classes": 39,
+      "lines": 2087,
+      "collected": 55,
+      "parse_error": "",
+      "assert_density": 2.45
+    },
+    {
+      "path": "tests/test_gates.py",
+      "defs": 48,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 105,
+      "raises": 9,
+      "skips": 0,
+      "classes": 2,
+      "lines": 1660,
+      "collected": 48,
+      "parse_error": "",
+      "assert_density": 2.19
+    },
+    {
+      "path": "tests/test_helpers_combined.py",
+      "defs": 36,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 114,
+      "raises": 6,
+      "skips": 0,
+      "classes": 0,
+      "lines": 1080,
+      "collected": 36,
+      "parse_error": "",
+      "assert_density": 3.17
+    },
+    {
+      "path": "tests/test_hr3_zdr_egress.py",
+      "defs": 48,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 79,
+      "raises": 31,
+      "skips": 0,
+      "classes": 36,
+      "lines": 1950,
+      "collected": 48,
+      "parse_error": "",
+      "assert_density": 1.65
+    },
+    {
+      "path": "tests/test_image_blocks.py",
+      "defs": 15,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 61,
+      "raises": 6,
+      "skips": 0,
+      "classes": 12,
+      "lines": 775,
+      "collected": 15,
+      "parse_error": "",
+      "assert_density": 4.07
+    },
+    {
+      "path": "tests/test_inspector.py",
+      "defs": 21,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 55,
+      "raises": 32,
+      "skips": 0,
+      "classes": 16,
+      "lines": 1287,
+      "collected": 21,
+      "parse_error": "",
+      "assert_density": 2.62
+    },
+    {
+      "path": "tests/test_integration.py",
+      "defs": 7,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 19,
+      "raises": 1,
+      "skips": 0,
+      "classes": 3,
+      "lines": 401,
+      "collected": 7,
+      "parse_error": "",
+      "assert_density": 2.71
+    },
+    {
+      "path": "tests/test_obs_logging.py",
+      "defs": 89,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 243,
+      "raises": 12,
+      "skips": 0,
+      "classes": 37,
+      "lines": 2670,
+      "collected": 89,
+      "parse_error": "",
+      "assert_density": 2.73
+    },
+    {
+      "path": "tests/test_ocr_fallback.py",
+      "defs": 26,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 58,
+      "raises": 5,
+      "skips": 0,
+      "classes": 3,
+      "lines": 1181,
+      "collected": 26,
+      "parse_error": "",
+      "assert_density": 2.23
+    },
+    {
+      "path": "tests/test_recovery.py",
+      "defs": 49,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 114,
+      "raises": 5,
+      "skips": 0,
+      "classes": 37,
+      "lines": 1807,
+      "collected": 49,
+      "parse_error": "",
+      "assert_density": 2.33
+    },
+    {
+      "path": "tests/test_registry.py",
+      "defs": 41,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 73,
+      "raises": 5,
+      "skips": 0,
+      "classes": 3,
+      "lines": 1678,
+      "collected": 41,
+      "parse_error": "",
+      "assert_density": 1.78
+    },
+    {
+      "path": "tests/test_registry_backfill.py",
+      "defs": 15,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 18,
+      "raises": 13,
+      "skips": 0,
+      "classes": 1,
+      "lines": 698,
+      "collected": 15,
+      "parse_error": "",
+      "assert_density": 1.2
+    },
+    {
+      "path": "tests/test_script.py",
+      "defs": 25,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 64,
+      "raises": 2,
+      "skips": 0,
+      "classes": 12,
+      "lines": 433,
+      "collected": 25,
+      "parse_error": "",
+      "assert_density": 2.56
+    },
+    {
+      "path": "tests/test_source_invariants.py",
+      "defs": 16,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 31,
+      "raises": 0,
+      "skips": 0,
+      "classes": 2,
+      "lines": 628,
+      "collected": 16,
+      "parse_error": "",
+      "assert_density": 1.94
+    },
+    {
+      "path": "tests/test_staging_e2e.py",
+      "defs": 2,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 6,
+      "raises": 1,
+      "skips": 0,
+      "classes": 1,
+      "lines": 100,
+      "collected": 2,
+      "parse_error": "",
+      "assert_density": 3.0
+    },
+    {
+      "path": "tests/test_storage.py",
+      "defs": 34,
+      "params": 1,
+      "param_rows": 3,
+      "asserts": 106,
+      "raises": 13,
+      "skips": 0,
+      "classes": 0,
+      "lines": 1507,
+      "collected": 36,
+      "parse_error": "",
+      "assert_density": 3.12
+    },
+    {
+      "path": "tests/test_triad_golden.py",
+      "defs": 6,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 5,
+      "raises": 1,
+      "skips": 0,
+      "classes": 6,
+      "lines": 505,
+      "collected": 6,
+      "parse_error": "",
+      "assert_density": 0.83
+    },
+    {
+      "path": "tests/test_upload.py",
+      "defs": 17,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 35,
+      "raises": 5,
+      "skips": 0,
+      "classes": 1,
+      "lines": 424,
+      "collected": 17,
+      "parse_error": "",
+      "assert_density": 2.06
+    },
+    {
+      "path": "tests/test_verdict.py",
+      "defs": 83,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 164,
+      "raises": 10,
+      "skips": 0,
+      "classes": 56,
+      "lines": 3296,
+      "collected": 83,
+      "parse_error": "",
+      "assert_density": 1.98
+    },
+    {
+      "path": "tests/test_worker.py",
+      "defs": 30,
+      "params": 0,
+      "param_rows": 0,
+      "asserts": 76,
+      "raises": 12,
+      "skips": 0,
+      "classes": 4,
+      "lines": 1149,
+      "collected": 30,
+      "parse_error": "",
+      "assert_density": 2.53
+    }
+  ],
+  "archaeology": {
+    "merge_base": "456c00c6c51562e37d231a4ea01398ee4cdb5f28",
+    "per_commit": [
+      {
+        "commit": "18c6881|2026-08-19|fix(zone-5,zone-6,zone-7,zone-3): wave 1 + wave 2a remediation",
+        "lines_added": 2939,
+        "lines_removed": 66,
+        "net": 2873
+      },
+      {
+        "commit": "65e88dc|2026-08-19|fix(zone-2,zone-4): OcrDecision single-writer + verdict decomposition with ledger",
+        "lines_added": 2543,
+        "lines_removed": 342,
+        "net": 2201
+      },
+      {
+        "commit": "9880d20|2026-08-18|fix(zone-1,zone-4): garble surface unification + verdict authority consolidation",
+        "lines_added": 2134,
+        "lines_removed": 44,
+        "net": 2090
+      },
+      {
+        "commit": "46efa5b|2026-08-19|fix(zone-2,zone-6): OCR recovery flag decoupling + content-destructive safety bounds",
+        "lines_added": 1836,
+        "lines_removed": 23,
+        "net": 1813
+      },
+      {
+        "commit": "3e8af1e|2026-09-01|feat(rfc041): implement Waves 2-4 \u2014 D3 single-writer, D5 heuristic registry, D6/D7 triad tests, D8/D9 lifecycle CI",
+        "lines_added": 1537,
+        "lines_removed": 0,
+        "net": 1537
+      },
+      {
+        "commit": "03d72a4|2026-09-18|feat(rfc-046): D12 core \u2014 structured logging, correlation, child stderr, logtrace",
+        "lines_added": 1530,
+        "lines_removed": 22,
+        "net": 1508
+      },
+      {
+        "commit": "775f40f|2026-08-11|test(rfc-036): add tests for RFC-036 run19-landscape-writebarrier-enrichment-fixes",
+        "lines_added": 1448,
+        "lines_removed": 9,
+        "net": 1439
+      },
+      {
+        "commit": "06b2bae|2026-08-21|refactor: decompose 7 monolith modules into focused subpackages",
+        "lines_added": 2348,
+        "lines_removed": 1245,
+        "net": 1103
+      },
+      {
+        "commit": "9ae35cc|2026-08-07|test(rfc-undefined): add tests for RFC-undefined undefined",
+        "lines_added": 1096,
+        "lines_removed": 47,
+        "net": 1049
+      },
+      {
+        "commit": "bedc479|2026-08-10|test(rfc-036): add tests for RFC-036 run19-landscape-writebarrier-enrichment-fixes",
+        "lines_added": 1048,
+        "lines_removed": 17,
+        "net": 1031
+      },
+      {
+        "commit": "5cda8d2|2026-08-25|test(rfc039): add HR3 egress control plane tests",
+        "lines_added": 998,
+        "lines_removed": 1,
+        "net": 997
+      },
+      {
+        "commit": "7f35745|2026-08-18|fix(zone-1,zone-4): GarbleProfile consolidation + picture/OCR config decoupling",
+        "lines_added": 1703,
+        "lines_removed": 724,
+        "net": 979
+      },
+      {
+        "commit": "ba9a62b|2026-08-25|test(zone1,zone2): update tests for garble + OCR remediation",
+        "lines_added": 991,
+        "lines_removed": 14,
+        "net": 977
+      },
+      {
+        "commit": "0d9bda1|2026-08-17|fix(zone-2): exhaustive route dispatch + _finalize_routing",
+        "lines_added": 974,
+        "lines_removed": 8,
+        "net": 966
+      },
+      {
+        "commit": "35bec73|2026-08-17|fix(zone-7): stale-row race guard + verdict threading through converters_cli",
+        "lines_added": 945,
+        "lines_removed": 1,
+        "net": 944
+      },
+      {
+        "commit": "9ccc6f1|2026-08-29|fix(zone1): verdict-gate promotion cascade \u2014 VG-1..VG-7",
+        "lines_added": 947,
+        "lines_removed": 14,
+        "net": 933
+      },
+      {
+        "commit": "b1b8a6c|2026-08-26|test(zone5,zone7): wave 3 zone contract tests",
+        "lines_added": 870,
+        "lines_removed": 1,
+        "net": 869
+      },
+      {
+        "commit": "2252c98|2026-08-24|test(zone-4.7): add regression tests for flat_doc_view and consolidate flat_block text logic",
+        "lines_added": 844,
+        "lines_removed": 0,
+        "net": 844
+      },
+      {
+        "commit": "9d49ce9|2026-08-24|fix(zone-2): collapse registry dual-write into single linear path",
+        "lines_added": 840,
+        "lines_removed": 5,
+        "net": 835
+      },
+      {
+        "commit": "277cea6|2026-08-18|fix(zone-2,zone-7): consolidate compute_verdict + silent fallback observability",
+        "lines_added": 822,
+        "lines_removed": 2,
+        "net": 820
+      },
+      {
+        "commit": "6ae79d2|2026-08-28|test(zone1,zone5): zone-specific tests for OCR recovery eligibility + dual-writer consistency",
+        "lines_added": 817,
+        "lines_removed": 0,
+        "net": 817
+      },
+      {
+        "commit": "b5cc7fb|2026-08-08|test(rfc-034): add tests for RFC-034 run15-reconciliation-remediation",
+        "lines_added": 863,
+        "lines_removed": 62,
+        "net": 801
+      },
+      {
+        "commit": "68d4352|2026-08-24|fix(zone-1): unify tree/flat verdict gate evaluation and extract hysteresis helper",
+        "lines_added": 785,
+        "lines_removed": 43,
+        "net": 742
+      },
+      {
+        "commit": "e0749ba|2026-09-01|test(rfc041): add D2/D4/D10c coverage, architecture guards, and TEST_INDEX mapping",
+        "lines_added": 854,
+        "lines_removed": 115,
+        "net": 739
+      },
+      {
+        "commit": "0b20322|2026-08-24|fix(zone-3): gate all LLM egress sites for ZDR/PII compliance (HR3)",
+        "lines_added": 718,
+        "lines_removed": 11,
+        "net": 707
+      },
+      {
+        "commit": "512c36c|2026-08-25|fix(zone3): multi-store dual-write consistency remediation",
+        "lines_added": 688,
+        "lines_removed": 0,
+        "net": 688
+      },
+      {
+        "commit": "040aaae|2026-09-02|test(rfc-043): architecture guards, unit tests, and integration coverage",
+        "lines_added": 651,
+        "lines_removed": 10,
+        "net": 641
+      },
+      {
+        "commit": "7b345c4|2026-08-17|feat(zone-1): consolidate garble detection \u2014 single check_garble entry point with GarbleContext enum",
+        "lines_added": 672,
+        "lines_removed": 35,
+        "net": 637
+      },
+      {
+        "commit": "70a0786|2026-09-08|test(rfc-045): freeze facade surface and pin unexercised consumers",
+        "lines_added": 628,
+        "lines_removed": 0,
+        "net": 628
+      },
+      {
+        "commit": "a96b0f6|2026-09-17|fix(rfc-046): repair the OCR eval harness \u2014 D1 tasks 2.1-2.4",
+        "lines_added": 619,
+        "lines_removed": 0,
+        "net": 619
+      },
+      {
+        "commit": "1857d86|2026-08-19|fix(zone-5): explicit severity/flat_applicable fields eliminate GATE_TABLE coupling",
+        "lines_added": 618,
+        "lines_removed": 0,
+        "net": 618
+      },
+      {
+        "commit": "f37584e|2026-08-17|feat(zone-5): split OCR_ESCALATION into garble/per-picture, add primary_text, unify enrichment path",
+        "lines_added": 615,
+        "lines_removed": 11,
+        "net": 604
+      },
+      {
+        "commit": "0625ecb|2026-08-29|fix(zone6): gate the AGPL structural fallback and close remote converter drift",
+        "lines_added": 575,
+        "lines_removed": 4,
+        "net": 571
+      },
+      {
+        "commit": "d063b37|2026-08-25|test(zone3): add verdict promotion candidate contract tests",
+        "lines_added": 562,
+        "lines_removed": 0,
+        "net": 562
+      },
+      {
+        "commit": "9f79903|2026-08-24|fix(zone-4,zone-5): garble detection consolidation + converter-gate-route ordering",
+        "lines_added": 599,
+        "lines_removed": 54,
+        "net": 545
+      },
+      {
+        "commit": "8d9526d|2026-08-17|feat(zone-1): verdict engine consolidation \u2014 GATE_TABLE, all_defects, delete legacy string path",
+        "lines_added": 632,
+        "lines_removed": 106,
+        "net": 526
+      },
+      {
+        "commit": "b508c42|2026-08-13|feat(zone-3): RTL consolidation \u2014 delete 5 legacy deciders, require expected_script",
+        "lines_added": 833,
+        "lines_removed": 307,
+        "net": 526
+      },
+      {
+        "commit": "d93c976|2026-08-11|feat(zone-5): garble_prongs decomposition, order_verdict RTL unification, break circular import",
+        "lines_added": 543,
+        "lines_removed": 19,
+        "net": 524
+      },
+      {
+        "commit": "9eebab0|2026-08-12|feat(zone-1): verdict engine \u2014 HARD_FAIL_DEFECTS table, TreeGateResult.signals, cached thresholds, dead gate 11",
+        "lines_added": 518,
+        "lines_removed": 10,
+        "net": 508
+      },
+      {
+        "commit": "e02ec93|2026-08-28|fix(zone4): garble detection kernel \u2014 presentation-forms, table-block, numeric-junk, latin-mojibake",
+        "lines_added": 492,
+        "lines_removed": 11,
+        "net": 481
+      },
+      {
+        "commit": "a462f84|2026-09-01|feat(rfc-042): add tests for save_doc_meta enforcement and measurement guards",
+        "lines_added": 561,
+        "lines_removed": 85,
+        "net": 476
+      },
+      {
+        "commit": "6ed9b99|2026-08-12|feat(zone-3): unified RTL/garble \u2014 decide_rtl, apply_rtl, BlobKind, expected_script required",
+        "lines_added": 518,
+        "lines_removed": 48,
+        "net": 470
+      },
+      {
+        "commit": "82478cc|2026-08-17|feat(zone-6): verdict persistence consolidation \u2014 write_verdict entry point, JobStatus state machine",
+        "lines_added": 492,
+        "lines_removed": 30,
+        "net": 462
+      },
+      {
+        "commit": "136b0aa|2026-08-19|fix(zone-1): GateSpec-driven recovery dispatch replacing OcrRetryReason",
+        "lines_added": 462,
+        "lines_removed": 1,
+        "net": 461
+      },
+      {
+        "commit": "24d5c93|2026-09-18|test(rfc-046): task 12.8 \u2014 guard tests for the decision layer",
+        "lines_added": 440,
+        "lines_removed": 0,
+        "net": 440
+      },
+      {
+        "commit": "c4e69b9|2026-09-22|test(rfc-048): cover /ocr/image endpoint, de-tautologise the quality gate",
+        "lines_added": 473,
+        "lines_removed": 51,
+        "net": 422
+      },
+      {
+        "commit": "7baede7|2026-08-19|fix(zone-8): FeatureWiring registry for cross-module contract validation",
+        "lines_added": 417,
+        "lines_removed": 0,
+        "net": 417
+      },
+      {
+        "commit": "4bc1f5c|2026-08-11|feat(zones-1-2): TreeDefect enum, TreeGateResult, TreeSignals/VerdictThresholds, feedback loop fix",
+        "lines_added": 424,
+        "lines_removed": 22,
+        "net": 402
+      },
+      {
+        "commit": "e64eec6|2026-08-25|test(rfc038): add worker timeout unification tests",
+        "lines_added": 402,
+        "lines_removed": 1,
+        "net": 401
+      },
+      {
+        "commit": "0340c9e|2026-08-12|feat(zone-6): verdict persistence \u2014 write_verdict atomic dual-write, CAS guard, artifact-carries-verdict",
+        "lines_added": 404,
+        "lines_removed": 6,
+        "net": 398
+      },
+      {
+        "commit": "0aa01ab|2026-09-15|test(rfc-046): close the world on OCR attribution and config parsing",
+        "lines_added": 396,
+        "lines_removed": 0,
+        "net": 396
+      },
+      {
+        "commit": "00b23a0|2026-09-18|style: format the repository with ruff format",
+        "lines_added": 1270,
+        "lines_removed": 875,
+        "net": 395
+      },
+      {
+        "commit": "16183db|2026-08-17|fix(zone-3): unify offline verdict recomputers \u2014 replace _defect_from_reason_str with validate_tree",
+        "lines_added": 390,
+        "lines_removed": 0,
+        "net": 390
+      },
+      {
+        "commit": "1c90607|2026-08-27|fix(zone7): wave 3 remediation \u2014 converter chain failure policy + AGPL gating",
+        "lines_added": 382,
+        "lines_removed": 2,
+        "net": 380
+      },
+      {
+        "commit": "113c33a|2026-08-17|refactor(zone-1): delete dead garble wrappers, fix FLAT_MARKDOWN blob_kind, migrate 17 test files",
+        "lines_added": 520,
+        "lines_removed": 140,
+        "net": 380
+      },
+      {
+        "commit": "1302806|2026-08-12|feat(zone-2): picture_plane module \u2014 OcrMode, SkipReason, PictureRegion, decide_ocr_mode, bind_markers",
+        "lines_added": 404,
+        "lines_removed": 25,
+        "net": 379
+      },
+      {
+        "commit": "d5f816f|2026-08-17|refactor(zone-6): decouple body_for_containment + consolidate candidate selection",
+        "lines_added": 378,
+        "lines_removed": 0,
+        "net": 378
+      },
+      {
+        "commit": "85559bb|2026-08-29|test(zone4,zone5): header-only table tests + naive block.get('text') CI guard",
+        "lines_added": 373,
+        "lines_removed": 1,
+        "net": 372
+      },
+      {
+        "commit": "d4c5ef2|2026-08-25|feat(zone3): verdict promotion quality gate refactor",
+        "lines_added": 378,
+        "lines_removed": 7,
+        "net": 371
+      },
+      {
+        "commit": "1a93c94|2026-08-12|feat(zone-7): flag sprawl \u2014 decouple LEAF_SPLIT_RATIO, region garble check, snapshot completeness, inspector_class guard",
+        "lines_added": 364,
+        "lines_removed": 2,
+        "net": 362
+      },
+      {
+        "commit": "6c96095|2026-08-06|test(rfc-031): add tests for pdf-inspector shadow-mode integration",
+        "lines_added": 365,
+        "lines_removed": 3,
+        "net": 362
+      },
+      {
+        "commit": "e26b7eb|2026-08-11|feat(zone-4): stage table with provenance, dual pipeline collapse, containment snapshot fix",
+        "lines_added": 354,
+        "lines_removed": 0,
+        "net": 354
+      },
+      {
+        "commit": "d8d13c3|2026-08-11|feat(zones-3-5): picture alignment fix, script.py leaf module with drift test",
+        "lines_added": 358,
+        "lines_removed": 16,
+        "net": 342
+      },
+      {
+        "commit": "929dbd4|2026-08-17|fix(zone-1): thread expected_script through PDF conversion chain",
+        "lines_added": 331,
+        "lines_removed": 22,
+        "net": 309
+      },
+      {
+        "commit": "ca57da1|2026-09-18|Refactor imports in formatter.py and test_gates.py; add decision records tests for gate functions and recovery eligibility",
+        "lines_added": 310,
+        "lines_removed": 2,
+        "net": 308
+      },
+      {
+        "commit": "31b8d97|2026-09-22|feat(rfc-047): D8 Surya OCR fallback for Arabic density failures (Wave 5)",
+        "lines_added": 299,
+        "lines_removed": 0,
+        "net": 299
+      },
+      {
+        "commit": "13c38cf|2026-09-04|refactor(ocr): drop dead OCR-plan code and document decide_ocr_strategy authority",
+        "lines_added": 297,
+        "lines_removed": 0,
+        "net": 297
+      },
+      {
+        "commit": "b43f4c1|2026-08-24|fix(zone-1): per-block flat garble gate + FLAT_GATE_COVERAGE exhaustiveness",
+        "lines_added": 296,
+        "lines_removed": 3,
+        "net": 293
+      },
+      {
+        "commit": "3ae8f44|2026-08-27|fix(zone5): wave 3 remediation \u2014 measurement tooling table-block blind spot + char-count parity",
+        "lines_added": 283,
+        "lines_removed": 0,
+        "net": 283
+      },
+      {
+        "commit": "5efbfa3|2026-09-19|fix(rfc-046): correlate the records that gate 12.C found uncorrelated",
+        "lines_added": 273,
+        "lines_removed": 0,
+        "net": 273
+      },
+      {
+        "commit": "38d2184|2026-08-12|feat(zone-5): Route StrEnum, decide_route(), ExtractionSnapshot, first_defect write-once",
+        "lines_added": 276,
+        "lines_removed": 3,
+        "net": 273
+      },
+      {
+        "commit": "cf23107|2026-09-04|fix(recovery): consistent re-entry guard and all-defects RTL eligibility",
+        "lines_added": 302,
+        "lines_removed": 47,
+        "net": 255
+      },
+      {
+        "commit": "9e85650|2026-08-20|feat(gates): add Test Index Guard script and source-to-test mapping index",
+        "lines_added": 253,
+        "lines_removed": 0,
+        "net": 253
+      },
+      {
+        "commit": "f0f960e|2026-08-27|fix(zone3,zone4): wave 2 remediation \u2014 OCR recovery cascade + bidi/RTL processing split",
+        "lines_added": 247,
+        "lines_removed": 0,
+        "net": 247
+      },
+      {
+        "commit": "43aeb52|2026-09-21|feat(rfc-046): tasks 6.1\u20136.3 + 6.C gate \u2014 D4 content-derived OCR lang selection",
+        "lines_added": 245,
+        "lines_removed": 0,
+        "net": 245
+      },
+      {
+        "commit": "d170cf3|2026-09-21|feat(rfc-046): tasks 5.1\u20135.4 \u2014 D7 arbitrate on the extraction",
+        "lines_added": 242,
+        "lines_removed": 0,
+        "net": 242
+      },
+      {
+        "commit": "c1850d4|2026-08-27|fix(zone6): wave 3 remediation \u2014 erasure cascade completeness guard + write-visibility consistency",
+        "lines_added": 242,
+        "lines_removed": 0,
+        "net": 242
+      },
+      {
+        "commit": "315bb1f|2026-09-21|feat(rfc-046): tasks 4.1\u20134.6 \u2014 D6 flat verdicts from flat signals",
+        "lines_added": 258,
+        "lines_removed": 19,
+        "net": 239
+      },
+      {
+        "commit": "a892d68|2026-08-06|test(rfc-032): add tests for RFC-032 pdf-inspector-tier1-activation",
+        "lines_added": 239,
+        "lines_removed": 0,
+        "net": 239
+      },
+      {
+        "commit": "48697b6|2026-09-22|feat(rfc-048): Surya OCR fallback for standalone images",
+        "lines_added": 237,
+        "lines_removed": 3,
+        "net": 234
+      },
+      {
+        "commit": "619e92c|2026-09-21|feat(rfc-046): tasks 3.14\u20133.17 \u2014 unified preclassify_document() module",
+        "lines_added": 234,
+        "lines_removed": 0,
+        "net": 234
+      },
+      {
+        "commit": "d245b86|2026-08-11|feat(zone-7): worker metrics bridge to Redis, flag inventory at job start, deploy sha e2e",
+        "lines_added": 231,
+        "lines_removed": 2,
+        "net": 229
+      },
+      {
+        "commit": "41cefdc|2026-08-26|fix(reconcile): pop force_verdict_override before upsert_doc call",
+        "lines_added": 215,
+        "lines_removed": 2,
+        "net": 213
+      },
+      {
+        "commit": "57df3e5|2026-08-11|feat(zones-6-7): read-merge-write sidecar, barrier propagation, build_sha observability",
+        "lines_added": 259,
+        "lines_removed": 50,
+        "net": 209
+      },
+      {
+        "commit": "d4ab963|2026-08-24|test(rfc037): add verdict CAS tests, update existing tests for unified API",
+        "lines_added": 410,
+        "lines_removed": 225,
+        "net": 185
+      },
+      {
+        "commit": "744a534|2026-08-17|refactor(zone-4): extract prepare_tree entry point, consolidate transform pipeline",
+        "lines_added": 183,
+        "lines_removed": 14,
+        "net": 169
+      },
+      {
+        "commit": "bc57674|2026-09-08|feat(rfc-045): land the facade disposition measurement as a committed artifact",
+        "lines_added": 155,
+        "lines_removed": 0,
+        "net": 155
+      },
+      {
+        "commit": "8f4a012|2026-09-22|feat(rfc-047): D7 script-aware Arabic density floor (Wave 5)",
+        "lines_added": 155,
+        "lines_removed": 4,
+        "net": 151
+      },
+      {
+        "commit": "bbb6517|2026-09-15|feat(rfc-046): introduce OcrEngine and label all five OCR invocation sites",
+        "lines_added": 143,
+        "lines_removed": 0,
+        "net": 143
+      },
+      {
+        "commit": "6d8cdb8|2026-09-22|fix(rfc-047): per-block garble field-clear on enriched image blocks (D3, Wave 2)",
+        "lines_added": 141,
+        "lines_removed": 0,
+        "net": 141
+      },
+      {
+        "commit": "5c61f4d|2026-08-12|feat(zone-4): Candidate dataclass, _candidate_from_document entry point, name-keyed _run_stages",
+        "lines_added": 152,
+        "lines_removed": 14,
+        "net": 138
+      },
+      {
+        "commit": "eb958b5|2026-09-22|fix(rfc-047): make the flat per-block garble gate ratio-aware (D2)",
+        "lines_added": 136,
+        "lines_removed": 0,
+        "net": 136
+      },
+      {
+        "commit": "b6931f9|2026-09-22|fix(rfc-047): flat-path defect re-derivation \u2014 stop tree defects leaking (D4, Wave 3)",
+        "lines_added": 137,
+        "lines_removed": 5,
+        "net": 132
+      },
+      {
+        "commit": "9a5b90b|2026-08-29|test(zone4): measurement blind spot \u2014 flat block + tree node helpers",
+        "lines_added": 120,
+        "lines_removed": 0,
+        "net": 120
+      },
+      {
+        "commit": "52d7a32|2026-08-24|fix(zone-6): recovery routing wiring gap enforcement",
+        "lines_added": 115,
+        "lines_removed": 0,
+        "net": 115
+      },
+      {
+        "commit": "8be0d33|2026-09-21|fix(rfc-046): tasks 3.1+3.2 \u2014 align PF detectors onto one shared ratio",
+        "lines_added": 112,
+        "lines_removed": 5,
+        "net": 107
+      },
+      {
+        "commit": "1c07181|2026-09-08|fix(issue): resolve _relevel_by_numbering through its submodule",
+        "lines_added": 112,
+        "lines_removed": 15,
+        "net": 97
+      },
+      {
+        "commit": "af9e753|2026-09-22|feat(rfc-047): D5 field split + Waves 1-4 corpus baseline (Wave 4)",
+        "lines_added": 96,
+        "lines_removed": 0,
+        "net": 96
+      },
+      {
+        "commit": "2e5ddd9|2026-09-19|feat(rfc-046): task 12.6 \u2014 hash doc_name, never log it in clear",
+        "lines_added": 109,
+        "lines_removed": 14,
+        "net": 95
+      },
+      {
+        "commit": "40ec86e|2026-09-21|test(rfc-046): task 3.7 \u2014 threshold-immutability guard",
+        "lines_added": 94,
+        "lines_removed": 0,
+        "net": 94
+      },
+      {
+        "commit": "136a60c|2026-08-29|fix(zone2): close the two presentation-forms fallbacks e02ec93 missed",
+        "lines_added": 90,
+        "lines_removed": 0,
+        "net": 90
+      },
+      {
+        "commit": "daefd11|2026-08-06|feat(rfc-032): activate PDF inspector Tier-1 pre-classification",
+        "lines_added": 96,
+        "lines_removed": 9,
+        "net": 87
+      },
+      {
+        "commit": "9d3de4e|2026-09-19|feat(rfc-046): swap the filename for its digest in our own log messages",
+        "lines_added": 86,
+        "lines_removed": 0,
+        "net": 86
+      },
+      {
+        "commit": "cdd1e5c|2026-09-18|feat(rfc-046): task 12.2 remainder \u2014 bind the Langfuse trace_id into the log context",
+        "lines_added": 86,
+        "lines_removed": 0,
+        "net": 86
+      },
+      {
+        "commit": "d577453|2026-08-27|fix(rfc040): verdict-garble critical zone remediation \u2014 D1-D6",
+        "lines_added": 234,
+        "lines_removed": 150,
+        "net": 84
+      },
+      {
+        "commit": "9bb32d6|2026-09-22|fix(rfc-047): require a Latin letter in the mixed-script bridge (D1)",
+        "lines_added": 81,
+        "lines_removed": 1,
+        "net": 80
+      },
+      {
+        "commit": "610d078|2026-08-27|fix(zone5,zone7): wave 3 remediation \u2014 dual-write consistency + config layering",
+        "lines_added": 100,
+        "lines_removed": 20,
+        "net": 80
+      },
+      {
+        "commit": "562ed12|2026-09-21|test(rfc-046): task 3.9 \u2014 architecture guard for post-NFKC ScriptContext (D10)",
+        "lines_added": 77,
+        "lines_removed": 0,
+        "net": 77
+      },
+      {
+        "commit": "e701122|2026-09-15|feat(rfc-046): persist garble prongs and OCR engine to both sidecar paths",
+        "lines_added": 72,
+        "lines_removed": 0,
+        "net": 72
+      },
+      {
+        "commit": "a44b50b|2026-09-18|fix(rfc-046): MAX_EFFECTIVE_TIMEOUT 54000s -> 3600s (60 minutes)",
+        "lines_added": 79,
+        "lines_removed": 22,
+        "net": 57
+      },
+      {
+        "commit": "4f196de|2026-08-11|feat(zone-2): classify_verdict rule-table grouping (HARD_FAILs, PROMOTIONs, CAPs)",
+        "lines_added": 56,
+        "lines_removed": 0,
+        "net": 56
+      },
+      {
+        "commit": "bd4428e|2026-09-18|test(rfc-046): task 3.10 \u2014 property test proving timeout bound inversion",
+        "lines_added": 55,
+        "lines_removed": 0,
+        "net": 55
+      },
+      {
+        "commit": "3c7eda1|2026-09-09|refactor(rfc-045): wave 1 \u2014 shrink the client barrel by three entries",
+        "lines_added": 58,
+        "lines_removed": 3,
+        "net": 55
+      },
+      {
+        "commit": "de61ade|2026-09-18|test(rfc-046): task 3.10 \u2014 make the timeout properties test production",
+        "lines_added": 98,
+        "lines_removed": 48,
+        "net": 50
+      },
+      {
+        "commit": "dec98a1|2026-08-25|fix(zone3): config layering dead-code consolidation",
+        "lines_added": 64,
+        "lines_removed": 17,
+        "net": 47
+      },
+      {
+        "commit": "80cab4c|2026-09-15|fix(rfc-046): close the attribution gap the smoke test exposed; amend R6",
+        "lines_added": 46,
+        "lines_removed": 0,
+        "net": 46
+      },
+      {
+        "commit": "31ae833|2026-09-19|fix(rfc-046): correlate the batch route's registry dual-write \u2014 found by gate 12.C",
+        "lines_added": 41,
+        "lines_removed": 0,
+        "net": 41
+      },
+      {
+        "commit": "5203bb0|2026-09-18|feat(rfc-046): task 12.9 \u2014 unify all logging.basicConfig onto obs.configure()",
+        "lines_added": 40,
+        "lines_removed": 0,
+        "net": 40
+      },
+      {
+        "commit": "85dcce4|2026-08-24|fix(zone-7): Arabic/RTL pipeline blindness \u2014 density guard, tessdata system check, bidi table stitch",
+        "lines_added": 40,
+        "lines_removed": 2,
+        "net": 38
+      },
+      {
+        "commit": "0d669ee|2026-08-24|fix(zone-2,zone-3): table span protection + ScriptContext threading through gate/garble pipeline",
+        "lines_added": 46,
+        "lines_removed": 9,
+        "net": 37
+      },
+      {
+        "commit": "b13cebd|2026-09-15|feat(rfc-046): source the converter name instead of restating it",
+        "lines_added": 36,
+        "lines_removed": 0,
+        "net": 36
+      },
+      {
+        "commit": "217a835|2026-09-10|fix(garble): 3-fix chain for Doc 6 Arabic OCR recovery (RFC-045)",
+        "lines_added": 33,
+        "lines_removed": 0,
+        "net": 33
+      },
+      {
+        "commit": "b9ce785|2026-09-18|fix(rfc-046): task 3.12 \u2014 collapse batch-CLI / arq-worker timeout divergence",
+        "lines_added": 29,
+        "lines_removed": 0,
+        "net": 29
+      },
+      {
+        "commit": "c24cca6|2026-08-29|fix(zone5): catch TessdataUnavailableError on standalone image OCR branch",
+        "lines_added": 28,
+        "lines_removed": 0,
+        "net": 28
+      },
+      {
+        "commit": "9d55a93|2026-09-08|fix(rfc-lint): require an explicit RESOLVED marker to close an open question",
+        "lines_added": 23,
+        "lines_removed": 0,
+        "net": 23
+      },
+      {
+        "commit": "210403c|2026-08-26|fix(gate): map orphan tests + promote orphan check to FAIL",
+        "lines_added": 21,
+        "lines_removed": 0,
+        "net": 21
+      },
+      {
+        "commit": "c869dcd|2026-08-24|chore: map 10 orphan test files in TEST_INDEX.yaml",
+        "lines_added": 21,
+        "lines_removed": 0,
+        "net": 21
+      },
+      {
+        "commit": "691f22b|2026-09-22|fix(rfc-047): replace block-count ratio with character-mass ratio (D2 post-gate-FAIL)",
+        "lines_added": 59,
+        "lines_removed": 43,
+        "net": 16
+      },
+      {
+        "commit": "75bf69c|2026-08-19|fix(tests): update chapter titles and enhance wipe_processed verification",
+        "lines_added": 17,
+        "lines_removed": 5,
+        "net": 12
+      },
+      {
+        "commit": "beeffc9|2026-08-26|chore(test-index): wave 3 coverage mappings",
+        "lines_added": 10,
+        "lines_removed": 0,
+        "net": 10
+      },
+      {
+        "commit": "9766470|2026-09-21|fix(rfc-046): task 1.9 \u2014 bump CURRENT_PIPELINE_VERSION 4\u21925",
+        "lines_added": 9,
+        "lines_removed": 0,
+        "net": 9
+      },
+      {
+        "commit": "9eb356b|2026-08-26|chore(test-index): add missing coverage mappings for verdict + registry tests",
+        "lines_added": 7,
+        "lines_removed": 0,
+        "net": 7
+      },
+      {
+        "commit": "9858260|2026-09-09|refactor(rfc-045): wave 2 \u2014 remove SIDECAR_VERSION from the storage barrel",
+        "lines_added": 7,
+        "lines_removed": 1,
+        "net": 6
+      },
+      {
+        "commit": "646cdc0|2026-08-17|feat(zone-2): decompose 1365-line index() into recovery pipeline + orchestrator",
+        "lines_added": 10,
+        "lines_removed": 4,
+        "net": 6
+      },
+      {
+        "commit": "2a53e02|2026-08-28|fix(zone1,zone5): OCR recovery all-defects eligibility + dual-writer consistency observability",
+        "lines_added": 31,
+        "lines_removed": 26,
+        "net": 5
+      },
+      {
+        "commit": "4684a07|2026-08-27|chore(test-index): map wave 1-2 zone test files to source entries",
+        "lines_added": 5,
+        "lines_removed": 0,
+        "net": 5
+      },
+      {
+        "commit": "f413f00|2026-08-25|refactor(rfc038): extract worker timing constants to shared module (D3)",
+        "lines_added": 5,
+        "lines_removed": 0,
+        "net": 5
+      },
+      {
+        "commit": "4122d8d|2026-09-21|docs(rfc-046): tasks 7.1\u20137.4 + 7.C gate \u2014 D9 attributed corpus validation",
+        "lines_added": 7,
+        "lines_removed": 3,
+        "net": 4
+      },
+      {
+        "commit": "798634c|2026-09-18|fix(rfc-046): task 3.11 \u2014 fix floor/ceiling inversion in dynamic child timeout",
+        "lines_added": 25,
+        "lines_removed": 21,
+        "net": 4
+      },
+      {
+        "commit": "e9a2751|2026-09-01|feat(zones): thread promotion_paths_matched through verdict pipeline",
+        "lines_added": 4,
+        "lines_removed": 0,
+        "net": 4
+      },
+      {
+        "commit": "c8bde38|2026-08-24|chore: map zone-1 and zone-6 test files in TEST_INDEX.yaml",
+        "lines_added": 4,
+        "lines_removed": 0,
+        "net": 4
+      },
+      {
+        "commit": "cfbf1a1|2026-08-18|fix(zone-3): RecoveryOutcome dataclass + gate-driven recovery loop",
+        "lines_added": 554,
+        "lines_removed": 550,
+        "net": 4
+      },
+      {
+        "commit": "d26bbf8|2026-09-09|refactor(rfc-045): wave 5 \u2014 shrink the helpers barrel by twelve entries",
+        "lines_added": 15,
+        "lines_removed": 12,
+        "net": 3
+      },
+      {
+        "commit": "697e7c7|2026-09-09|refactor(rfc-045): wave 4 \u2014 shrink the worker barrel by nine entries",
+        "lines_added": 12,
+        "lines_removed": 9,
+        "net": 3
+      },
+      {
+        "commit": "2105b47|2026-09-09|refactor(rfc-045): wave 3 \u2014 shrink the registry_backfill barrel by eight entries",
+        "lines_added": 11,
+        "lines_removed": 8,
+        "net": 3
+      },
+      {
+        "commit": "cf904ff|2026-08-27|fix(regression): four regression fixes across garble, OCR, verdict, and re-entry gates",
+        "lines_added": 15,
+        "lines_removed": 12,
+        "net": 3
+      },
+      {
+        "commit": "8dcdf50|2026-08-18|fix(zone-6): consolidate RTL decision + NFKC resequencing",
+        "lines_added": 89,
+        "lines_removed": 86,
+        "net": 3
+      },
+      {
+        "commit": "09beb7f|2026-08-06|refactor: remove corpus-ingest-score.js and update .gitignore for .claude directory",
+        "lines_added": 4,
+        "lines_removed": 1,
+        "net": 3
+      },
+      {
+        "commit": "df673f9|2026-09-18|fix(rfc-046): repair the suspect-density decision-record test",
+        "lines_added": 3,
+        "lines_removed": 1,
+        "net": 2
+      },
+      {
+        "commit": "863b783|2026-09-21|fix(rfc-046): resolve 14 test failures from preclassify module (3.14-3.17)",
+        "lines_added": 21,
+        "lines_removed": 20,
+        "net": 1
+      },
+      {
+        "commit": "ca4198f|2026-08-27|chore(test-index): wave 3 coverage mappings",
+        "lines_added": 1,
+        "lines_removed": 0,
+        "net": 1
+      },
+      {
+        "commit": "7e5156c|2026-09-09|fix(verdict): lower depth-inadequate cap from 5 to 4 and raise node base",
+        "lines_added": 10,
+        "lines_removed": 10,
+        "net": 0
+      },
+      {
+        "commit": "97df8ea|2026-08-24|fix(zone-8): consolidate duplicated flat-block text measurement into _flat_block_primary_text",
+        "lines_added": 13,
+        "lines_removed": 13,
+        "net": 0
+      },
+      {
+        "commit": "ec9af64|2026-08-18|fix(zone-1,zone-3): unify garble detection surface + consolidate verdict authority",
+        "lines_added": 4,
+        "lines_removed": 4,
+        "net": 0
+      },
+      {
+        "commit": "14aede3|2026-08-17|feat(zone-1): thread expected_script through converters.py garble checks",
+        "lines_added": 12,
+        "lines_removed": 12,
+        "net": 0
+      },
+      {
+        "commit": "03565b0|2026-09-18|feat(rfc-046): task 12.5 \u2014 instrument all 102 decision points with obs.decision()",
+        "lines_added": 8,
+        "lines_removed": 9,
+        "net": -1
+      },
+      {
+        "commit": "df9c1d5|2026-08-17|fix(zone-8): remove ARABIC_LOW_CONTENT_RATIO from HARD_FAIL_DEFECTS",
+        "lines_added": 4,
+        "lines_removed": 6,
+        "net": -2
+      },
+      {
+        "commit": "2c39168|2026-09-09|fix(garble): remove NFKC presentation-forms fallback that false-flagged all Arabic text",
+        "lines_added": 59,
+        "lines_removed": 62,
+        "net": -3
+      },
+      {
+        "commit": "db2e2f1|2026-08-13|feat(zone-5): reason routing deletion \u2014 typed defect path, test triage",
+        "lines_added": 116,
+        "lines_removed": 119,
+        "net": -3
+      },
+      {
+        "commit": "6b15367|2026-09-21|fix(rfc-046): task 3.5 \u2014 align all bool env parses onto _envbool",
+        "lines_added": 3,
+        "lines_removed": 12,
+        "net": -9
+      },
+      {
+        "commit": "1bf2ef3|2026-09-22|refactor(deadcode): remove three verified-dead code paths; no behaviour change",
+        "lines_added": 18,
+        "lines_removed": 75,
+        "net": -57
+      },
+      {
+        "commit": "d042c88|2026-09-06|refactor: remove dead code from run-3 multi-lens audit (11 symbols, 5 files, 71 lines)",
+        "lines_added": 0,
+        "lines_removed": 59,
+        "net": -59
+      },
+      {
+        "commit": "2094a07|2026-09-07|refactor: remove dead code from run-4 multi-lens audit (13 symbols, 3 files, ~65 lines)",
+        "lines_added": 0,
+        "lines_removed": 64,
+        "net": -64
+      },
+      {
+        "commit": "5fdaafc|2026-09-07|refactor(tests): remove 18 dead constants and helpers (run-6 audit)",
+        "lines_added": 0,
+        "lines_removed": 67,
+        "net": -67
+      },
+      {
+        "commit": "9a4ea84|2026-08-17|refactor(zone-4): delete hysteresis \u2014 identical content gets identical verdicts",
+        "lines_added": 7,
+        "lines_removed": 153,
+        "net": -146
+      },
+      {
+        "commit": "4a9b183|2026-08-27|chore(test-index): regenerate mappings after 85\u219237 file consolidation",
+        "lines_added": 182,
+        "lines_removed": 335,
+        "net": -153
+      },
+      {
+        "commit": "0f9ad5e|2026-09-06|refactor: remove dead code from multi-lens audit (11 imports, 4 files, 35 confirmed items)",
+        "lines_added": 0,
+        "lines_removed": 172,
+        "net": -172
+      },
+      {
+        "commit": "ade17ee|2026-08-18|fix(zone-4,zone-5): decouple picture recovery + eliminate verdict dual-path",
+        "lines_added": 48,
+        "lines_removed": 224,
+        "net": -176
+      },
+      {
+        "commit": "f0f80eb|2026-08-20|fix(tests): update chapter titles and enhance wipe_processed verification",
+        "lines_added": 341,
+        "lines_removed": 644,
+        "net": -303
+      },
+      {
+        "commit": "426216c|2026-09-07|refactor: remove dead code from run-5 multi-lens audit (11 helpers, 4 classes, 6 files, 361 lines)",
+        "lines_added": 0,
+        "lines_removed": 361,
+        "net": -361
+      },
+      {
+        "commit": "5584a48|2026-09-05|test(rfc-044): reduce redundant tests across 5 files (2054\u21921964)",
+        "lines_added": 0,
+        "lines_removed": 452,
+        "net": -452
+      },
+      {
+        "commit": "4bdfee1|2026-08-27|refactor(tests): consolidate test suite from 85 to 37 files",
+        "lines_added": 18830,
+        "lines_removed": 19824,
+        "net": -994
+      },
+      {
+        "commit": "fa2fee5|2026-09-23|feat(gates): move structural guards out of pytest into the static gate",
+        "lines_added": 627,
+        "lines_removed": 3246,
+        "net": -2619
+      },
+      {
+        "commit": "91e7249|2026-09-23|test: consolidate the suite from 2510 collected to 923 across 12 clusters",
+        "lines_added": 18271,
+        "lines_removed": 26413,
+        "net": -8142
+      },
+      {
+        "commit": "3c3aa66|2026-08-20|refactor(tests): consolidate test suite from 3,447 to 977 tests",
+        "lines_added": 13364,
+        "lines_removed": 48513,
+        "net": -35149
+      }
+    ],
+    "then": 1441,
+    "now": 930
+  }
+}
