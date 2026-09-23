@@ -265,6 +265,26 @@ def image_to_markdown(path: str, ocr_lang_override: list[str] | None = None) -> 
 # ---------------------------------------------------------------------------
 
 
+def rasterize_image_file(image_path: str) -> list[str]:
+    """Convert a standalone image file to a list of base64 data-URI PNGs (one element).
+
+    Same return format as ``rasterize_pdf_pages`` so ``vlm_extract_markdown``
+    can treat PDFs and images uniformly.  Uses Pillow (MIT) — no pypdfium2.
+    """
+    import base64
+    import io
+
+    from PIL import Image
+
+    img = Image.open(image_path)
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    return [f"data:image/png;base64,{b64}"]
+
+
 def rasterize_pdf_pages(pdf_path: str, dpi: int = 200) -> list[str]:
     """Rasterize each PDF page to a base64 data-URI PNG via pypdfium2 (HR4-safe)."""
     import base64
@@ -406,7 +426,12 @@ async def vlm_extract_markdown(pdf_path: str, model: str | None = None) -> str:
     if resolved_model.startswith("azure/"):
         resolved_model = resolved_model[len("azure/") :]
 
-    page_images = await asyncio.to_thread(rasterize_pdf_pages, pdf_path)
+    _image_exts = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp"}
+    _ext = os.path.splitext(pdf_path)[1].lower()
+    if _ext in _image_exts:
+        page_images = await asyncio.to_thread(rasterize_image_file, pdf_path)
+    else:
+        page_images = await asyncio.to_thread(rasterize_pdf_pages, pdf_path)
     if not page_images:
         raise RuntimeError(f"vlm_extract_markdown: no pages rasterized from {pdf_path}")
 

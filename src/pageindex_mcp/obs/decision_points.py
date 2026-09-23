@@ -1060,6 +1060,28 @@ _INDEXER_POINTS: tuple[DecisionPoint, ...] = (
         always_emits=False,
         note="RFC-048: Surya OCR fallback for standalone images when Tesseract output is poor.",
     ),
+    _p(
+        event="post_validation_image_fallback",
+        phase=Phase.OCR,
+        module=_C_INDEXER,
+        function="_convert_to_tree",
+        choices=(
+            "none",
+            "vlm",
+            "surya",
+        ),
+        attrs=(
+            "trigger_defects",
+            "vlm_chars",
+            "vlm_garbled",
+            "surya_chars",
+            "surya_garbled",
+            "surya_confidence",
+            "winner",
+        ),
+        always_emits=False,
+        note="RFC-048 Amendment: parallel VLM+Surya after validate_tree condemns a standalone image.",
+    ),
 )
 
 

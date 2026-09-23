@@ -1561,6 +1561,136 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 state.gate_result.defect.value,
                 sorted(d.value for d in state.gate_result.all_defects),
             )
+
+        # RFC-048 Amendment: post-validate_tree parallel VLM+Surya fallback
+        # for standalone images where the tree is condemned.
+        _POST_VT_TRIGGERS = {
+            TreeDefect.GARBLING, TreeDefect.NODE_GARBLING, TreeDefect.DEPTH_LOW,
+        }
+        if (
+            ext in _IMAGE_EXTS
+            and not state.ok
+            and state.gate_result
+            and state.gate_result.all_defects
+            and state.gate_result.all_defects & _POST_VT_TRIGGERS
+        ):
+            _trigger_defects = sorted(
+                d.value for d in state.gate_result.all_defects & _POST_VT_TRIGGERS
+            )
+            logger.info(
+                "Post-validate_tree image fallback triggered for %s: defects=%s",
+                filename, _trigger_defects,
+            )
+
+            async def _try_surya() -> tuple[str | None, int, bool, float]:
+                """Returns (text, chars, garbled, confidence)."""
+                if not settings.surya_fallback_enabled:
+                    return (None, 0, True, 0.0)
+                try:
+                    _sr = await _surya_image_ocr(
+                        file_bytes=img_bytes,
+                        filename=filename,
+                        surya_url=settings.surya_service_url,
+                        timeout_s=settings.surya_fallback_timeout_s,
+                    )
+                    if _sr and _sr.total_text.strip():
+                        _sg = bool(detect_garble(
+                            _sr.total_text,
+                            script_context=script_context,
+                            config=_garble_config,
+                            blob_kind=BlobKind.TREE_TEXT,
+                        ))
+                        return (_sr.total_text, _sr.total_chars, _sg, _sr.confidence)
+                except Exception:
+                    logger.warning("Post-VT Surya fallback failed for %s", filename, exc_info=True)
+                return (None, 0, True, 0.0)
+
+            async def _try_vlm() -> tuple[str | None, int, bool]:
+                """Returns (markdown, chars, garbled)."""
+                if not settings.vlm_fallback:
+                    return (None, 0, True)
+                try:
+                    from ..converters import vlm_extract_markdown
+                    _vlm_md = await vlm_extract_markdown(file_path, settings.vlm_model)
+                    if _vlm_md and _vlm_md.strip():
+                        _vlm_chars = len("".join(_vlm_md.split()))
+                        _vlm_garbled = bool(detect_garble(
+                            _vlm_md,
+                            script_context=script_context,
+                            config=_garble_config,
+                            blob_kind=BlobKind.TREE_TEXT,
+                        ))
+                        return (_vlm_md, _vlm_chars, _vlm_garbled)
+                except Exception:
+                    logger.warning("Post-VT VLM fallback failed for %s", filename, exc_info=True)
+                return (None, 0, True)
+
+            (_surya_text, _surya_ch, _surya_gb, _surya_conf), (_vlm_md, _vlm_ch, _vlm_gb) = (
+                await asyncio.gather(_try_surya(), _try_vlm())
+            )
+
+            _winner = "none"
+            _best_text: str | None = None
+            _best_is_md = False
+
+            _surya_score = _surya_ch if not _surya_gb else 0
+            _vlm_score = _vlm_ch if not _vlm_gb else 0
+
+            if _surya_score > 0 or _vlm_score > 0:
+                if _vlm_score >= _surya_score and _vlm_md:
+                    _winner = "vlm"
+                    _best_text = _vlm_md
+                    _best_is_md = True
+                elif _surya_text:
+                    _winner = "surya"
+                    _best_text = _surya_text
+                    _best_is_md = False
+
+            decision(
+                event="post_validation_image_fallback",
+                choice=_winner,
+                reason="parallel VLM+Surya after validate_tree condemned image",
+                attrs={
+                    "trigger_defects": _trigger_defects,
+                    "vlm_chars": _vlm_ch,
+                    "vlm_garbled": _vlm_gb,
+                    "surya_chars": _surya_ch,
+                    "surya_garbled": _surya_gb,
+                    "surya_confidence": _surya_conf,
+                    "winner": _winner,
+                },
+            )
+
+            if _best_text and _winner != "none":
+                if _best_is_md:
+                    state.md_content = _best_text
+                    state.ocr_engine = "vlm"
+                else:
+                    md_content = re.sub(
+                        r"(<!-- image -->)\s*(?=<!-- image -->)", "", _best_text
+                    )
+                    state.md_content = md_content
+                    state.ocr_engine = "surya"
+                    state.pic_results = [
+                        PictureResult(
+                            ocr_text=_best_text,
+                            page=1,
+                            bbox={"l": 0, "t": 0, "r": 0, "b": 0},
+                            png_bytes=img_bytes,
+                        )
+                    ]
+
+                await self._reconvert_and_revalidate(
+                    state, state.md_content,
+                    expected_script=expected_script,
+                    script_context=script_context,
+                )
+                logger.info(
+                    "Post-VT fallback %s recovered %s: ok=%s, chars=%d",
+                    _winner, filename, state.ok,
+                    _surya_ch if _winner == "surya" else _vlm_ch,
+                )
+
         state.total_chars = len(_flatten_tree_text(state.result.get("structure", [])))
 
     async def _persist_flat_result(
