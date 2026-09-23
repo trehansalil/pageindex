@@ -198,6 +198,58 @@ async def test_erase_01_c2_idempotent_on_missing_doc(mock_minio):
     # instead of silently dropping the Postgres row deletion.
     assert result["errors"] == ["registry: pool not ready, skipped Postgres row deletion"]
 
+async def test_erase_01_c2_prefix_loops_tolerate_nosuchkey_but_surface_other_errors(
+    mock_minio, monkeypatch
+):
+    """ERASE-01-C2: the two cascade steps that iterate a prefix -- _erase_uploads
+    and _erase_figures -- treat NoSuchKey on remove_object as idempotent success,
+    exactly like every step routed through _remove_object_idempotent, while still
+    surfacing any other S3Error.
+
+    The sibling test above stubs list_objects to [], so those loops never reach
+    remove_object and cannot see this. A retry after a partial failure does: the
+    objects are still listed but already purged.
+    """
+    upload_obj = MagicMock()
+    upload_obj.object_name = "uploads/retry01/report.pdf"
+    figure_obj = MagicMock()
+    figure_obj.object_name = "figures/retry01/fig-1.png"
+    mock_minio.get_object.side_effect = _nosuchkey()
+
+    def _listing(bucket, prefix="", recursive=False):
+        if prefix.startswith("uploads/"):
+            return [upload_obj]
+        if prefix.startswith("figures/"):
+            return [figure_obj]
+        return []
+
+    mock_minio.list_objects.side_effect = _listing
+
+    async def _registry_ok(doc_id):
+        return None
+
+    _wire_registry(monkeypatch, registry_delete_doc=_registry_ok)
+
+    failures: list[str] = []
+    for label, side_effect, want_clean in (
+        ("NoSuchKey", _nosuchkey(), True),
+        ("InternalError", _other_s3error(), False),
+    ):
+        mock_minio.remove_object.side_effect = side_effect
+        with (
+            patch("pageindex_mcp.cache.doc_cache_delete"),
+            patch("pageindex_mcp.storage.reconcile_etag.reconcile_etag_delete"),
+            patch("pageindex_mcp.storage.hash_cache.hash_cache_delete"),
+        ):
+            result = await delete_doc("retry01")
+        errors = result["errors"]
+        if want_clean and errors:
+            failures.append(f"{label}: expected a clean retry, got errors={errors}")
+        if not want_clean and not any(e.startswith("uploads/") for e in errors):
+            failures.append(f"{label}: expected uploads/ to be reported, got {errors}")
+
+    assert not failures, "; ".join(failures)
+
 
 async def test_erase_01_c1_cascade_order_observable_and_hash_cache_cleared(
     mock_minio, monkeypatch

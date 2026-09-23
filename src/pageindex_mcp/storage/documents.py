@@ -373,7 +373,17 @@ async def _erase_uploads(ctx: ErasureContext) -> bool:
                 basename = object_name.rsplit("/", 1)[-1]
                 if basename:
                     ctx.doc_name = basename
-            ctx.mc.remove_object(settings.minio_bucket, object_name)
+            try:
+                ctx.mc.remove_object(settings.minio_bucket, object_name)
+            except S3Error as e:
+                # NoSuchKey is idempotent success (ERASE-01-C2), exactly as in
+                # _remove_object_idempotent. This loop and _erase_figures are the
+                # only two cascade steps that call remove_object directly, so
+                # without this they report an already-purged store as an erasure
+                # failure and a retry can never reach a clean errors == [].
+                if getattr(e, "code", "") != "NoSuchKey":
+                    raise
+                continue
             removed += 1
         logger.info("ERASE %s step1: removed %d uploads object(s)", ctx.doc_id, removed)
         return True
@@ -410,7 +420,14 @@ async def _erase_figures(ctx: ErasureContext) -> bool:
             settings.minio_bucket, prefix=f"figures/{ctx.doc_id}/", recursive=True
         ):
             if obj.object_name:
-                ctx.mc.remove_object(settings.minio_bucket, obj.object_name)
+                try:
+                    ctx.mc.remove_object(settings.minio_bucket, obj.object_name)
+                except S3Error as e:
+                    # NoSuchKey is idempotent success (ERASE-01-C2) — see the
+                    # matching tolerance in _erase_uploads.
+                    if getattr(e, "code", "") != "NoSuchKey":
+                        raise
+                    continue
                 fig_removed += 1
         if fig_removed:
             logger.info("ERASE %s step2c: removed %d figure(s)", ctx.doc_id, fig_removed)
