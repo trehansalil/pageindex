@@ -153,6 +153,35 @@ async def test_flat_04_c1_normal_result_writes_no_content_class(fake_redis):
     assert "content_class" not in state
 
 
+async def test_flat_04_c2_low_quality_tree_is_terminal_without_dlq_or_retry(fake_redis):
+    """FLAT-04-C2: a child LowQualityTreeError (garbling) sets the job hash to
+    status=error reason=low_quality_tree and is TERMINAL — process_document_job
+    swallows it (no re-raise, so arq never retries) and nothing is pushed to the
+    DLQ, even on the final attempt (job_try == MAX_TRIES)."""
+    staging_key = "uploads/staging/job-lqt/garbled.pdf"
+    ctx = {"redis": fake_redis, "job_try": MAX_TRIES}
+    err = ConverterChildError(1, "LowQualityTreeError: garbling", "LowQualityTreeError")
+
+    with (
+        patch(
+            "pageindex_mcp.worker.job._run_converter_subprocess",
+            AsyncMock(side_effect=err),
+        ),
+        patch("pageindex_mcp.worker.job.download_staging"),
+        patch("pageindex_mcp.worker.job.delete_staging"),
+        patch("pageindex_mcp.worker.job.shutil"),
+    ):
+        # No pytest.raises: swallowing the exception IS the contract — a raise
+        # here would hand the job back to arq for a retry.
+        result = await process_document_job(ctx, staging_key, "job-lqt")
+
+    assert result == ""
+    state = await fake_redis.hgetall("pageindex:job:job-lqt")
+    assert state["status"] == "error"
+    assert state["reason"] == "low_quality_tree"
+    assert await fake_redis.llen(DLQ_KEY) == 0
+
+
 # ── process_document_job: subprocess-boundary error translation ─────────────
 async def test_child_failure_writes_converter_child_failed_and_reraises(fake_redis):
     staging_key = "uploads/staging/job-fail/bad.pdf"

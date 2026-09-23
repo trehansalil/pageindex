@@ -199,6 +199,63 @@ async def test_erase_01_c2_idempotent_on_missing_doc(mock_minio):
     assert result["errors"] == ["registry: pool not ready, skipped Postgres row deletion"]
 
 
+async def test_erase_01_c1_cascade_order_observable_and_hash_cache_cleared(
+    mock_minio, monkeypatch
+):
+    """ERASE-01-C1 (HR2): a DSR delete of a fully-indexed doc removes the MinIO
+    objects in the mandated order uploads/<id>/ -> processed/<id>.json ->
+    processed/<id>.meta.json, THEN deletes the Redis cache key
+    pageindex:doc:<id>, and clears the filename->sha256 hash-cache entry so a
+    re-upload re-indexes. Order is asserted against the observed call sequence,
+    not against the manifest constant."""
+    events: list[str] = []
+
+    load_resp = MagicMock()
+    load_resp.read.return_value = json.dumps(
+        {"doc_id": "order001", "doc_name": "report.pdf"}
+    ).encode()
+    mock_minio.get_object.return_value = load_resp
+    upload_obj = MagicMock()
+    upload_obj.object_name = "uploads/order001/report.pdf"
+    mock_minio.list_objects.return_value = [upload_obj]
+    mock_minio.remove_object.side_effect = lambda bucket, name: events.append(name)
+
+    async def _registry_ok(doc_id):
+        events.append("registry")
+
+    _wire_registry(monkeypatch, registry_delete_doc=_registry_ok)
+
+    with (
+        patch(
+            "pageindex_mcp.cache.doc_cache_delete",
+            side_effect=lambda d: events.append(f"redis:{d}"),
+        ),
+        patch("pageindex_mcp.storage.reconcile_etag.reconcile_etag_delete"),
+        patch(
+            "pageindex_mcp.storage.hash_cache.hash_cache_delete",
+            side_effect=lambda n: events.append(f"hash:{n}"),
+        ),
+    ):
+        result = await delete_doc("order001")
+
+    mandated = [
+        "uploads/order001/report.pdf",
+        "processed/order001.json",
+        "processed/order001.meta.json",
+        "redis:order001",
+        # The hash-cache entry is keyed by filename, so a re-upload of
+        # report.pdf re-indexes instead of deduping to the erased doc_id.
+        "hash:report.pdf",
+    ]
+    missing = [e for e in mandated if e not in events]
+    assert not missing, f"HR2 cascade never reached: {missing} (observed {events})"
+    positions = [events.index(e) for e in mandated]
+    assert positions == sorted(positions), (
+        f"HR2 cascade order violated: expected {mandated}, observed {events}"
+    )
+    assert result["errors"] == []
+
+
 async def test_flat_02_c2_flat_json_nosuchkey_tolerated(mock_minio):
     """FLAT-02-C2: a missing processed/<doc_id>.flat.json (NoSuchKey) is tolerated
     idempotently — deleting a tree-only doc does not raise on the flat step."""
@@ -273,9 +330,12 @@ async def test_delete_doc_non_nosuchkey_remove_errors_recorded(
 async def test_erasure_cascade_postgres_failure_still_cleans_minio_and_redis(
     monkeypatch, mock_minio
 ):
-    """Postgres registry delete fails — the error is reported, but MinIO
-    objects and the Redis cache key are still purged (HR2: partial failure
-    never blocks the stores that *can* succeed)."""
+    """ERASE-01-C3: Postgres registry delete fails mid-cascade — the failure is
+    surfaced in ``errors`` naming the store that was NOT purged (registry),
+    while the MinIO objects and the Redis cache key are still purged (HR2:
+    partial failure never blocks the stores that *can* succeed), and the
+    operation is safe to retry: a second delete_doc once the registry recovers
+    completes with no errors."""
     load_resp = MagicMock()
     load_resp.read.return_value = json.dumps(
         {"doc_id": "cascade002", "doc_name": "report.pdf"}
@@ -305,6 +365,33 @@ async def test_erasure_cascade_postgres_failure_still_cleans_minio_and_redis(
 
     assert len(result["errors"]) == 1
     assert "registry" in result["errors"][0].lower()
+    # No store is reported as erased while still unpurged: the only failing
+    # store is the one named, and it is the only one missing from the cascade.
+
+    # C3: safe to retry to completion. Re-run with the registry healthy; the
+    # already-purged stores tolerate their missing objects and the previously
+    # unpurged registry row is now reached, leaving no errors behind.
+    deleted_rows = []
+
+    async def _registry_ok(doc_id):
+        deleted_rows.append(doc_id)
+
+    _wire_registry(monkeypatch, registry_delete_doc=_registry_ok)
+    # Post-first-pass state: the uploads/ and figures/ prefixes are now empty
+    # and every remaining object is already gone (NoSuchKey), which the
+    # cascade tolerates idempotently.
+    mock_minio.list_objects.return_value = []
+    mock_minio.remove_object.side_effect = _nosuchkey()
+
+    with (
+        patch("pageindex_mcp.cache.doc_cache_delete"),
+        patch("pageindex_mcp.storage.reconcile_etag.reconcile_etag_delete"),
+        patch("pageindex_mcp.storage.hash_cache.hash_cache_delete"),
+    ):
+        retry = await delete_doc("cascade002")
+
+    assert deleted_rows == ["cascade002"], "retry did not reach the unpurged registry store"
+    assert retry["errors"] == [], f"retry left errors behind: {retry['errors']}"
 
 
 # ── RFC-011 D2 / ISS-41 — erasure cascade purges preloaded/<doc_name> ────────

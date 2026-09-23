@@ -13,6 +13,8 @@ collected test carries the same coverage a parametrize table did.
 """
 
 import asyncio
+import copy
+import socket
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -484,6 +486,77 @@ def test_flat_01_c2_table_emitted_as_matrix_and_verbalized_records():
     assert "Tarif: Basis; Beitrag: 12 EUR; Selbstbeteiligung: 100 EUR" in records
 
 
+def test_flat_01_c1_content_class_table():
+    """FLAT-01-C1: route_and_extract_flat maps flat markdown onto exactly one of
+    flat_table / flat_kv / flat_prose / flat_mixed by deterministic signal, and
+    falls back to flat_prose -- never None -- when none of the three content
+    signals (table / numbered-clause / running-paragraph) fires."""
+    cases = [
+        ("pipe grid -> table signal", _TABLE_MD, "flat_table"),
+        (
+            "numbered clauses -> kv signal",
+            "1. Scope\n1.1 Definitions\n2. Cover\n2.1 Limits\n",
+            "flat_kv",
+        ),
+        (
+            "running paragraph -> prose signal",
+            "This policy covers the named rider while mounted on any horse "
+            "owned, hired or borrowed.\n",
+            "flat_prose",
+        ),
+        (
+            "table + prose co-present -> mixed",
+            _TABLE_MD + "\nThe table above lists the available tariffs.\n",
+            "flat_mixed",
+        ),
+        # Catch-all rows: no table/kv/prose signal fires at all.
+        ("title only -> catch-all", "# Allgemeine Bedingungen\n", "flat_prose"),
+        ("image only -> catch-all", "<!-- image -->\n", "flat_prose"),
+    ]
+    mismatches = []
+    for label, md, expected in cases:
+        content_class, _blocks = route_and_extract_flat(md)
+        if content_class != expected:
+            mismatches.append(f"{label}: expected {expected!r}, got {content_class!r}")
+    assert not mismatches, "content_class mismatches: " + "; ".join(mismatches)
+
+
+def test_flat_01_c3_roles_are_typed_and_gate_independent(monkeypatch):
+    """FLAT-01-C3: every block route_and_extract_flat returns carries a role from
+    {title, prose, kv, table} (plus the later-added 'image' role, which the
+    contract text predates), and the classifier is independent of the quality
+    gate: the flat module holds no validate_tree reference, and neither
+    validate_tree nor a socket is touched while classifying."""
+    from pageindex_mcp.helpers import flat as flat_mod
+    from pageindex_mcp.helpers import tree_validation
+
+    assert not hasattr(flat_mod, "validate_tree"), (
+        "flat classifier must not import the quality gate"
+    )
+
+    def _boom_validate(*args, **kwargs):
+        raise AssertionError("route_and_extract_flat called validate_tree")
+
+    def _boom_socket(*args, **kwargs):
+        raise AssertionError("route_and_extract_flat opened a socket")
+
+    monkeypatch.setattr(tree_validation, "validate_tree", _boom_validate)
+    monkeypatch.setattr(helpers, "validate_tree", _boom_validate)
+    monkeypatch.setattr(socket, "socket", _boom_socket)
+
+    md = (
+        "# Allgemeine Bedingungen\n\n"
+        "1. Scope\n"
+        "This policy covers the named rider on any horse owned or hired.\n\n" + _TABLE_MD
+    )
+    _content_class, blocks = route_and_extract_flat(md)
+    assert blocks
+    allowed = {"title", "prose", "kv", "table", "image"}
+    offenders = [b for b in blocks if b.get("role") not in allowed]
+    assert not offenders, f"blocks with an untyped role: {offenders}"
+    assert {"title", "prose", "kv", "table"} <= {b.get("role") for b in blocks}
+
+
 def test_fix2_c3_arabic_rtl_stitch_and_table_is_rtl():  # TABLE-01-C2
     """Arabic anchor passes table_is_rtl=True; stitch keeps the Arabic label
     column as join key; Arabic-Indic year continuation columns are merged;
@@ -554,6 +627,47 @@ def test_fix2_c6_route_and_extract_flat_stitches_paginated_table():  # TABLE-01-
     assert "quality" in merged, "flag_empty_cells post-pass must annotate 'quality'"
     assert "empty_cell_ratio" in merged["quality"]
     assert "suspected_miss" in merged["quality"]
+
+
+def test_table_01_c3_flag_empty_cells_annotates_without_mutating():
+    """TABLE-01-C3: flag_empty_cells annotates a table block with
+    quality={empty_cell_ratio, suspected_miss} and leaves data_rows /
+    row_records byte-for-byte unchanged. suspected_miss is true only for a FULL
+    empty row or column -- merely sparse data is ratio-flagged but not
+    suspected."""
+    from pageindex_mcp.helpers.table_stitch import flag_empty_cells
+
+    cases = [
+        ("full empty row", _tbl(["A", "B"], [["1", "2"], ["", ""], ["3", "4"]]), True),
+        ("full empty column", _tbl(["A", "B"], [["1", ""], ["2", ""]]), True),
+        ("sparse only, no full row/col", _tbl(["A", "B"], [["1", ""], ["", "2"]]), False),
+        ("no empties at all", _tbl(["A", "B"], [["1", "2"]]), False),
+    ]
+    problems = []
+    for label, block, expected_miss in cases:
+        before = copy.deepcopy(block)
+        result = flag_empty_cells(block)
+        quality = result.get("quality")
+        if not isinstance(quality, dict) or set(quality) != {
+            "empty_cell_ratio",
+            "suspected_miss",
+        }:
+            problems.append(f"{label}: missing/!= quality annotation, got {quality!r}")
+            continue
+        if not isinstance(quality["empty_cell_ratio"], float):
+            problems.append(f"{label}: empty_cell_ratio is not a float")
+        if quality["suspected_miss"] is not expected_miss:
+            problems.append(
+                f"{label}: suspected_miss expected {expected_miss}, got {quality['suspected_miss']}"
+            )
+        # Non-mutation half: the payload comes back byte-for-byte.
+        if result["rows"] != before["rows"]:
+            problems.append(f"{label}: data rows were mutated")
+        if result["row_records"] != before["row_records"]:
+            problems.append(f"{label}: row_records were mutated")
+        if result["headers"] != before["headers"]:
+            problems.append(f"{label}: headers were mutated")
+    assert not problems, "flag_empty_cells defects: " + "; ".join(problems)
 
 
 # ===========================================================================
@@ -655,6 +769,98 @@ def test_split_guard_leaves_marker_free_and_non_monotonic_leaves_intact():
     cross_ref_tree = [{"node_id": "n1", "title": "root", "text": cross_ref_text, "nodes": []}]
     split_oversized_leaf_nodes(cross_ref_tree, max_chars=50000, min_segments=3)
     assert cross_ref_tree[0]["nodes"] == []
+
+
+def _toc_frontmatter_text() -> str:
+    """A cover/contents block: dense dotted leaders, a long alphabetic run, and
+    a sparse (3-marker) increasing ordinal run -- the _looks_like_frontmatter_toc
+    shape."""
+    filler = "".join(
+        f"Versicherungsbedingungen Kapitel Uebersicht {i} ........... {i}\n" for i in range(1, 700)
+    )
+    return (
+        filler[:20000]
+        + "Article 1 Definitions ............ 4\n"
+        + filler[20000:40000]
+        + "Article 2 Scope of cover ............ 9\n"
+        + filler[40000:]
+        + "Article 3 Exclusions ............ 17\n"
+    )
+
+
+def test_split_01_c1_oversized_leaf_splits_per_ordinal_without_growing_text():
+    """SPLIT-01-C1: an over-threshold leaf carrying a strictly increasing run of
+    in-line ordinal markers becomes one sibling leaf per ordinal, in document
+    order; parent-tail + children concatenate back to the original text
+    byte-for-byte and no node's text is grown."""
+    body = "".join(f"Article {i}\n" + ("body sentence. " * 1200) + "\n" for i in (1, 2, 3))
+    assert len(body) > 50000, "fixture must exceed the 50k threshold"
+    tree = [{"node_id": "n1", "title": "root", "text": body, "nodes": []}]
+
+    split_oversized_leaf_nodes(tree)
+    root = tree[0]
+    children = root["nodes"]
+
+    assert [c["title"] for c in children] == ["Article 1", "Article 2", "Article 3"]
+    assert all(c["nodes"] == [] for c in children)
+    # Byte-for-byte preservation across the split boundaries.
+    assert root["text"] + "".join(c["text"] for c in children) == body
+    # No node grown: every piece is strictly smaller than the original blob.
+    assert max(len(c["text"]) for c in children) < len(body)
+    assert len(root["text"]) < len(body)
+
+
+def test_split_01_c2_frontmatter_toc_block_is_not_shredded():
+    """SPLIT-01-C2: a front-matter/ToC block whose ordinal tokens are a contents
+    listing rather than article bodies is identified by
+    _looks_like_frontmatter_toc and left unsplit; the control (same block with
+    its dotted leaders removed, so the guard no longer fires) IS split, proving
+    the guard is what spares it."""
+    from pageindex_mcp.helpers import _looks_like_frontmatter_toc
+    from pageindex_mcp.helpers.tree_split import (
+        _OVERSIZED_ORDINAL_RE as _ORD_RE,
+    )
+    from pageindex_mcp.helpers.tree_split import (
+        _fold_with_index_map,
+    )
+
+    toc = _toc_frontmatter_text()
+    folded, _idx = _fold_with_index_map(toc)
+    matches = list(_ORD_RE.finditer(folded))
+    assert len(matches) >= 3, "fixture must carry an increasing ordinal run"
+    assert _looks_like_frontmatter_toc(toc, matches) is True
+
+    guarded = [{"node_id": "f1", "title": "Contents", "text": toc, "nodes": []}]
+    split_oversized_leaf_nodes(guarded)
+    assert guarded[0]["nodes"] == [], "front-matter block must not be partitioned"
+    assert guarded[0]["text"] == toc
+
+    control_text = toc.replace(".", "")
+    control_folded, _ = _fold_with_index_map(control_text)
+    assert (
+        _looks_like_frontmatter_toc(control_text, list(_ORD_RE.finditer(control_folded))) is False
+    )
+    control = [{"node_id": "f2", "title": "Contents", "text": control_text, "nodes": []}]
+    split_oversized_leaf_nodes(control)
+    assert control[0]["nodes"], "control without dotted leaders should have been split"
+
+
+def test_split_01_c3_split_is_idempotent_and_noop_within_threshold():
+    """SPLIT-01-C3: a second split_oversized_leaf_nodes call on an already-split
+    tree changes nothing (same node count, same text per node), and a tree whose
+    leaves are all within threshold and marker-free is returned untouched."""
+    body = "".join(f"Article {i}\n" + ("body sentence. " * 1200) + "\n" for i in (1, 2, 3))
+    tree = [{"node_id": "n1", "title": "root", "text": body, "nodes": []}]
+    split_oversized_leaf_nodes(tree)
+    after_first = copy.deepcopy(tree)
+
+    split_oversized_leaf_nodes(tree)
+    assert tree == after_first, "second split call must be a no-op"
+
+    within = [{"node_id": "a", "title": "t", "text": "a short marker-free body", "nodes": []}]
+    snapshot = copy.deepcopy(within)
+    split_oversized_leaf_nodes(within)
+    assert within == snapshot
 
 
 # ===========================================================================

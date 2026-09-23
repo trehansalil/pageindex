@@ -669,14 +669,19 @@ def test_ensure_tessdata_raises_tessdata_unavailable_when_nothing_installed(monk
 
 
 def test_xlsx_to_markdown_arabic_table_and_empty_workbook(tmp_path):
-    """Fix 4: xlsx_to_markdown produces a pipe-table with Arabic headers and
-    numeric cells; a workbook with no data raises RuntimeError."""
+    """CONV-01-C4 (converter half): xlsx_to_markdown produces a pipe-table with
+    Arabic headers and numeric cells; a worksheet carrying no rows is skipped
+    entirely (its title never reaches the markdown); a workbook in which EVERY
+    worksheet is empty raises RuntimeError.  The dispatch/route half of the
+    contract is asserted by
+    ``test_xlsx_dispatch_runs_md_to_tree_and_lands_on_the_flat_route``."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "إحصاءات"
     ws.append(["النشاط", "2019", "2020"])
     ws.append(["الزراعة", 100, 110])
     ws.append(["الصناعة", 200, 220])
+    wb.create_sheet("BlankSheet")  # no rows -> skipped, never emitted
     path = tmp_path / "test.xlsx"
     wb.save(str(path))
     wb.close()
@@ -688,6 +693,7 @@ def test_xlsx_to_markdown_arabic_table_and_empty_workbook(tmp_path):
         if tok not in md
     ]
     assert not missing, f"missing from xlsx markdown: {missing}"
+    assert "BlankSheet" not in md, "an empty worksheet must be skipped entirely"
 
     empty_wb = openpyxl.Workbook()
     empty_wb.active.title = "Empty"
@@ -696,6 +702,167 @@ def test_xlsx_to_markdown_arabic_table_and_empty_workbook(tmp_path):
     empty_wb.close()
     with pytest.raises(RuntimeError):
         xlsx_to_markdown(str(empty_path))
+
+
+_FLAT_TREE = {
+    "structure": [
+        {"node_id": "0001", "title": "Sheet1", "text": _CLEAN_TEXT * 4, "nodes": []},
+        {"node_id": "0002", "title": "Sheet2", "text": _CLEAN_TEXT * 4, "nodes": []},
+        {"node_id": "0003", "title": "Sheet3", "text": _CLEAN_TEXT * 4, "nodes": []},
+    ]
+}
+
+
+def _flat_returning_client(seen_md):
+    """Client whose ``_run_md_to_tree`` records the markdown it was handed and
+    returns a heading-less (depth<2) tree, so the real ``validate_tree`` +
+    ``finalize_gate_and_route`` at the end of ``_convert_to_tree`` decide the
+    route for themselves."""
+    from pageindex_mcp.client import CustomPageIndexClient
+
+    async def _fake_tree(md_path):
+        seen_md.append(Path(md_path).read_text(encoding="utf-8"))
+        return copy.deepcopy(_FLAT_TREE)
+
+    client = CustomPageIndexClient(api_key="test-key")
+    client._staging_key = None
+    client._run_md_to_tree = _fake_tree
+    client._run_page_index_retrying = AsyncMock(return_value=copy.deepcopy(_FLAT_TREE))
+    return client
+
+
+@pytest.mark.asyncio
+async def test_xlsx_dispatch_runs_md_to_tree_and_lands_on_the_flat_route(tmp_path):
+    """CONV-01-C4 (dispatch half): a .xlsx reaching ``_convert_to_tree`` is
+    converted by ``xlsx_to_markdown`` (openpyxl, MIT -- no AGPL/HR4 exposure),
+    the COMBINED markdown of every non-empty worksheet is what ``_run_md_to_tree``
+    receives (the empty worksheet contributes nothing), the tree path's
+    ``_run_page_index`` is never touched, and because a spreadsheet carries no
+    heading hierarchy the resulting depth<2 tree is routed to the flat success
+    path (FLAT-03) rather than accepted as a tree."""
+    from pageindex_mcp.helpers.types import TreeDefect
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Stats"
+    ws.append(["Activity", "2019", "2020"])
+    ws.append(["Agriculture", 100, 110])
+    second = wb.create_sheet("Notes")
+    second.append(["Remark", "value"])
+    wb.create_sheet("BlankSheet")  # no rows -> skipped
+    path = tmp_path / "book.xlsx"
+    wb.save(str(path))
+    wb.close()
+
+    seen_md = []
+    client = _flat_returning_client(seen_md)
+    state = _make_gate_state()
+
+    await client._convert_to_tree(state, str(path), path.name, ".xlsx", None, None)
+
+    assert seen_md == [xlsx_to_markdown(str(path))], (
+        "the combined xlsx_to_markdown output must be what _run_md_to_tree is given"
+    )
+    assert "## Stats" in seen_md[0] and "## Notes" in seen_md[0]
+    assert "BlankSheet" not in seen_md[0]
+    client._run_page_index_retrying.assert_not_called()
+    assert state.route is Route.FLAT, f"xlsx must route flat, got {state.route}"
+    assert state.first_defect is TreeDefect.DEPTH_LOW
+
+
+_IMAGE_OCR_MD = (
+    "Quarterly revenue by region, with the northern branch reporting a steady "
+    "increase across every month of the period under review.\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_image_dispatch_is_local_tesseract_only_with_no_llm_or_vlm_egress(
+    tmp_path, monkeypatch
+):
+    """CONV-01-C5 / HR3: a standalone image is provisioned by the REAL
+    ``ensure_tessdata`` FIRST, then OCR'd locally by ``image_to_markdown`` with
+    exactly the language list ``ensure_tessdata`` returned, and the markdown is
+    handed to ``_run_md_to_tree``.  No LLM or VLM egress happens anywhere on
+    this path: ``vlm_extract_markdown`` and ``_llm_with_retry`` are both patched
+    to recording doubles and must never be invoked (HR3 -- no LLM egress on the
+    image OCR route)."""
+    from pageindex_mcp.client import indexer as indexer_mod
+    from pageindex_mcp.converters import detect_ocr_langs
+    from pageindex_mcp.script import ScriptContext
+
+    latin_ctx = ScriptContext(
+        dominant_script="Latn", had_presentation_forms=False, source="filename"
+    )
+
+    prefix = tmp_path / "tessdata"
+    prefix.mkdir()
+    for lang in ("ara", "deu", "eng"):
+        (prefix / f"{lang}.traineddata").write_bytes(b"stub")
+    monkeypatch.setenv("TESSDATA_PREFIX", str(prefix))
+    monkeypatch.setenv("TESSDATA_ALLOW_DOWNLOAD", "0")
+
+    img = tmp_path / "scan.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n-never-decoded")
+
+    calls: list[tuple[str, list[str]]] = []
+    real_ensure = indexer_mod.ensure_tessdata
+    provisioned: list[list[str]] = []
+
+    def spy_ensure(langs):
+        out = real_ensure(langs)  # the real provisioning logic runs
+        calls.append(("ensure_tessdata", list(langs)))
+        provisioned.append(list(out))
+        return out
+
+    def fake_image_to_markdown(path, langs):
+        calls.append(("image_to_markdown", list(langs)))
+        return _IMAGE_OCR_MD
+
+    llm_double = MagicMock(name="_llm_with_retry")
+    vlm_double = AsyncMock(name="vlm_extract_markdown")
+    surya_double = AsyncMock(name="_surya_image_ocr")
+
+    seen_md = []
+    client = _flat_returning_client(seen_md)
+    state = _make_gate_state()
+
+    with (
+        patch.object(indexer_mod, "ensure_tessdata", spy_ensure),
+        patch.object(indexer_mod, "image_to_markdown", fake_image_to_markdown),
+        patch.object(indexer_mod, "_tesseract_ocr_image", MagicMock(return_value="")),
+        patch.object(indexer_mod, "_surya_image_ocr", surya_double),
+        patch.object(indexer_mod, "_llm_with_retry", llm_double),
+        patch.object(converters_mod, "vlm_extract_markdown", vlm_double),
+        patch.object(
+            indexer_mod,
+            "settings",
+            dataclasses.replace(indexer_mod.settings, surya_fallback_enabled=False),
+        ),
+    ):
+        await client._convert_to_tree(
+            state, str(img), img.name, ".png", None, None, script_context=latin_ctx
+        )
+
+    assert [c[0] for c in calls] == ["ensure_tessdata", "image_to_markdown"], (
+        f"ensure_tessdata must precede the OCR call exactly once each; got {calls}"
+    )
+    assert calls[0][1] == detect_ocr_langs(img.name)
+    assert calls[1][1] == provisioned[0], (
+        "image_to_markdown must OCR with the langs ensure_tessdata actually provisioned"
+    )
+    assert seen_md and _IMAGE_OCR_MD.strip() in seen_md[0]
+
+    egress = [
+        name
+        for name, double in (
+            ("vlm_extract_markdown", vlm_double),
+            ("_llm_with_retry", llm_double),
+            ("_surya_image_ocr", surya_double),
+        )
+        if double.called
+    ]
+    assert not egress, f"HR3: image OCR route must make no model call, but called {egress}"
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -1014,6 +1181,12 @@ def _agpl_metric(reason: str) -> float:
     return AGPL_FALLBACK_TOTAL.labels(reason=reason)._value.get()
 
 
+def _pdf_extract_fallbacks() -> float:
+    from pageindex_mcp.metrics import PDF_EXTRACT_FALLBACKS
+
+    return PDF_EXTRACT_FALLBACKS._value.get()
+
+
 async def _run_chain(chain, *, structural_fallback_enabled=True):
     """Drive the real ``_convert_to_tree`` chain walk over *chain*.
 
@@ -1092,10 +1265,19 @@ class TestGateAgplStructuralPolicy:
         counted as AGPL_FALLBACK_TOTAL(reason='structural_walk'); with
         AGPL_STRUCTURAL_FALLBACK_ENABLED=false the AGPL converter is never
         invoked, the document falls to the legacy page_index path, and the
-        block is counted as reason='structural_blocked'."""
+        block is counted as reason='structural_blocked'.
+
+        INDEX-01-C2: the .pdf -> ``_run_page_index`` last-resort fallback fires
+        ONLY when the markdown route raised (here: every converter in the chain
+        failed), and that fallback invocation is OBSERVABLE -- it increments
+        ``PDF_EXTRACT_FALLBACKS`` and emits the
+        ``pdf_conversion_outcome=all_converters_failed_legacy_fallback``
+        decision record.  On the success half neither the fallback nor the
+        counter moves."""
         chain, primary, agpl = _gate_chain(ValueError("unparseable PDF structure"))
         before_walk = _agpl_metric("structural_walk")
         before_blocked = _agpl_metric("structural_blocked")
+        before_fallbacks = _pdf_extract_fallbacks()
 
         client, state = await _run_chain(chain, structural_fallback_enabled=True)
 
@@ -1108,9 +1290,15 @@ class TestGateAgplStructuralPolicy:
         client._run_page_index_retrying.assert_not_called()
         assert _agpl_metric("structural_walk") == before_walk + 1
         assert _agpl_metric("structural_blocked") == before_blocked
+        assert _pdf_extract_fallbacks() == before_fallbacks, (
+            "INDEX-01-C2: no legacy page_index fallback when a converter succeeded"
+        )
 
         chain, primary, agpl = _gate_chain(ValueError("unparseable PDF structure"))
-        client, state = await _run_chain(chain, structural_fallback_enabled=False)
+        from pageindex_mcp.client import indexer as _indexer_mod
+
+        with patch.object(_indexer_mod, "decision", MagicMock()) as decision_mock:
+            client, state = await _run_chain(chain, structural_fallback_enabled=False)
 
         primary.assert_called_once()
         agpl.assert_not_called()
@@ -1119,6 +1307,13 @@ class TestGateAgplStructuralPolicy:
         client._run_page_index_retrying.assert_called_once()
         assert _agpl_metric("structural_blocked") == before_blocked + 1
         assert _agpl_metric("structural_walk") == before_walk + 1
+        # INDEX-01-C2: the fallback must be observable, not silent.
+        assert _pdf_extract_fallbacks() == before_fallbacks + 1
+        assert [
+            call.kwargs.get("choice")
+            for call in decision_mock.call_args_list
+            if call.kwargs.get("event") == "pdf_conversion_outcome"
+        ] == ["all_converters_failed_legacy_fallback"]
 
     @pytest.mark.asyncio
     async def test_transient_to_agpl_still_blocks_unchanged(self):

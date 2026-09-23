@@ -9,12 +9,17 @@ offending row.
 
 from __future__ import annotations
 
+import os
 import re
+import tempfile
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
-from pageindex_mcp.client import apply_image_ext_content_class_override
+from pageindex_mcp.client import CustomPageIndexClient, apply_image_ext_content_class_override
 from pageindex_mcp.client import images as _img
+from pageindex_mcp.client import indexer as _idx
 from pageindex_mcp.converters import (
     _apply_outline_levels,
     _collapse_spaced,
@@ -41,7 +46,12 @@ from pageindex_mcp.helpers import (
     split_oversized_leaf_nodes,
 )
 from pageindex_mcp.helpers.flat import BlockTextPurpose, block_text, doc_text
-from pageindex_mcp.helpers.types import TreeDefect, TreeGateResult, VerdictThresholds
+from pageindex_mcp.helpers.types import (
+    LowQualityTreeError,
+    TreeDefect,
+    TreeGateResult,
+    VerdictThresholds,
+)
 from pageindex_mcp.helpers.verdict import compute_verdict, evaluate_gates
 from tests._garble_compat import check_garble
 
@@ -1391,3 +1401,179 @@ def test_frontmatter_toc_left_intact():
     assert len(text) > _SMALL_MAX
     result = split_oversized_leaf_nodes([_make_leaf("toc", text)], max_chars=_SMALL_MAX)
     assert result[0]["nodes"] == []
+
+
+# ===========================================================================
+# FLAT-03: post-validate flat routing inside CustomPageIndexClient.index()
+# ===========================================================================
+# RFC-004 Amendment 1 (D4'): validate_tree() itself is unchanged (HR5); the
+# branch is on the *reason* it returns.  node_count<3 / depth<2 route to the
+# flat success path when flat_doc_routing is on; garbling stays terminal.
+
+
+def _flat_route_settings(flat_doc_routing: bool):
+    return SimpleNamespace(
+        openai_api_key="test-key",
+        openai_base_url="https://api.openai.com/v1",
+        azure_api_version=None,
+        llm_model="gpt-test",
+        minio_secure=False,
+        minio_endpoint="localhost:9000",
+        minio_bucket="pageindex",
+        flat_doc_routing=flat_doc_routing,
+        vlm_fallback=False,
+        vlm_model="gpt-4.1",
+        vlm_describe_images=False,
+        pii_corpus=False,
+    )
+
+
+@pytest.fixture()
+def flat_md_file():
+    """A real on-disk markdown file so index() runs to the validate_tree branch."""
+    fd, path = tempfile.mkstemp(suffix=".md")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write("Just some flat prose with no headings whatsoever, clearly readable.\n")
+    yield path
+    if os.path.exists(path):
+        os.unlink(path)
+
+
+def _wire_flat_route(monkeypatch, *, gate_result, flat_doc_routing=True):
+    """Patch every collaborator index() touches around the post-validate
+    routing branch, so the only variables are the gate result and the
+    flat_doc_routing kill-switch.  Persistence is mocked, which is what lets
+    the tests assert what was NOT written."""
+    fake_settings = _flat_route_settings(flat_doc_routing)
+    monkeypatch.setattr(_idx, "settings", fake_settings)
+    monkeypatch.setattr(_img, "settings", fake_settings)
+    monkeypatch.setattr(_idx, "hash_cache_get", lambda filename: None)
+    monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
+    monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
+    monkeypatch.setattr(_idx, "validate_tree", lambda structure, **kw: gate_result)
+    monkeypatch.setattr(_idx, "prepare_tree", lambda structure, **kw: structure)
+    monkeypatch.setattr(_idx, "_generate_flat_doc_description", lambda text, **kw: "")
+
+    mocks = {
+        "save_doc": MagicMock(),
+        "save_flat_doc": MagicMock(),
+        "save_raw": MagicMock(),
+        "save_doc_meta": MagicMock(),
+        "FLAT_DOCS_TOTAL": MagicMock(),
+        "LOW_QUALITY_TREES": MagicMock(),
+        "route_and_extract_flat": MagicMock(
+            return_value=("flat_prose", [{"role": "prose", "text": "flat prose body"}])
+        ),
+    }
+    for name, m in mocks.items():
+        monkeypatch.setattr(_idx, name, m)
+    monkeypatch.setattr(_img, "route_and_extract_flat", mocks["route_and_extract_flat"])
+    monkeypatch.setattr(_img, "LOW_QUALITY_TREES", mocks["LOW_QUALITY_TREES"])
+    return mocks
+
+
+def _flat_route_client(monkeypatch):
+    c = CustomPageIndexClient(api_key="test-key")
+
+    async def _tree(*a, **k):
+        return {
+            "structure": [{"title": "Root", "text": "body text", "nodes": []}],
+            "doc_description": "",
+        }
+
+    monkeypatch.setattr(c, "_run_md_to_tree", _tree)
+    return c
+
+
+_FLAT_ROUTED_GATES = (
+    TreeGateResult(ok=False, defect=TreeDefect.NODE_COUNT_LOW, detail="node_count=2"),
+    TreeGateResult(ok=False, defect=TreeDefect.DEPTH_LOW, detail="depth=1"),
+)
+
+
+async def test_flat_03_c1_non_garbling_rejection_routes_to_flat_success(monkeypatch, flat_md_file):
+    """FLAT-03-C1: with flat_doc_routing on, a node_count<3 / depth<2 gate
+    failure routes to the flat SUCCESS path — route_and_extract_flat runs on
+    the converter markdown, save_flat_doc persists, index() returns the doc_id,
+    FLAT_DOCS_TOTAL{content_class} is incremented, no LowQualityTreeError is
+    raised, and the tree artifact processed/<doc_id>.json is NOT written."""
+    failures: list[str] = []
+    for gate in _FLAT_ROUTED_GATES:
+        mocks = _wire_flat_route(monkeypatch, gate_result=gate, flat_doc_routing=True)
+        c = _flat_route_client(monkeypatch)
+        try:
+            doc_id = await c.index(flat_md_file)
+        except LowQualityTreeError as exc:
+            failures.append(f"{gate.defect.name}: raised LowQualityTreeError({exc.reason!r})")
+            continue
+        if not (isinstance(doc_id, str) and len(doc_id) == 36):
+            failures.append(f"{gate.defect.name}: index() returned {doc_id!r}, not a doc_id")
+        if not mocks["route_and_extract_flat"].called:
+            failures.append(f"{gate.defect.name}: route_and_extract_flat not called")
+        if mocks["save_flat_doc"].call_count != 1:
+            failures.append(
+                f"{gate.defect.name}: save_flat_doc calls={mocks['save_flat_doc'].call_count}"
+            )
+        elif mocks["save_flat_doc"].call_args.args[0] != doc_id:
+            failures.append(f"{gate.defect.name}: save_flat_doc persisted a different doc_id")
+        # HR5-adjacent negative: the flat route must NOT also write the tree.
+        if mocks["save_doc"].called:
+            failures.append(f"{gate.defect.name}: save_doc wrote processed/<doc_id>.json")
+        mocks["FLAT_DOCS_TOTAL"].labels.assert_called_once_with(content_class="flat_prose")
+        if c.last_content_class != "flat_prose":
+            failures.append(f"{gate.defect.name}: last_content_class={c.last_content_class!r}")
+    _report(failures, "FLAT-03-C1 flat success routing")
+
+
+async def test_flat_03_c2_garbling_stays_terminal_with_flat_routing_on(monkeypatch, flat_md_file):
+    """FLAT-03-C2 (HR5): a document whose reason resolves to 'garbling' raises
+    LowQualityTreeError('garbling') even with flat_doc_routing TRUE — nothing
+    is persisted (no .json, no .flat.json) and LOW_QUALITY_TREES{reason=
+    garbling} is incremented.
+
+    NOTE on the trigger: the contract names validate_tree returning
+    (False, 'garbling') as the trigger, but REASON_POLICY now gives GARBLING
+    the RETRY_OCR policy, so that reason alone routes to recovery and (if
+    unrecovered on the tree route) persists with a FAIL verdict.  The
+    surviving terminal 'garbling' reason is the per-block flat garble gate
+    inside _persist_flat_result, which is what this test drives: a flat-routed
+    document (node_count<3, flat routing ON) whose blocks are garbled must
+    still raise rather than persist a flat artifact."""
+    from pageindex_mcp.helpers import GarbleReport
+
+    mocks = _wire_flat_route(
+        monkeypatch,
+        gate_result=TreeGateResult(ok=False, defect=TreeDefect.NODE_COUNT_LOW, detail="n=2"),
+        flat_doc_routing=True,
+    )
+    _garbled = GarbleReport(is_garbled=True, fired_prongs=frozenset({"test"}))
+    monkeypatch.setattr(_idx, "_garble_check_flat_blocks", lambda blocks, **kw: _garbled)
+    c = _flat_route_client(monkeypatch)
+    with pytest.raises(LowQualityTreeError) as exc:
+        await c.index(flat_md_file)
+
+    assert exc.value.reason == "garbling"
+    mocks["save_doc"].assert_not_called()
+    mocks["save_flat_doc"].assert_not_called()
+    mocks["LOW_QUALITY_TREES"].labels.assert_called_with(reason="garbling")
+    assert c.last_content_class is None
+
+
+async def test_flat_03_c3_kill_switch_rejects_every_reason(monkeypatch, flat_md_file):
+    """FLAT-03-C3: with flat_doc_routing FALSE the legacy behaviour returns —
+    node_count<3 and depth<2 raise LowQualityTreeError(reason) like every other
+    failure, and no flat doc is persisted."""
+    failures: list[str] = []
+    for gate in _FLAT_ROUTED_GATES:
+        mocks = _wire_flat_route(monkeypatch, gate_result=gate, flat_doc_routing=False)
+        c = _flat_route_client(monkeypatch)
+        try:
+            doc_id = await c.index(flat_md_file)
+        except LowQualityTreeError as exc:
+            if exc.reason != gate.defect.value:
+                failures.append(f"{gate.defect.name}: raised reason={exc.reason!r}")
+        else:
+            failures.append(f"{gate.defect.name}: did not raise, returned {doc_id!r}")
+        if mocks["save_flat_doc"].called:
+            failures.append(f"{gate.defect.name}: save_flat_doc persisted with the switch off")
+    _report(failures, "FLAT-03-C3 kill-switch")

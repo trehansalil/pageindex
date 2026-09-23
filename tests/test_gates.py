@@ -1488,12 +1488,16 @@ class TestOcrDeferralQF1:
         mocks["save_doc"].assert_called_once()
 
     async def test_fix3_retry_still_fires(self, monkeypatch, pdf_file):
-        """A `garbling` gate failure still escalates to full-page OCR, once."""
+        """OCR-01-C1: a `garbling` gate failure escalates to full-page OCR
+        exactly once, rebuilds the tree (md->tree + prepare_tree/split) and
+        re-validates it, counting OCR_ESCALATION_TOTAL{result='recovered'}."""
         monkeypatch.delenv("PRE_GARBLE_FORCE_OCR_ENABLED", raising=False)
-        _wire_garble_probe(monkeypatch, page_text=_NUMERIC_JUNK)
+        mocks, _ = _wire_garble_probe(monkeypatch, page_text=_NUMERIC_JUNK)
         vt = MagicMock(side_effect=[(False, "garbling"), (True, None)])
         monkeypatch.setattr(_idx, "validate_tree", vt)
         monkeypatch.setattr(_rec, "validate_tree", vt)
+        prep = MagicMock(side_effect=lambda structure, **kw: structure)
+        monkeypatch.setattr(_idx, "prepare_tree", prep)
         ocr_langs = lambda sample: ["eng"]  # noqa: E731
         tessdata = lambda langs: langs  # noqa: E731
         monkeypatch.setattr(_idx, "detect_ocr_langs", ocr_langs)
@@ -1503,15 +1507,108 @@ class TestOcrDeferralQF1:
         escalation_calls = []
 
         def _fake_pdf_to_markdown_docling(path, force_full_page_ocr, langs, **kwargs):
-            escalation_calls.append({"force_full_page_ocr": force_full_page_ocr})
+            escalation_calls.append(
+                {"path": path, "force_full_page_ocr": force_full_page_ocr, "langs": langs}
+            )
             return "# ocr-recovered md"
+
+        monkeypatch.setattr(_rec, "pdf_to_markdown_docling", _fake_pdf_to_markdown_docling)
+        c = _make_client()
+        tree_calls = []
+
+        def _run_md_to_tree(*a, **k):
+            tree_calls.append(a)
+            return _tree_result()
+
+        monkeypatch.setattr(c, "_run_md_to_tree", _run_md_to_tree)
+        await c.index(pdf_file)
+        # (i) exactly one force_full_page_ocr re-conversion of the source PDF
+        assert len(escalation_calls) == 1
+        assert escalation_calls[0]["path"] == pdf_file
+        assert escalation_calls[0]["force_full_page_ocr"] is True
+        assert escalation_calls[0]["langs"] == ["eng"]
+        # (ii)/(iii) the retry rebuilds the tree, re-runs prepare_tree
+        # (split_oversized_leaf_nodes' sole entry point) and re-validates
+        assert len(tree_calls) == 2
+        assert prep.call_count == 2
+        assert vt.call_count == 2
+        # (iv) metric labelled by the re-validated outcome
+        mocks["OCR_ESCALATION_TOTAL"].labels.assert_called_once_with(result="recovered")
+
+    async def test_escalation_langs_are_filename_first_then_content(
+        self, monkeypatch, pdf_file
+    ):
+        """OCR-01-C2: escalation_langs = detect_ocr_langs(filename) first, then
+        detect_ocr_langs(md_content) unioned in (dedup, order-preserving), and
+        ensure_tessdata provisions that set before the OCR retry runs."""
+        monkeypatch.delenv("PRE_GARBLE_FORCE_OCR_ENABLED", raising=False)
+        _wire_garble_probe(monkeypatch, page_text=_NUMERIC_JUNK)
+        vt = MagicMock(side_effect=[(False, "garbling"), (True, None)])
+        monkeypatch.setattr(_idx, "validate_tree", vt)
+        monkeypatch.setattr(_rec, "validate_tree", vt)
+        monkeypatch.setattr(_idx, "detect_ocr_langs", lambda sample: ["eng"])
+        monkeypatch.setattr(_idx, "ensure_tessdata", lambda langs: langs)
+        events = []
+        filename = os.path.basename(pdf_file)
+
+        def _detect(sample):
+            events.append(("detect", sample))
+            # filename signal: deu; garbled md signal: ara (plus a duplicate deu)
+            return ["deu"] if sample == filename else ["ara", "deu"]
+
+        def _tessdata(langs):
+            events.append(("tessdata", list(langs)))
+            return list(langs)
+
+        def _fake_pdf_to_markdown_docling(path, force_full_page_ocr, langs, **kwargs):
+            events.append(("ocr", list(langs)))
+            return "# ocr-recovered md"
+
+        monkeypatch.setattr(_rec, "detect_ocr_langs", _detect)
+        monkeypatch.setattr(_rec, "ensure_tessdata", _tessdata)
+        monkeypatch.setattr(_rec, "pdf_to_markdown_docling", _fake_pdf_to_markdown_docling)
+        c = _make_client()
+        monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
+        await c.index(pdf_file)
+        # filename is consulted FIRST, the (garbled) md_content only after it
+        assert [e[1] for e in events if e[0] == "detect"] == [filename, "# converted md"]
+        # union is de-duplicated and order-preserving: filename lang leads
+        assert ("tessdata", ["deu", "ara"]) in events
+        # ensure_tessdata runs BEFORE the OCR retry
+        assert events.index(("tessdata", ["deu", "ara"])) < events.index(
+            ("ocr", ["deu", "ara"])
+        )
+
+    async def test_garbling_surviving_the_retry_escalates_only_once(
+        self, monkeypatch, pdf_file
+    ):
+        """OCR-01-C1 (boundary): the force_full_page_ocr retry fires at most
+        ONCE per index() call — a tree that is still garbled after it is not
+        re-escalated by any later recovery, and the outcome is counted as
+        OCR_ESCALATION_TOTAL{result='still_garbled'}."""
+        monkeypatch.delenv("PRE_GARBLE_FORCE_OCR_ENABLED", raising=False)
+        mocks, _ = _wire_garble_probe(monkeypatch, page_text=_NUMERIC_JUNK)
+        # HR3: no VLM egress — keep the last-resort VLM recovery out of it.
+        monkeypatch.setattr(_rec, "settings", _fake_settings(flat_doc_routing=True))
+        vt = MagicMock(return_value=(False, "garbling"))
+        monkeypatch.setattr(_idx, "validate_tree", vt)
+        monkeypatch.setattr(_rec, "validate_tree", vt)
+        monkeypatch.setattr(_idx, "detect_ocr_langs", lambda sample: ["eng"])
+        monkeypatch.setattr(_rec, "detect_ocr_langs", lambda sample: ["eng"])
+        monkeypatch.setattr(_idx, "ensure_tessdata", lambda langs: list(langs))
+        monkeypatch.setattr(_rec, "ensure_tessdata", lambda langs: list(langs))
+        escalation_calls = []
+
+        def _fake_pdf_to_markdown_docling(path, force_full_page_ocr, langs, **kwargs):
+            escalation_calls.append(force_full_page_ocr)
+            return "# still garbled md"
 
         monkeypatch.setattr(_rec, "pdf_to_markdown_docling", _fake_pdf_to_markdown_docling)
         c = _make_client()
         monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
         await c.index(pdf_file)
-        assert len(escalation_calls) == 1
-        assert escalation_calls[0]["force_full_page_ocr"] is True
+        assert escalation_calls == [True]
+        mocks["OCR_ESCALATION_TOTAL"].labels.assert_called_once_with(result="still_garbled")
 
 
 async def test_image_standalone_routing_promotes_content_class(monkeypatch, pdf_file):
