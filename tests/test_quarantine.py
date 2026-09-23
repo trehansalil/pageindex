@@ -19,7 +19,7 @@ from pageindex_mcp.client import CustomPageIndexClient
 from pageindex_mcp.client import images as _img
 from pageindex_mcp.client import indexer as _idx
 from pageindex_mcp.client import recovery as _rec
-from pageindex_mcp.helpers import GarbleReport, Route, TreeDefect, TreeGateResult
+from pageindex_mcp.helpers import GarbleReport, TreeDefect, TreeGateResult
 from pageindex_mcp.helpers.types import LowQualityTreeError
 
 # ---------------------------------------------------------------------------
@@ -150,6 +150,9 @@ def _wire_tree_garble_probe(
         "save_flat_doc": MagicMock(),
         "save_raw": MagicMock(),
         "save_doc_meta": MagicMock(),
+        # Without this the probe runs the real save_quarantine() and writes
+        # quarantine/<sha256>.* into whatever bucket .env resolves to.
+        "save_quarantine": MagicMock(),
         "route_and_extract_flat": MagicMock(
             return_value=("flat_prose", [{"role": "prose", "text": "x"}])
         ),
@@ -159,7 +162,11 @@ def _wire_tree_garble_probe(
         "splice_picture_text_for_tree": MagicMock(side_effect=lambda md, pics: md),
     }
     for name, m in mocks.items():
-        if name in ("route_and_extract_flat", "OCR_ESCALATION_TOTAL", "splice_picture_text_for_tree"):
+        if name in (
+            "route_and_extract_flat",
+            "OCR_ESCALATION_TOTAL",
+            "splice_picture_text_for_tree",
+        ):
             monkeypatch.setattr(_rec, name, m)
         if name not in ("OCR_ESCALATION_TOTAL",):
             monkeypatch.setattr(_idx, name, m)
@@ -193,6 +200,8 @@ def _wire_flat_garble_probe(monkeypatch):
         "save_flat_doc": MagicMock(),
         "save_raw": MagicMock(),
         "save_doc_meta": MagicMock(),
+        # See _wire_tree_garble_probe: keeps the probe off the live bucket.
+        "save_quarantine": MagicMock(),
         "FLAT_DOCS_TOTAL": MagicMock(),
         "LOW_QUALITY_TREES": MagicMock(),
         "route_and_extract_flat": MagicMock(
@@ -204,6 +213,29 @@ def _wire_flat_garble_probe(monkeypatch):
     monkeypatch.setattr(_img, "route_and_extract_flat", mocks["route_and_extract_flat"])
     monkeypatch.setattr(_img, "LOW_QUALITY_TREES", mocks["LOW_QUALITY_TREES"])
     return mocks
+
+
+def _assert_quarantined(mocks, *, sha256, source_path):
+    """OCR-01-C4: assert the rejection wrote quarantine/<sha256>.* before raising.
+
+    Checks the actual save_quarantine(sha256, tree, [filename]) call, not that
+    the symbol is importable.  The probes previously ended on
+    ``assert save_quarantine is not None`` — a tautology that stayed green even
+    with the quarantine write deleted, which is exactly the contract drift
+    RFC-049 exists to close.
+    """
+    mocks["save_quarantine"].assert_called_once()
+    args, kwargs = mocks["save_quarantine"].call_args
+    assert not kwargs, f"save_quarantine is called positionally; got kwargs {kwargs!r}"
+    assert args[0] == sha256, (
+        f"quarantine must be keyed by the content sha256 {sha256[:12]}…, got {args[0]!r}"
+    )
+    assert isinstance(args[1], dict), (
+        f"quarantine payload must be the rejected tree dict, got {type(args[1]).__name__}"
+    )
+    assert args[2] == [os.path.basename(source_path)], (
+        f"quarantine meta must carry the source filename, got {args[2]!r}"
+    )
 
 
 # ===========================================================================
@@ -226,10 +258,7 @@ async def test_ocr_01_c3_garbling_survives_retry_rejects(monkeypatch, pdf_probe)
     assert exc.value.reason == "garbling"
     mocks["save_doc"].assert_not_called()
     mocks["save_flat_doc"].assert_not_called()
-
-    from pageindex_mcp.storage.documents import save_quarantine  # noqa: F811
-
-    assert save_quarantine is not None, "save_quarantine must exist"
+    _assert_quarantined(mocks, sha256=_PDF_SHA256, source_path=pdf_probe)
 
 
 @pytest.mark.asyncio
@@ -247,6 +276,7 @@ async def test_ocr_01_c3_ocr_escalation_disabled_rejects(monkeypatch, pdf_probe)
     assert exc.value.reason == "garbling"
     mocks["save_doc"].assert_not_called()
     mocks["save_flat_doc"].assert_not_called()
+    _assert_quarantined(mocks, sha256=_PDF_SHA256, source_path=pdf_probe)
 
 
 @pytest.mark.asyncio
@@ -267,6 +297,7 @@ async def test_ocr_01_c3_retry_exception_rejects(monkeypatch, pdf_probe):
     mocks["save_doc"].assert_not_called()
     mocks["save_flat_doc"].assert_not_called()
     mocks["OCR_ESCALATION_TOTAL"].labels.assert_called_with(result="error")
+    _assert_quarantined(mocks, sha256=_PDF_SHA256, source_path=pdf_probe)
 
 
 # ===========================================================================
@@ -290,6 +321,7 @@ async def test_flat_03_c2_tree_garbling_rejects(monkeypatch, pdf_probe):
     mocks["save_doc"].assert_not_called()
     mocks["save_flat_doc"].assert_not_called()
     mocks["LOW_QUALITY_TREES"].labels.assert_called_with(reason="garbling")
+    _assert_quarantined(mocks, sha256=_PDF_SHA256, source_path=pdf_probe)
 
 
 # ===========================================================================
@@ -315,6 +347,7 @@ async def test_node_garbling_rejects(monkeypatch, pdf_probe):
     assert exc.value.reason == "node_garbling"
     mocks["save_doc"].assert_not_called()
     mocks["save_flat_doc"].assert_not_called()
+    _assert_quarantined(mocks, sha256=_PDF_SHA256, source_path=pdf_probe)
 
 
 # ===========================================================================
@@ -346,6 +379,11 @@ async def test_route_guard_flat_routed_garbling_not_rejected(monkeypatch, pdf_pr
     assert exc.value.reason == "garbling"
     mocks["save_doc"].assert_not_called()
     mocks["save_flat_doc"].assert_not_called()
+    # The reject comes from the (False, FLAT) arm re-emitting the per-block
+    # garble failure, NOT from the D2-C tree override: had the override caught
+    # this NODE_COUNT_LOW doc, the reason would be "node_count_low".  The flat
+    # clause of OCR-01-C4 still applies, so a quarantine copy must exist.
+    _assert_quarantined(mocks, sha256=_PDF_SHA256, source_path=pdf_probe)
 
 
 # ===========================================================================
@@ -367,10 +405,7 @@ async def test_flat_garble_quarantines_before_raise(monkeypatch, md_probe):
     assert exc.value.reason == "garbling"
     mocks["save_doc"].assert_not_called()
     mocks["save_flat_doc"].assert_not_called()
-
-    from pageindex_mcp.storage.documents import save_quarantine  # noqa: F811
-
-    assert save_quarantine is not None, "save_quarantine must exist"
+    _assert_quarantined(mocks, sha256=_MD_SHA256, source_path=md_probe)
 
 
 # ===========================================================================
