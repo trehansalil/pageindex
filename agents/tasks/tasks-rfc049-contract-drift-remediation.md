@@ -76,17 +76,17 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
 
 ## Tasks
 
-- [ ] <a id="1-d6-harden-the-contracts-gate-grep"></a>1. D6: Harden the contracts gate grep ([D6](../rfcs/049-contract-drift-remediation.md#d6-the-contracts-gates-own-grep-is-unhardened--latent-one-line-fix))
+- [x] <a id="1-d6-harden-the-contracts-gate-grep"></a>1. D6: Harden the contracts gate grep ([D6](../rfcs/049-contract-drift-remediation.md#d6-the-contracts-gates-own-grep-is-unhardened--latent-one-line-fix))
 
   *Wave 0 · RFC Sequencing rows 1 and 1a*
 
-  - [ ] <a id="11-restrict-the-grep-to-test-source"></a>1.1 Restrict the grep to test source
+  - [x] <a id="11-restrict-the-grep-to-test-source"></a>1.1 Restrict the grep to test source
 
     - Edit `scripts/gates/contracts.sh:142`: add `--include='*.py' --exclude-dir=__pycache__` to the `grep -r "$cid" "$REPO_ROOT/tests/"` call. Change nothing else.
     - _Requirements:_ [R2 AC1–AC2](../rfcs/049-contract-drift-remediation.md#requirement-2-the-contracts-gate-must-not-be-maskable-by-build-artefacts) | [RFC D6](../rfcs/049-contract-drift-remediation.md#d6-the-contracts-gates-own-grep-is-unhardened--latent-one-line-fix) | [Design Service: Contracts gate](../designs/design-rfc049-contract-drift-remediation.md#1-contracts-gate-contractssh) | [Design Sequence: Contracts Gate Flow](../designs/design-rfc049-contract-drift-remediation.md#contracts-gate-flow-d6)
     - _Properties:_ [Design Property 1](../designs/design-rfc049-contract-drift-remediation.md#property-1-gate-hits-come-only-from-test-source)
 
-  - [ ] <a id="12-record-before-and-after-gate-counts"></a>1.2 Record before and after gate counts
+  - [x] <a id="12-record-before-and-after-gate-counts"></a>1.2 Record before and after gate counts
 
     - Run `bash scripts/gates/contracts.sh` before and after [Task 1.1](#11-restrict-the-grep-to-test-source), and record both summary lines and FAIL sets in the PR description.
     - Expected: identical, PASS=64 FAIL=2, FAIL set {`LANG-01-C2`, `OCR-01-C3`}. Any divergence means a PASS came only from bytecode: stop and report it.
@@ -94,18 +94,18 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
     - _Properties:_ [Design Property 2](../designs/design-rfc049-contract-drift-remediation.md#property-2-gate-counts-are-stable-under-hardening)
     - **Validates:** [Design Property 2](../designs/design-rfc049-contract-drift-remediation.md#property-2-gate-counts-are-stable-under-hardening) | [RFC D6](../rfcs/049-contract-drift-remediation.md#d6-the-contracts-gates-own-grep-is-unhardened--latent-one-line-fix) | [RFC Test Strategy](../rfcs/049-contract-drift-remediation.md#test-strategy)
 
-  - [ ] <a id="13-run-the-deleted-test-negative-check"></a>1.3 Run the deleted-test negative check
+  - [x] <a id="13-run-the-deleted-test-negative-check"></a>1.3 Run the deleted-test negative check
 
     - In a scratch copy, or with `git stash` restored afterwards, compile one contract-bearing test module to `.pyc`, delete its `.py`, and run the gate. Expect FAIL for that module's IDs. Then restore the file and remove the stray `.pyc`. Leave no residue in `tests/`.
     - _Requirements:_ [R2 AC1–AC2](../rfcs/049-contract-drift-remediation.md#requirement-2-the-contracts-gate-must-not-be-maskable-by-build-artefacts)
     - _Properties:_ [Design Property 1](../designs/design-rfc049-contract-drift-remediation.md#property-1-gate-hits-come-only-from-test-source)
     - **Validates:** [Design Property 1](../designs/design-rfc049-contract-drift-remediation.md#property-1-gate-hits-come-only-from-test-source) | [RFC D6](../rfcs/049-contract-drift-remediation.md#d6-the-contracts-gates-own-grep-is-unhardened--latent-one-line-fix) | [RFC Test Strategy](../rfcs/049-contract-drift-remediation.md#test-strategy)
 
-- [ ] <a id="2-editorial-contract-text-d3-d4b"></a>2. Editorial contract text ([D3](../rfcs/049-contract-drift-remediation.md#d3-flat-01-c3s-role-set-is-incomplete--add-image), [D4(b)](../rfcs/049-contract-drift-remediation.md#d4-three-drifted-triggereffect-clauses--substance-intact-text-stale))
+- [x] <a id="2-editorial-contract-text-d3-d4b"></a>2. Editorial contract text ([D3](../rfcs/049-contract-drift-remediation.md#d3-flat-01-c3s-role-set-is-incomplete--add-image), [D4(b)](../rfcs/049-contract-drift-remediation.md#d4-three-drifted-triggereffect-clauses--substance-intact-text-stale))
 
   *Wave 0 · contract text only, no code change*
 
-  - [ ] <a id="21-amend-flat-01-c3-role-set"></a>2.1 Amend the FLAT-01-C3 role set
+  - [x] <a id="21-amend-flat-01-c3-role-set"></a>2.1 Amend the FLAT-01-C3 role set
 
     - `agents/contracts/flat-01.yaml:29`: change the role set in the `FLAT-01-C3` effect to `{title, prose, kv, table, image}`.
     - In the docstring of `tests/test_helpers_combined.py:524::test_flat_01_c3_roles_are_typed_and_gate_independent`, delete the parenthesis "(plus the later-added 'image' role, which the contract text predates)". Change only the docstring; the assertion stays as it is.
@@ -113,18 +113,18 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
     - _Requirements:_ [R1 AC5](../rfcs/049-contract-drift-remediation.md#requirement-1-no-contract-may-report-green-against-code-that-contradicts-it) | [RFC D3](../rfcs/049-contract-drift-remediation.md#d3-flat-01-c3s-role-set-is-incomplete--add-image) | [Design Service: FLAT-01](../designs/design-rfc049-contract-drift-remediation.md#4-flat-01-flat-01yaml)
     - _Properties:_ [Design Property 5](../designs/design-rfc049-contract-drift-remediation.md#property-5-flat-role-set-is-exactly-five-roles), [Design Property 4](../designs/design-rfc049-contract-drift-remediation.md#property-4-labels-follow-amendments)
 
-  - [ ] <a id="22-amend-index-01-c2-trigger"></a>2.2 Amend the INDEX-01-C2 trigger
+  - [x] <a id="22-amend-index-01-c2-trigger"></a>2.2 Amend the INDEX-01-C2 trigger
 
     - `agents/contracts/index-01.yaml` `INDEX-01-C2`: rewrite desc, trigger, effect and boundary so they name full failure of the `pdf_markdown_converters()` chain, matching `CONV-01-C1`. The chain is built at `client/indexer.py:830`, and the legacy fallback is in the else-arm at `:1192-1205` (`PDF_EXTRACT_FALLBACKS`, `pdf_conversion_outcome=all_converters_failed_legacy_fallback`, `_run_page_index_retrying`). Use the wording in the [design](../designs/design-rfc049-contract-drift-remediation.md#5-index-01-index-01yaml).
     - The existing label on `tests/test_converters.py:1270` stays.
     - _Requirements:_ [R1 AC5](../rfcs/049-contract-drift-remediation.md#requirement-1-no-contract-may-report-green-against-code-that-contradicts-it) | [RFC D4(b)](../rfcs/049-contract-drift-remediation.md#d4-three-drifted-triggereffect-clauses--substance-intact-text-stale) | [Design Service: INDEX-01](../designs/design-rfc049-contract-drift-remediation.md#5-index-01-index-01yaml)
     - _Properties:_ [Design Property 6](../designs/design-rfc049-contract-drift-remediation.md#property-6-legacy-fallback-iff-whole-chain-fails)
 
-- [ ] <a id="5-d5-ratification"></a>5. D5: Ratification ([D5](../rfcs/049-contract-drift-remediation.md#d5-erase-01-c2-idempotency-hole--ratification-fix-already-applied))
+- [x] <a id="5-d5-ratification"></a>5. D5: Ratification ([D5](../rfcs/049-contract-drift-remediation.md#d5-erase-01-c2-idempotency-hole--ratification-fix-already-applied))
 
   *Wave 0 · no code change; fix committed at `e2ecd4b`*
 
-  - [ ] <a id="51-confirm-the-rfc-cites-e2ecd4b"></a>5.1 Confirm the RFC cites e2ecd4b
+  - [x] <a id="51-confirm-the-rfc-cites-e2ecd4b"></a>5.1 Confirm the RFC cites e2ecd4b
 
     - Check that `git show --stat e2ecd4b` touches `src/pageindex_mcp/storage/documents.py` and `tests/test_storage.py`.
     - Check that the [RFC D5 section](../rfcs/049-contract-drift-remediation.md#d5-erase-01-c2-idempotency-hole--ratification-fix-already-applied) and [R3](../rfcs/049-contract-drift-remediation.md#requirement-3-hr2-cascade-idempotency-amendment-2026-09-23) cite the commit rather than an "uncommitted working tree".
@@ -132,18 +132,18 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
     - _Requirements:_ [R3](../rfcs/049-contract-drift-remediation.md#requirement-3-hr2-cascade-idempotency-amendment-2026-09-23) | [RFC D5](../rfcs/049-contract-drift-remediation.md#d5-erase-01-c2-idempotency-hole--ratification-fix-already-applied)
     - _Properties:_ [Design Property 8](../designs/design-rfc049-contract-drift-remediation.md#property-8-erasure-retry-is-idempotent)
 
-  - [ ] <a id="52-confirm-erase-01-c2-labels"></a>5.2 Confirm the ERASE-01-C2 labels
+  - [x] <a id="52-confirm-erase-01-c2-labels"></a>5.2 Confirm the ERASE-01-C2 labels
 
     - Check that `tests/test_storage.py:183` (`test_erase_01_c2_idempotent_on_missing_doc`) and `:201` (`test_erase_01_c2_prefix_loops_tolerate_nosuchkey_but_surface_other_errors`) both carry `ERASE-01-C2` and pass at Checkpoint A.
     - _Requirements:_ [R3 AC1–AC2](../rfcs/049-contract-drift-remediation.md#requirement-3-hr2-cascade-idempotency-amendment-2026-09-23) | [RFC D5](../rfcs/049-contract-drift-remediation.md#d5-erase-01-c2-idempotency-hole--ratification-fix-already-applied) | [Design Service: ERASE-01](../designs/design-rfc049-contract-drift-remediation.md#8-erase-01-erase-01yaml)
     - _Properties:_ [Design Property 8](../designs/design-rfc049-contract-drift-remediation.md#property-8-erasure-retry-is-idempotent)
     - **Validates:** [Design Property 8](../designs/design-rfc049-contract-drift-remediation.md#property-8-erasure-retry-is-idempotent) | [RFC D5](../rfcs/049-contract-drift-remediation.md#d5-erase-01-c2-idempotency-hole--ratification-fix-already-applied) | [RFC Test Strategy](../rfcs/049-contract-drift-remediation.md#test-strategy)
 
-- [ ] <a id="3-d1-and-d4c-tessdata-wording"></a>3. D1 and D4(c): tessdata wording ([D1](../rfcs/049-contract-drift-remediation.md#d1-lang-01-c2-is-stale--the-raise-is-the-fix-not-the-bug), [D4(c)](../rfcs/049-contract-drift-remediation.md#d4-three-drifted-triggereffect-clauses--substance-intact-text-stale))
+- [x] <a id="3-d1-and-d4c-tessdata-wording"></a>3. D1 and D4(c): tessdata wording ([D1](../rfcs/049-contract-drift-remediation.md#d1-lang-01-c2-is-stale--the-raise-is-the-fix-not-the-bug), [D4(c)](../rfcs/049-contract-drift-remediation.md#d4-three-drifted-triggereffect-clauses--substance-intact-text-stale))
 
   *Wave 1 · 3.1 → 3.3 strictly ordered; 3.2 shares its wording with 3.1*
 
-  - [ ] <a id="31-amend-lang-01-c2-effect-and-header"></a>3.1 Amend the LANG-01-C2 effect and header
+  - [x] <a id="31-amend-lang-01-c2-effect-and-header"></a>3.1 Amend the LANG-01-C2 effect and header
 
     - `agents/contracts/lang-01.yaml`: replace the `LANG-01-C2` effect and boundary with the script-class split:
       - a missing Latin language is dropped, and the result falls back to ⊇ `['deu','eng']`;
@@ -154,7 +154,7 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
     - _Requirements:_ [R1 AC1/AC5](../rfcs/049-contract-drift-remediation.md#requirement-1-no-contract-may-report-green-against-code-that-contradicts-it) | [RFC D1](../rfcs/049-contract-drift-remediation.md#d1-lang-01-c2-is-stale--the-raise-is-the-fix-not-the-bug) | [Design Service: LANG-01](../designs/design-rfc049-contract-drift-remediation.md#2-lang-01-lang-01yaml)
     - _Properties:_ [Design Property 3](../designs/design-rfc049-contract-drift-remediation.md#property-3-tessdata-degrades-for-latin-raises-for-non-latin)
 
-  - [ ] <a id="32-amend-conv-01-c5-effect"></a>3.2 Amend the CONV-01-C5 effect
+  - [x] <a id="32-amend-conv-01-c5-effect"></a>3.2 Amend the CONV-01-C5 effect
 
     - `agents/contracts/conv-01.yaml` `CONV-01-C5`: langs = `ensure_tessdata(detect_ocr_langs(filename))` (`client/indexer.py:1258`), degrading to `['deu','eng']` in the `except TessdataUnavailableError` at `:1262`.
     - Remove the hardcoded `['ara','deu','eng']`, the "no text layer to sample" rationale and "never raises".
@@ -163,14 +163,14 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
     - _Requirements:_ [R1 AC5](../rfcs/049-contract-drift-remediation.md#requirement-1-no-contract-may-report-green-against-code-that-contradicts-it) | [RFC D4(c)](../rfcs/049-contract-drift-remediation.md#d4-three-drifted-triggereffect-clauses--substance-intact-text-stale) | [Design Service: CONV-01](../designs/design-rfc049-contract-drift-remediation.md#3-conv-01-conv-01yaml)
     - _Properties:_ [Design Property 7](../designs/design-rfc049-contract-drift-remediation.md#property-7-image-route-languages-come-from-filename-detection)
 
-  - [ ] <a id="33-label-the-lang-01-c2-test"></a>3.3 Label the LANG-01-C2 test
+  - [x] <a id="33-label-the-lang-01-c2-test"></a>3.3 Label the LANG-01-C2 test
 
     - **Only in the same change as [Task 3.1](#31-amend-lang-01-c2-effect-and-header) or after it.** Add `LANG-01-C2` to `tests/test_helpers_combined.py:420::test_ensure_tessdata_non_latin_raises_latin_degrades`, in a docstring or comment. Leave the assertions unchanged.
     - _Requirements:_ [R1 AC2/AC4](../rfcs/049-contract-drift-remediation.md#requirement-1-no-contract-may-report-green-against-code-that-contradicts-it) | [RFC D1](../rfcs/049-contract-drift-remediation.md#d1-lang-01-c2-is-stale--the-raise-is-the-fix-not-the-bug) | [Design Service: LANG-01](../designs/design-rfc049-contract-drift-remediation.md#2-lang-01-lang-01yaml)
     - _Properties:_ [Design Property 3](../designs/design-rfc049-contract-drift-remediation.md#property-3-tessdata-degrades-for-latin-raises-for-non-latin), [Design Property 4](../designs/design-rfc049-contract-drift-remediation.md#property-4-labels-follow-amendments)
     - **Validates:** [Design Property 3](../designs/design-rfc049-contract-drift-remediation.md#property-3-tessdata-degrades-for-latin-raises-for-non-latin) | [RFC D1](../rfcs/049-contract-drift-remediation.md#d1-lang-01-c2-is-stale--the-raise-is-the-fix-not-the-bug) | [RFC Test Strategy](../rfcs/049-contract-drift-remediation.md#test-strategy)
 
-- [ ] <a id="4-checkpoint-a--contract-text-wave"></a>4. Checkpoint A — contract-text wave
+- [x] <a id="4-checkpoint-a--contract-text-wave"></a>4. Checkpoint A — contract-text wave
 
   - Phases [1](#1-d6-harden-the-contracts-gate-grep), [2](#2-editorial-contract-text-d3-d4b), [5](#5-d5-ratification) (Wave 0) and [3](#3-d1-and-d4c-tessdata-wording) (Wave 1) must all be complete first.
   - Run `make test PYTEST_ARGS="tests/test_helpers_combined.py tests/test_flat.py tests/test_converters.py tests/test_storage.py -q"` in the foreground. Everything passes.
@@ -178,17 +178,17 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
   - Verifies: [Design Property 2](../designs/design-rfc049-contract-drift-remediation.md#property-2-gate-counts-are-stable-under-hardening), [Design Property 3](../designs/design-rfc049-contract-drift-remediation.md#property-3-tessdata-degrades-for-latin-raises-for-non-latin), [Design Property 4](../designs/design-rfc049-contract-drift-remediation.md#property-4-labels-follow-amendments), [Design Property 5](../designs/design-rfc049-contract-drift-remediation.md#property-5-flat-role-set-is-exactly-five-roles), [Design Property 6](../designs/design-rfc049-contract-drift-remediation.md#property-6-legacy-fallback-iff-whole-chain-fails), [Design Property 7](../designs/design-rfc049-contract-drift-remediation.md#property-7-image-route-languages-come-from-filename-detection), [Design Property 8](../designs/design-rfc049-contract-drift-remediation.md#property-8-erasure-retry-is-idempotent), [Design Property 9](../designs/design-rfc049-contract-drift-remediation.md#property-9-unresolved-contradictions-stay-red)
   - **Ask the user before continuing to Wave 2.**
 
-- [ ] <a id="6-d2-c-preflight"></a>6. D2-C pre-flight ([D2 Option C](../rfcs/049-contract-drift-remediation.md#option-c--reject-and-quarantine-adopted-2026-09-23))
+- [x] <a id="6-d2-c-preflight"></a>6. D2-C pre-flight ([D2 Option C](../rfcs/049-contract-drift-remediation.md#option-c--reject-and-quarantine-adopted-2026-09-23))
 
   *Wave 2 entry · read-only*
 
-  - [ ] <a id="61-confirm-the-d2-decision-record"></a>6.1 Confirm the D2 decision record
+  - [x] <a id="61-confirm-the-d2-decision-record"></a>6.1 Confirm the D2 decision record
 
     - Confirm that the RFC records Option C as ADOPTED by the user on 2026-09-23 ([D2](../rfcs/049-contract-drift-remediation.md#d2-ocr-01-c3-vs-hard-rule-5--the-decision-requires-explicit-approval)), and that the user approved continuing past [Checkpoint A](#4-checkpoint-a--contract-text-wave).
     - _Requirements:_ [R1 AC3](../rfcs/049-contract-drift-remediation.md#requirement-1-no-contract-may-report-green-against-code-that-contradicts-it) | [R4](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23)
     - _Properties:_ [Design Property 9](../designs/design-rfc049-contract-drift-remediation.md#property-9-unresolved-contradictions-stay-red)
 
-  - [ ] <a id="62-re-verify-code-anchors"></a>6.2 Re-verify code anchors
+  - [x] <a id="62-re-verify-code-anchors"></a>6.2 Re-verify code anchors
 
     - Using codebase-memory or Serena (never Read on `.py`), re-confirm the sites below. Line numbers drift, so treat each one as "verify, then use".
       - **Tree-route insertion point in `index()`:**
@@ -370,7 +370,7 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
     - _Requirements:_ [R4 AC6](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [CLAUDE.md HR2](../../CLAUDE.md#hard-rules)
     - _Properties:_ [Design Property 12b](../designs/design-rfc049-contract-drift-remediation.md#property-12b-the-quarantine-prefix-cannot-escape-the-hr2-guard)
 
-  - [ ] <a id="75c-configure-the-quarantine-lifecycle-ttl"></a>7.5c Configure the quarantine lifecycle TTL — **operator/infra step**
+  - [x] <a id="75c-configure-the-quarantine-lifecycle-ttl"></a>7.5c Configure the quarantine lifecycle TTL — **operator/infra step**
 
     - The repo has **no** MinIO lifecycle configuration today: there is no `set_bucket_lifecycle`, `LifecycleConfig` or `mc ilm` in `src/`, `scripts/`, `Makefile`, `docker-compose.yml`, `services/` or `docs/`.
     - **Operator step**, documented via [Task 7.8](#78-update-architecturemd):
@@ -636,17 +636,17 @@ This plan implements [RFC-049](../rfcs/049-contract-drift-remediation.md#impleme
 
 ## Tasks
 
-- [ ] <a id="1-d6-harden-the-contracts-gate-grep"></a>1. D6: Harden the contracts gate grep ([D6](../rfcs/049-contract-drift-remediation.md#d6-the-contracts-gates-own-grep-is-unhardened--latent-one-line-fix))
+- [x] <a id="1-d6-harden-the-contracts-gate-grep"></a>1. D6: Harden the contracts gate grep ([D6](../rfcs/049-contract-drift-remediation.md#d6-the-contracts-gates-own-grep-is-unhardened--latent-one-line-fix))
 
   *Wave 0 · RFC Sequencing rows 1 and 1a*
 
-  - [ ] <a id="11-restrict-the-grep-to-test-source"></a>1.1 Restrict the grep to test source
+  - [x] <a id="11-restrict-the-grep-to-test-source"></a>1.1 Restrict the grep to test source
 
     - Edit `scripts/gates/contracts.sh:142`: add `--include='*.py' --exclude-dir=__pycache__` to the `grep -r "$cid" "$REPO_ROOT/tests/"` call. Change nothing else.
     - _Requirements:_ [R2 AC1–AC2](../rfcs/049-contract-drift-remediation.md#requirement-2-the-contracts-gate-must-not-be-maskable-by-build-artefacts) | [RFC D6](../rfcs/049-contract-drift-remediation.md#d6-the-contracts-gates-own-grep-is-unhardened--latent-one-line-fix) | [Design Service: Contracts gate](../designs/design-rfc049-contract-drift-remediation.md#1-contracts-gate-contractssh) | [Design Sequence: Contracts Gate Flow](../designs/design-rfc049-contract-drift-remediation.md#contracts-gate-flow-d6)
     - _Properties:_ [Design Property 1](../designs/design-rfc049-contract-drift-remediation.md#property-1-gate-hits-come-only-from-test-source)
 
-  - [ ] <a id="12-record-before-and-after-gate-counts"></a>1.2 Record before and after gate counts
+  - [x] <a id="12-record-before-and-after-gate-counts"></a>1.2 Record before and after gate counts
 
     - Run `bash scripts/gates/contracts.sh` before and after [Task 1.1](#11-restrict-the-grep-to-test-source). Record both summary lines and FAIL sets in the PR description.
     - Expected: identical, PASS=64 FAIL=2, FAIL set {`LANG-01-C2`, `OCR-01-C3`}. Any divergence means a PASS was bytecode-only: stop and report it.
@@ -654,7 +654,7 @@ This plan implements [RFC-049](../rfcs/049-contract-drift-remediation.md#impleme
     - _Properties:_ [Design Property 2](../designs/design-rfc049-contract-drift-remediation.md#property-2-gate-counts-are-stable-under-hardening)
     - **Validates:** [Design Property 2](../designs/design-rfc049-contract-drift-remediation.md#property-2-gate-counts-are-stable-under-hardening) | [RFC D6](../rfcs/049-contract-drift-remediation.md#d6-the-contracts-gates-own-grep-is-unhardened--latent-one-line-fix) | [RFC Test Strategy](../rfcs/049-contract-drift-remediation.md#test-strategy)
 
-  - [ ] <a id="13-run-the-deleted-test-negative-check"></a>1.3 Run the deleted-test negative check
+  - [x] <a id="13-run-the-deleted-test-negative-check"></a>1.3 Run the deleted-test negative check
 
     - In a scratch copy (or with `git stash` restored afterwards), compile one contract-bearing test module to `.pyc`, delete its `.py`, and run the gate. Expect FAIL for that module's IDs. Restore the file and remove the stray `.pyc`.
     - Leave no residue in `tests/`.
@@ -662,29 +662,29 @@ This plan implements [RFC-049](../rfcs/049-contract-drift-remediation.md#impleme
     - _Properties:_ [Design Property 1](../designs/design-rfc049-contract-drift-remediation.md#property-1-gate-hits-come-only-from-test-source)
     - **Validates:** [Design Property 1](../designs/design-rfc049-contract-drift-remediation.md#property-1-gate-hits-come-only-from-test-source) | [RFC D6](../rfcs/049-contract-drift-remediation.md#d6-the-contracts-gates-own-grep-is-unhardened--latent-one-line-fix) | [RFC Test Strategy](../rfcs/049-contract-drift-remediation.md#test-strategy)
 
-- [ ] <a id="2-editorial-contract-text-d3-d4b"></a>2. Editorial contract text ([D3](../rfcs/049-contract-drift-remediation.md#d3-flat-01-c3s-role-set-is-incomplete--add-image), [D4(b)](../rfcs/049-contract-drift-remediation.md#d4-three-drifted-triggereffect-clauses--substance-intact-text-stale))
+- [x] <a id="2-editorial-contract-text-d3-d4b"></a>2. Editorial contract text ([D3](../rfcs/049-contract-drift-remediation.md#d3-flat-01-c3s-role-set-is-incomplete--add-image), [D4(b)](../rfcs/049-contract-drift-remediation.md#d4-three-drifted-triggereffect-clauses--substance-intact-text-stale))
 
   *Wave 0 · contract text only, no code change*
 
-  - [ ] <a id="21-amend-flat-01-c3-role-set"></a>2.1 Amend the FLAT-01-C3 role set
+  - [x] <a id="21-amend-flat-01-c3-role-set"></a>2.1 Amend the FLAT-01-C3 role set
 
     - `agents/contracts/flat-01.yaml:29`: change the role set in the `FLAT-01-C3` effect to `{title, prose, kv, table, image}`.
     - In the docstring of `tests/test_helpers_combined.py:524::test_flat_01_c3_roles_are_typed_and_gate_independent`, delete the parenthesis "(plus the later-added 'image' role, which the contract text predates)". Docstring only; the assertion is unchanged.
     - _Requirements:_ [R1 AC5](../rfcs/049-contract-drift-remediation.md#requirement-1-no-contract-may-report-green-against-code-that-contradicts-it) | [RFC D3](../rfcs/049-contract-drift-remediation.md#d3-flat-01-c3s-role-set-is-incomplete--add-image) | [Design Service: FLAT-01](../designs/design-rfc049-contract-drift-remediation.md#4-flat-01-flat-01yaml)
     - _Properties:_ [Design Property 5](../designs/design-rfc049-contract-drift-remediation.md#property-5-flat-role-set-is-exactly-five-roles), [Design Property 4](../designs/design-rfc049-contract-drift-remediation.md#property-4-labels-follow-amendments)
 
-  - [ ] <a id="22-amend-index-01-c2-trigger"></a>2.2 Amend the INDEX-01-C2 trigger
+  - [x] <a id="22-amend-index-01-c2-trigger"></a>2.2 Amend the INDEX-01-C2 trigger
 
     - `agents/contracts/index-01.yaml` `INDEX-01-C2`: rewrite desc, trigger, effect and boundary so they name full `pdf_markdown_converters()` chain failure (chain built at `client/indexer.py:830`, legacy fallback in the else-arm at `:1192-1205`: `PDF_EXTRACT_FALLBACKS`, `pdf_conversion_outcome=all_converters_failed_legacy_fallback`, `_run_page_index_retrying`), matching `CONV-01-C1`. Use the wording in the [design](../designs/design-rfc049-contract-drift-remediation.md#5-index-01-index-01yaml).
     - The existing label on `tests/test_converters.py:1270` stays.
     - _Requirements:_ [R1 AC5](../rfcs/049-contract-drift-remediation.md#requirement-1-no-contract-may-report-green-against-code-that-contradicts-it) | [RFC D4(b)](../rfcs/049-contract-drift-remediation.md#d4-three-drifted-triggereffect-clauses--substance-intact-text-stale) | [Design Service: INDEX-01](../designs/design-rfc049-contract-drift-remediation.md#5-index-01-index-01yaml)
     - _Properties:_ [Design Property 6](../designs/design-rfc049-contract-drift-remediation.md#property-6-legacy-fallback-iff-whole-chain-fails)
 
-- [ ] <a id="3-d1-and-d4c-tessdata-wording"></a>3. D1 and D4(c): tessdata wording ([D1](../rfcs/049-contract-drift-remediation.md#d1-lang-01-c2-is-stale--the-raise-is-the-fix-not-the-bug), [D4(c)](../rfcs/049-contract-drift-remediation.md#d4-three-drifted-triggereffect-clauses--substance-intact-text-stale))
+- [x] <a id="3-d1-and-d4c-tessdata-wording"></a>3. D1 and D4(c): tessdata wording ([D1](../rfcs/049-contract-drift-remediation.md#d1-lang-01-c2-is-stale--the-raise-is-the-fix-not-the-bug), [D4(c)](../rfcs/049-contract-drift-remediation.md#d4-three-drifted-triggereffect-clauses--substance-intact-text-stale))
 
   *Wave 1 · 3.1 → 3.3 strictly ordered; 3.2 shares wording with 3.1*
 
-  - [ ] <a id="31-amend-lang-01-c2-effect-and-header"></a>3.1 Amend the LANG-01-C2 effect and header
+  - [x] <a id="31-amend-lang-01-c2-effect-and-header"></a>3.1 Amend the LANG-01-C2 effect and header
 
     - `agents/contracts/lang-01.yaml`: replace the `LANG-01-C2` effect and boundary with the script-class split. A missing Latin language is dropped and the result falls back to ⊇ `['deu','eng']`; a missing non-Latin language raises `TessdataUnavailableError` and callers degrade.
     - Amend header comment lines 9-11 ("ensure_tessdata NEVER fails hard") in the same edit.
@@ -693,21 +693,21 @@ This plan implements [RFC-049](../rfcs/049-contract-drift-remediation.md#impleme
     - _Requirements:_ [R1 AC1/AC5](../rfcs/049-contract-drift-remediation.md#requirement-1-no-contract-may-report-green-against-code-that-contradicts-it) | [RFC D1](../rfcs/049-contract-drift-remediation.md#d1-lang-01-c2-is-stale--the-raise-is-the-fix-not-the-bug) | [Design Service: LANG-01](../designs/design-rfc049-contract-drift-remediation.md#2-lang-01-lang-01yaml)
     - _Properties:_ [Design Property 3](../designs/design-rfc049-contract-drift-remediation.md#property-3-tessdata-degrades-for-latin-raises-for-non-latin)
 
-  - [ ] <a id="32-amend-conv-01-c5-effect"></a>3.2 Amend the CONV-01-C5 effect
+  - [x] <a id="32-amend-conv-01-c5-effect"></a>3.2 Amend the CONV-01-C5 effect
 
     - `agents/contracts/conv-01.yaml` `CONV-01-C5`: langs = `ensure_tessdata(detect_ocr_langs(filename))` (`client/indexer.py:1258`), degrading to `['deu','eng']` in the `except TessdataUnavailableError` at `:1262`. Remove the hardcoded `['ara','deu','eng']`, the "no text layer to sample" rationale and "never raises". Phrase it at route level, consistent with [Task 3.1](#31-amend-lang-01-c2-effect-and-header).
     - The existing label on `tests/test_converters.py:783` stays.
     - _Requirements:_ [R1 AC5](../rfcs/049-contract-drift-remediation.md#requirement-1-no-contract-may-report-green-against-code-that-contradicts-it) | [RFC D4(c)](../rfcs/049-contract-drift-remediation.md#d4-three-drifted-triggereffect-clauses--substance-intact-text-stale) | [Design Service: CONV-01](../designs/design-rfc049-contract-drift-remediation.md#3-conv-01-conv-01yaml)
     - _Properties:_ [Design Property 7](../designs/design-rfc049-contract-drift-remediation.md#property-7-image-route-languages-come-from-filename-detection)
 
-  - [ ] <a id="33-label-the-lang-01-c2-test"></a>3.3 Label the LANG-01-C2 test
+  - [x] <a id="33-label-the-lang-01-c2-test"></a>3.3 Label the LANG-01-C2 test
 
     - **Only in the same change as [Task 3.1](#31-amend-lang-01-c2-effect-and-header) or after it.** Add `LANG-01-C2` to `tests/test_helpers_combined.py:420::test_ensure_tessdata_non_latin_raises_latin_degrades` (docstring or comment). Do not change the assertions.
     - _Requirements:_ [R1 AC2/AC4](../rfcs/049-contract-drift-remediation.md#requirement-1-no-contract-may-report-green-against-code-that-contradicts-it) | [RFC D1](../rfcs/049-contract-drift-remediation.md#d1-lang-01-c2-is-stale--the-raise-is-the-fix-not-the-bug) | [Design Service: LANG-01](../designs/design-rfc049-contract-drift-remediation.md#2-lang-01-lang-01yaml)
     - _Properties:_ [Design Property 3](../designs/design-rfc049-contract-drift-remediation.md#property-3-tessdata-degrades-for-latin-raises-for-non-latin), [Design Property 4](../designs/design-rfc049-contract-drift-remediation.md#property-4-labels-follow-amendments)
     - **Validates:** [Design Property 3](../designs/design-rfc049-contract-drift-remediation.md#property-3-tessdata-degrades-for-latin-raises-for-non-latin) | [RFC D1](../rfcs/049-contract-drift-remediation.md#d1-lang-01-c2-is-stale--the-raise-is-the-fix-not-the-bug) | [RFC Test Strategy](../rfcs/049-contract-drift-remediation.md#test-strategy)
 
-- [ ] <a id="4-checkpoint-a--contract-text-wave"></a>4. Checkpoint A — contract-text wave
+- [x] <a id="4-checkpoint-a--contract-text-wave"></a>4. Checkpoint A — contract-text wave
 
   - Run `make test PYTEST_ARGS="tests/test_helpers_combined.py tests/test_flat.py tests/test_converters.py tests/test_storage.py -q"` in the foreground. Everything passes.
   - Run `bash scripts/gates/contracts.sh` and expect **PASS=65 FAIL=1**, with the only FAIL being `OCR-01-C3`. It stays red until D2-C lands. Do not label it. **(Amendment 2026-09-23, iter 2):** counts are gate lines: 61 contract IDs + 5 module-coverage lines = 66.
@@ -715,34 +715,34 @@ This plan implements [RFC-049](../rfcs/049-contract-drift-remediation.md#impleme
   - Verifies: [Design Property 2](../designs/design-rfc049-contract-drift-remediation.md#property-2-gate-counts-are-stable-under-hardening), [Design Property 3](../designs/design-rfc049-contract-drift-remediation.md#property-3-tessdata-degrades-for-latin-raises-for-non-latin), [Design Property 4](../designs/design-rfc049-contract-drift-remediation.md#property-4-labels-follow-amendments), [Design Property 5](../designs/design-rfc049-contract-drift-remediation.md#property-5-flat-role-set-is-exactly-five-roles), [Design Property 6](../designs/design-rfc049-contract-drift-remediation.md#property-6-legacy-fallback-iff-whole-chain-fails), [Design Property 7](../designs/design-rfc049-contract-drift-remediation.md#property-7-image-route-languages-come-from-filename-detection), [Design Property 8](../designs/design-rfc049-contract-drift-remediation.md#property-8-erasure-retry-is-idempotent), [Design Property 9](../designs/design-rfc049-contract-drift-remediation.md#property-9-unresolved-contradictions-stay-red)
   - **Ask the user before continuing to Wave 2.**
 
-- [ ] <a id="5-d5-ratification"></a>5. D5: Ratification ([D5](../rfcs/049-contract-drift-remediation.md#d5-erase-01-c2-idempotency-hole--ratification-fix-already-applied))
+- [x] <a id="5-d5-ratification"></a>5. D5: Ratification ([D5](../rfcs/049-contract-drift-remediation.md#d5-erase-01-c2-idempotency-hole--ratification-fix-already-applied))
 
   *Wave 0 · no code change; fix committed at `e2ecd4b`* · **(Amendment 2026-09-23, iter 2):** runs before [Checkpoint A](#4-checkpoint-a--contract-text-wave) despite being listed after it.
 
-  - [ ] <a id="51-confirm-the-rfc-cites-e2ecd4b"></a>5.1 Confirm the RFC cites e2ecd4b
+  - [x] <a id="51-confirm-the-rfc-cites-e2ecd4b"></a>5.1 Confirm the RFC cites e2ecd4b
 
     - Check that `git show --stat e2ecd4b` touches `src/pageindex_mcp/storage/documents.py` and `tests/test_storage.py`. Check that the [RFC D5 section](../rfcs/049-contract-drift-remediation.md#d5-erase-01-c2-idempotency-hole--ratification-fix-already-applied) and [R3](../rfcs/049-contract-drift-remediation.md#requirement-3-hr2-cascade-idempotency-amendment-2026-09-23) cite the commit rather than "uncommitted working tree". Report any discrepancy to the coordinator; the RFC is owned elsewhere.
     - _Requirements:_ [R3](../rfcs/049-contract-drift-remediation.md#requirement-3-hr2-cascade-idempotency-amendment-2026-09-23) | [RFC D5](../rfcs/049-contract-drift-remediation.md#d5-erase-01-c2-idempotency-hole--ratification-fix-already-applied)
     - _Properties:_ [Design Property 8](../designs/design-rfc049-contract-drift-remediation.md#property-8-erasure-retry-is-idempotent)
 
-  - [ ] <a id="52-confirm-erase-01-c2-labels"></a>5.2 Confirm the ERASE-01-C2 labels
+  - [x] <a id="52-confirm-erase-01-c2-labels"></a>5.2 Confirm the ERASE-01-C2 labels
 
     - Check that `tests/test_storage.py:183` (`test_erase_01_c2_idempotent_on_missing_doc`) and `:201` (`test_erase_01_c2_prefix_loops_tolerate_nosuchkey_but_surface_other_errors`) both carry `ERASE-01-C2` and pass under Checkpoint A.
     - _Requirements:_ [R3 AC1–AC2](../rfcs/049-contract-drift-remediation.md#requirement-3-hr2-cascade-idempotency-amendment-2026-09-23) | [RFC D5](../rfcs/049-contract-drift-remediation.md#d5-erase-01-c2-idempotency-hole--ratification-fix-already-applied) | [Design Service: ERASE-01](../designs/design-rfc049-contract-drift-remediation.md#8-erase-01-erase-01yaml)
     - _Properties:_ [Design Property 8](../designs/design-rfc049-contract-drift-remediation.md#property-8-erasure-retry-is-idempotent)
     - **Validates:** [Design Property 8](../designs/design-rfc049-contract-drift-remediation.md#property-8-erasure-retry-is-idempotent) | [RFC D5](../rfcs/049-contract-drift-remediation.md#d5-erase-01-c2-idempotency-hole--ratification-fix-already-applied) | [RFC Test Strategy](../rfcs/049-contract-drift-remediation.md#test-strategy)
 
-- [ ] <a id="6-d2-c-preflight"></a>6. D2-C pre-flight ([D2 Option C](../rfcs/049-contract-drift-remediation.md#option-c--reject-and-quarantine-adopted-2026-09-23))
+- [x] <a id="6-d2-c-preflight"></a>6. D2-C pre-flight ([D2 Option C](../rfcs/049-contract-drift-remediation.md#option-c--reject-and-quarantine-adopted-2026-09-23))
 
   *Wave 2 entry · read-only*
 
-  - [ ] <a id="61-confirm-the-d2-decision-record"></a>6.1 Confirm the D2 decision record
+  - [x] <a id="61-confirm-the-d2-decision-record"></a>6.1 Confirm the D2 decision record
 
     - Confirm that the RFC records Option C as ADOPTED by the user on 2026-09-23 ([D2](../rfcs/049-contract-drift-remediation.md#d2-ocr-01-c3-vs-hard-rule-5--the-decision-requires-explicit-approval)) and that [Checkpoint A](#4-checkpoint-a--contract-text-wave) was approved to continue.
     - _Requirements:_ [R1 AC3](../rfcs/049-contract-drift-remediation.md#requirement-1-no-contract-may-report-green-against-code-that-contradicts-it) | [R4](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23)
     - _Properties:_ [Design Property 9](../designs/design-rfc049-contract-drift-remediation.md#property-9-unresolved-contradictions-stay-red)
 
-  - [ ] <a id="62-re-verify-code-anchors"></a>6.2 Re-verify code anchors
+  - [x] <a id="62-re-verify-code-anchors"></a>6.2 Re-verify code anchors
 
     - Using codebase-memory or Serena (never Read on `.py`), re-confirm these sites. The RFC's own line numbers have already drifted.
       - GATES recovery loop in `index()` (`~:2561`) **(iter 2: loop starts `:2561`, body ends `~:2592`, `no_gate_eligible` decision `~:2594-2600`; override goes at `~:2601`)**
@@ -757,11 +757,11 @@ This plan implements [RFC-049](../rfcs/049-contract-drift-remediation.md#impleme
     - _Requirements:_ [R4 AC1–AC2](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [Design Service: Indexer](../designs/design-rfc049-contract-drift-remediation.md#9-indexer-clientindexerpy)
     - _Properties:_ [Design Property 10](../designs/design-rfc049-contract-drift-remediation.md#property-10-unrecovered-garbling-is-rejected-never-saved)
 
-- [ ] <a id="7-d2-c-reject-and-quarantine"></a>7. D2-C: Reject and quarantine ([D2 Option C](../rfcs/049-contract-drift-remediation.md#option-c--reject-and-quarantine-adopted-2026-09-23))
+- [x] <a id="7-d2-c-reject-and-quarantine"></a>7. D2-C: Reject and quarantine ([D2 Option C](../rfcs/049-contract-drift-remediation.md#option-c--reject-and-quarantine-adopted-2026-09-23))
 
   *Wave 2 · TDD: 7.1 red → 7.2–7.5 → 7.6/7.7 labels → 7.8–7.10 → 7.11 · ~~~1.5–2 days~~* **(Amendment 2026-09-23, iter 2):** *7.1 red → 7.2 → 7.3/7.4 → 7.5 → 7.5a/7.5b → 7.6/7.7 → 7.8/7.10 → 7.11; 7.5c and 7.9 are human/operator-gated · ~2.5–3 days for D2-C, including the Wave 3 corpus re-run*
 
-  - [ ] <a id="71-write-red-probe-tests"></a>7.1 Write red probe tests
+  - [x] <a id="71-write-red-probe-tests"></a>7.1 Write red probe tests
 
     - Re-derive the probe tests, which are not in VCS, **literally from the contract text**. Do not refer to the implementation.
       - `OCR-01-C3` × 3 triggers: still garbled after the `force_full_page_ocr` retry; `OCR_ESCALATION` disabled; exception raised inside the retry. Each asserts that `LowQualityTreeError('garbling')` is raised, `save_doc` is not called, and no `processed/<doc_id>.json` is written. The exception case also asserts `OCR_ESCALATION_TOTAL{result='error'}`.
@@ -776,7 +776,7 @@ This plan implements [RFC-049](../rfcs/049-contract-drift-remediation.md#impleme
     - _Properties:_ [Design Property 10](../designs/design-rfc049-contract-drift-remediation.md#property-10-unrecovered-garbling-is-rejected-never-saved), [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable)
     - **Validates:** [Design Property 10](../designs/design-rfc049-contract-drift-remediation.md#property-10-unrecovered-garbling-is-rejected-never-saved) | [RFC D2](../rfcs/049-contract-drift-remediation.md#d2-ocr-01-c3-vs-hard-rule-5--the-decision-requires-explicit-approval) | [RFC Test Strategy](../rfcs/049-contract-drift-remediation.md#test-strategy)
 
-  - [ ] <a id="72-add-the-quarantine-storage-helper"></a>7.2 Add the quarantine storage helper
+  - [x] <a id="72-add-the-quarantine-storage-helper"></a>7.2 Add the quarantine storage helper
 
     - New helper in `src/pageindex_mcp/storage/` that writes `quarantine/<doc_id>.json` (tree `structure`, or flat `blocks` + `content_class`) and `quarantine/<doc_id>.meta.json` (doc_id, filename, route, reason, first_defect, verdict, decision trail, `quarantined_at`, `rfc`). It raises on failure. Layout follows [Design Data Model](../designs/design-rfc049-contract-drift-remediation.md#quarantine-object-layout).
     - Unit tests: both keys written; payload round-trips; failure propagates.
@@ -789,7 +789,7 @@ This plan implements [RFC-049](../rfcs/049-contract-drift-remediation.md#impleme
     - _Requirements:_ [R4 AC2](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [Design Service: Storage](../designs/design-rfc049-contract-drift-remediation.md#10-storage-documentspy-and-quarantine-helper)
     - _Properties:_ [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable)
 
-  - [ ] <a id="73-add-the-post-recovery-reject-override"></a>7.3 Add the post-recovery REJECT override
+  - [x] <a id="73-add-the-post-recovery-reject-override"></a>7.3 Add the post-recovery REJECT override
 
     - In `index()` (`client/indexer.py`), after the GATES recovery loop and before `_recover_flat_prefer`: if `first_defect ∈ {TreeDefect.GARBLING, TreeDefect.NODE_GARBLING}` and not ok, call the [Task 7.2](#72-add-the-quarantine-storage-helper) helper and then `finalize_gate_and_route(..., force_route=Route.REJECT)`. The existing `(False, Route.REJECT)` arm raises `LowQualityTreeError(reason)` and increments `LOW_QUALITY_TREES{reason}`.
     - **Do not** change `REASON_POLICY` (`helpers/gates.py:680`) or `decide_route` (`helpers/types.py:369-373`).
@@ -805,13 +805,13 @@ This plan implements [RFC-049](../rfcs/049-contract-drift-remediation.md#impleme
     - _Requirements:_ [R4 AC1–AC2](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [RFC D2](../rfcs/049-contract-drift-remediation.md#d2-ocr-01-c3-vs-hard-rule-5--the-decision-requires-explicit-approval) | [Design Service: Indexer](../designs/design-rfc049-contract-drift-remediation.md#9-indexer-clientindexerpy) | [Design Sequence: Index Route Dispatch](../designs/design-rfc049-contract-drift-remediation.md#index-route-dispatch-before-and-after-d2-c)
     - _Properties:_ [Design Property 10](../designs/design-rfc049-contract-drift-remediation.md#property-10-unrecovered-garbling-is-rejected-never-saved), [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable)
 
-  - [ ] <a id="74-quarantine-on-the-flat-guard"></a>7.4 Quarantine on the flat guard
+  - [x] <a id="74-quarantine-on-the-flat-guard"></a>7.4 Quarantine on the flat guard
 
     - ~~At the flat garble guard (`client/indexer.py ~:2622`, flag set `~:1778`), call the quarantine helper with the flat payload before the existing `raise LowQualityTreeError("garbling")`.~~ **(Amendment 2026-09-23, iter 2):** the `:2622` guard never fires in production. `state.flat_garble_unrecovered` is set only inside `_persist_flat_result` (`:1778`), whose single caller is the `(False, Route.FLAT)` arm (`:2653`), which runs after the guard. Write the flat quarantine **inside `_persist_flat_result`, immediately before `return None` at `:1879-1880`**. There, `_garble_blocks` (a local of that method), `_flat_garble_report`, `filename` and the `sha256` parameter are all in scope. The raise itself stays in the `(False, FLAT)` arm (`~:2667-2681`). Leave the `:2622` guard **untouched**, and add a one-line comment noting that it is defensive. Failure handling is the same as in [Task 7.3](#73-add-the-post-recovery-reject-override). Test that the flat reject writes quarantine and still raises. [Task 8.2](#82-diff-against-the-baseline)'s doc #12 expectation relies on this placement.
     - _Requirements:_ [R4 AC2](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [Design Service: Indexer](../designs/design-rfc049-contract-drift-remediation.md#9-indexer-clientindexerpy) | [Design Sequence: Index Route Dispatch](../designs/design-rfc049-contract-drift-remediation.md#index-route-dispatch-before-and-after-d2-c)
     - _Properties:_ [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable)
 
-  - [ ] <a id="75-add-the-erase-quarantine-cascade-step"></a>7.5 Add the `_erase_quarantine` cascade step
+  - [x] <a id="75-add-the-erase-quarantine-cascade-step"></a>7.5 Add the `_erase_quarantine` cascade step
 
     - `src/pageindex_mcp/storage/documents.py`: add `_erase_quarantine`, which removes both keys via `_remove_object_idempotent` (`:339`). Register it in the cascade step table (`~:599-640`) after `_erase_meta_json` and before `_erase_redis_cache`.
     - Tests: quarantined doc → both keys removed and `errors == []`; retry → `errors == []`; non-`NoSuchKey` `S3Error` → surfaced in `errors`, naming quarantine.
@@ -826,42 +826,42 @@ This plan implements [RFC-049](../rfcs/049-contract-drift-remediation.md#impleme
     - _Properties:_ [Design Property 8](../designs/design-rfc049-contract-drift-remediation.md#property-8-erasure-retry-is-idempotent), [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable)
     - **Validates:** [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable) | [RFC D2 Option C](../rfcs/049-contract-drift-remediation.md#option-c--reject-and-quarantine-adopted-2026-09-23) | [RFC Test Strategy](../rfcs/049-contract-drift-remediation.md#test-strategy)
 
-  - [ ] <a id="75a-clear-quarantine-on-successful-persist"></a>7.5a Clear quarantine on successful persist **(Amendment 2026-09-23, iter 2)**
+  - [x] <a id="75a-clear-quarantine-on-successful-persist"></a>7.5a Clear quarantine on successful persist **(Amendment 2026-09-23, iter 2)**
 
     - In `_persist_tree_result` after `save_doc` succeeds, and in `_persist_flat_result` after `save_flat_doc` succeeds, call `clear_quarantine(sha256)` via `asyncio.to_thread`. It is idempotent: a missing key is a no-op. A failure is logged and never fails the persist.
     - Test: reject bytes X (quarantine written) → fix the stub so X persists → `quarantine/<sha256(X)>.*` is gone. Clearing when no quarantine exists does not error.
     - _Requirements:_ [R4 AC5](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [RFC Open Question 4](../rfcs/049-contract-drift-remediation.md#open-questions)
     - _Properties:_ [Design Property 12a](../designs/design-rfc049-contract-drift-remediation.md#property-12a-quarantine-is-bounded-in-time)
 
-  - [ ] <a id="75b-add-the-operator-erasure-path-by-sha256"></a>7.5b Add the operator erasure path by sha256 **(Amendment 2026-09-23, iter 2)**
+  - [x] <a id="75b-add-the-operator-erasure-path-by-sha256"></a>7.5b Add the operator erasure path by sha256 **(Amendment 2026-09-23, iter 2)**
 
     - A document that was only ever rejected has no `doc_id`, no sidecar and no registry row, so `delete_doc` cannot reach its quarantine copy. Expose `erase_quarantine(sha256) -> list[str]` ([Task 7.2](#72-add-the-quarantine-storage-helper)) as the operator entry point. The same function backs `_erase_quarantine`. Document the runbook in ARCHITECTURE ([Task 7.8](#78-update-architecturemd)): compute `sha256sum <file>`, or find the key by listing `quarantine/*.meta.json` and matching `filename`; then run `uv run python -c "from pageindex_mcp.storage.documents import erase_quarantine; print(erase_quarantine('<sha256>'))"`, then purge backups manually per HR2. No new MCP tool or HTTP route; minimal by design.
     - Test: both keys removed; a second call returns `[]`; a non-`NoSuchKey` `S3Error` is returned in the list.
     - _Requirements:_ [R4 AC6](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [CLAUDE.md HR2](../../CLAUDE.md#hard-rules)
     - _Properties:_ [Design Property 12b](../designs/design-rfc049-contract-drift-remediation.md#property-12b-the-quarantine-prefix-cannot-escape-the-hr2-guard)
 
-  - [ ] <a id="75c-configure-the-quarantine-lifecycle-ttl"></a>7.5c Configure the quarantine lifecycle TTL — **operator/infra step (Amendment 2026-09-23, iter 2)**
+  - [x] <a id="75c-configure-the-quarantine-lifecycle-ttl"></a>7.5c Configure the quarantine lifecycle TTL — **operator/infra step (Amendment 2026-09-23, iter 2)**
 
     - Finding: the repo has **no** MinIO lifecycle configuration today. There is no `set_bucket_lifecycle`, `LifecycleConfig` or `mc ilm` in `src/`, `scripts/`, `Makefile`, `docker-compose.yml`, `services/` or `docs/`, and `uploads/staging/` has none either. The only expiries in the repo are presigned-URL lifetimes and Redis TTLs. There is nothing to reference, so this task adds one.
     - Operator step, documented via [Task 7.8](#78-update-architecturemd): `mc ilm rule add --prefix "quarantine/" --expire-days 30 <alias>/<bucket>`, then verify with `mc ilm rule ls <alias>/<bucket>`. Apply it in every environment (the remote k3s MinIO, and local if used). Owner: **open** (operator/infra). An in-code idempotent `set_bucket_lifecycle` at startup is deliberately **not** proposed, to keep scope minimal; revisit it if the operator step proves unreliable.
     - _Requirements:_ [R4 AC5](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [RFC Open Question 4](../rfcs/049-contract-drift-remediation.md#open-questions)
     - _Properties:_ [Design Property 12a](../designs/design-rfc049-contract-drift-remediation.md#property-12a-quarantine-is-bounded-in-time)
 
-  - [ ] <a id="76-add-new-erase-01-and-ocr-01-clauses"></a>7.6 Add new ERASE-01 and OCR-01 clauses
+  - [x] <a id="76-add-new-erase-01-and-ocr-01-clauses"></a>7.6 Add new ERASE-01 and OCR-01 clauses
 
     - `agents/contracts/ocr-01.yaml`: add `OCR-01-C4` (quarantine before reject, tree and flat routes). `agents/contracts/erase-01.yaml`: add `ERASE-01-C4` (cascade purges `quarantine/`) and extend its header purge list. Use the text in [Design Service: OCR-01](../designs/design-rfc049-contract-drift-remediation.md#7-ocr-01-ocr-01yaml) and [Design Service: ERASE-01](../designs/design-rfc049-contract-drift-remediation.md#8-erase-01-erase-01yaml). C4 is the next free ID in both files. **(Amendment 2026-09-23, iter 2):** use the **revised** C4 rows in the design: `quarantine/<sha256>` keying, the `route == TREE` guard in the `OCR-01-C4` trigger, garble samples in place of a decision trail, and `ctx.sha256` / `erase_quarantine(sha256)` in `ERASE-01-C4`. Replace the `erase-01.yaml` header purge list (lines 7-9) with the full cascade order, mirroring the [Task 7.9](#79-propose-the-claudemd-hr2-purge-list-change) HR2 text.
     - In the **same change**, label the green tests from [Task 7.3](#73-add-the-post-recovery-reject-override)/[7.4](#74-quarantine-on-the-flat-guard) with `OCR-01-C4` and from [Task 7.5](#75-add-the-erase-quarantine-cascade-step) with `ERASE-01-C4`, so the new IDs never appear as FAIL.
     - _Requirements:_ [R4 AC2/AC4](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [R1 AC4](../rfcs/049-contract-drift-remediation.md#requirement-1-no-contract-may-report-green-against-code-that-contradicts-it)
     - _Properties:_ [Design Property 4](../designs/design-rfc049-contract-drift-remediation.md#property-4-labels-follow-amendments), [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable)
 
-  - [ ] <a id="77-label-the-probe-tests"></a>7.7 Label the probe tests
+  - [x] <a id="77-label-the-probe-tests"></a>7.7 Label the probe tests
 
     - Once every [Task 7.1](#71-write-red-probe-tests) probe is green, label the three `OCR-01-C3` probes with `OCR-01-C3`. The `FLAT-03-C2` probe may also carry `FLAT-03-C2`; the existing label on `tests/test_flat.py:1529` stays either way. `OCR-01-C3` text is unchanged: it is now true as written, and D4(a) is subsumed.
     - _Requirements:_ [R1 AC4](../rfcs/049-contract-drift-remediation.md#requirement-1-no-contract-may-report-green-against-code-that-contradicts-it) | [R4 AC1](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [RFC D4(a)](../rfcs/049-contract-drift-remediation.md#d4-three-drifted-triggereffect-clauses--substance-intact-text-stale) | [Design Service: OCR-01](../designs/design-rfc049-contract-drift-remediation.md#7-ocr-01-ocr-01yaml) | [Design Service: FLAT-03](../designs/design-rfc049-contract-drift-remediation.md#6-flat-03-flat-03yaml)
     - _Properties:_ [Design Property 4](../designs/design-rfc049-contract-drift-remediation.md#property-4-labels-follow-amendments), [Design Property 10](../designs/design-rfc049-contract-drift-remediation.md#property-10-unrecovered-garbling-is-rejected-never-saved)
     - **Validates:** [Design Property 10](../designs/design-rfc049-contract-drift-remediation.md#property-10-unrecovered-garbling-is-rejected-never-saved) | [RFC D2](../rfcs/049-contract-drift-remediation.md#d2-ocr-01-c3-vs-hard-rule-5--the-decision-requires-explicit-approval) | [RFC Test Strategy](../rfcs/049-contract-drift-remediation.md#test-strategy)
 
-  - [ ] <a id="78-update-architecturemd"></a>7.8 Update ARCHITECTURE.md
+  - [x] <a id="78-update-architecturemd"></a>7.8 Update ARCHITECTURE.md
 
     - Data Model & Storage Layout: add a MinIO row for `quarantine/<doc_id>.json` + `.meta.json` (rejected garbled trees; never read by MCP query tools; erased by `delete_doc`). Tree Quality Gate section: document the post-recovery REJECT override and quarantine-before-raise on both routes.
     - **(Amendment 2026-09-23, iter 2) — scope additions, binding:**
@@ -872,7 +872,7 @@ This plan implements [RFC-049](../rfcs/049-contract-drift-remediation.md#impleme
     - _Requirements:_ [R4](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [Design Service: Documentation](../designs/design-rfc049-contract-drift-remediation.md#11-documentation-architecturemd-claudemd)
     - _Properties:_ [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable)
 
-  - [ ] <a id="79-propose-the-claudemd-hr2-purge-list-change"></a>7.9 Propose the CLAUDE.md HR2 purge-list change — **REQUIRES HUMAN APPROVAL**
+  - [x] <a id="79-propose-the-claudemd-hr2-purge-list-change"></a>7.9 Propose the CLAUDE.md HR2 purge-list change — **REQUIRES HUMAN APPROVAL**
 
     - Draft the diff that adds `quarantine/` to the HR2 purge list in `CLAUDE.md` (after `processed/*.meta.json`, before the Redis cache). Present it to the user. **Do not apply it automatically.** Apply it only after explicit approval.
     - **(Amendment 2026-09-23, iter 2) — scope widened to one bundled HR2 + HR5 edit, still HUMAN APPROVAL ONLY.** HR2 lists every `_ERASURE_MANIFEST` store (`storage/documents.py:594-676`, plus `quarantine`) in cascade order. HR5 gains one clause. The same cascade list is mirrored in the `erase-01.yaml` header ([Task 7.6](#76-add-new-erase-01-and-ocr-01-clauses)) and the ARCHITECTURE "Required erasure fan-out" block ([Task 7.8](#78-update-architecturemd)). Proposed diff; **do not apply**:
@@ -886,48 +886,48 @@ This plan implements [RFC-049](../rfcs/049-contract-drift-remediation.md#impleme
     - _Requirements:_ [R1 AC3](../rfcs/049-contract-drift-remediation.md#requirement-1-no-contract-may-report-green-against-code-that-contradicts-it) | [R4 AC4](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [CLAUDE.md HR2](../../CLAUDE.md#hard-rules) | [Design Service: Documentation](../designs/design-rfc049-contract-drift-remediation.md#11-documentation-architecturemd-claudemd)
     - _Properties:_ [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable)
 
-  - [ ] <a id="710-verify-no-mcp-tool-reads-quarantine"></a>7.10 Verify that no MCP tool reads quarantine/
+  - [x] <a id="710-verify-no-mcp-tool-reads-quarantine"></a>7.10 Verify that no MCP tool reads quarantine/
 
     - Trace the 5 registered MCP query tools (see `DESIGN.md` MCP Tool Contracts) to their storage calls with codebase-memory `trace_path` / `search_code`. Confirm that none lists or gets under `quarantine/`, and that no shared reader enumerates the bucket without a prefix. Record the trace in the PR. ~~A static test asserting no `quarantine/` reference in the tool modules is optional.~~ **(Amendment 2026-09-23, iter 2):** the static test is **mandatory**. Add a test asserting that no module under `src/` contains the string `"quarantine/"` except the storage writer/eraser helpers (`save_quarantine`, `clear_quarantine`, `erase_quarantine`, `_erase_quarantine`, and the prefix registration). Baseline confirmed on 2026-09-23: `server.py:27-31` registers the 5 query tools (plus `delete_document`, `:40`); every `list_objects` call is prefix-scoped; `list_processed_docs` lists only `prefix="processed/"` (`storage/verdict.py:273`).
     - _Requirements:_ [R4 AC3](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23)
     - _Properties:_ [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable)
     - **Validates:** [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable) | [RFC D2 Option C](../rfcs/049-contract-drift-remediation.md#option-c--reject-and-quarantine-adopted-2026-09-23) | [RFC Test Strategy](../rfcs/049-contract-drift-remediation.md#test-strategy)
 
-  - [ ] <a id="711-checkpoint-b--d2-c"></a>7.11 Checkpoint B — D2-C
+  - [x] <a id="711-checkpoint-b--d2-c"></a>7.11 Checkpoint B — D2-C
 
     - Run `make test` (full suite, foreground, capped). Everything passes.
     - Run `bash scripts/gates/contracts.sh` and expect **FAIL=0**: PASS=68 (~~66 existing IDs~~ 66 existing gate lines (61 IDs + 5 module checks) **(Amendment 2026-09-23, iter 2)** plus `OCR-01-C4` and `ERASE-01-C4`).
     - Verifies: [Design Property 4](../designs/design-rfc049-contract-drift-remediation.md#property-4-labels-follow-amendments), [Design Property 8](../designs/design-rfc049-contract-drift-remediation.md#property-8-erasure-retry-is-idempotent), [Design Property 9](../designs/design-rfc049-contract-drift-remediation.md#property-9-unresolved-contradictions-stay-red), [Design Property 10](../designs/design-rfc049-contract-drift-remediation.md#property-10-unrecovered-garbling-is-rejected-never-saved), [Design Property 12](../designs/design-rfc049-contract-drift-remediation.md#property-12-rejected-trees-are-quarantined-unserved-erasable). Cross-reference [Checkpoint A](#4-checkpoint-a--contract-text-wave).
     - **Ask the user before continuing to Wave 3.**
 
-- [ ] <a id="8-corpus-re-run-against-the-rfc-047-d9-baseline"></a>8. Corpus re-run against the RFC-047 D9 baseline ([RFC-049 Risk 1](../rfcs/049-contract-drift-remediation.md#risks))
+- [x] <a id="8-corpus-re-run-against-the-rfc-047-d9-baseline"></a>8. Corpus re-run against the RFC-047 D9 baseline ([RFC-049 Risk 1](../rfcs/049-contract-drift-remediation.md#risks))
 
   *Wave 3*
 
-  - [ ] <a id="81-run-corpus-ingest-score"></a>8.1 Run corpus ingest-score
+  - [x] <a id="81-run-corpus-ingest-score"></a>8.1 Run corpus ingest-score
 
     - Run the `corpus-ingest-score` skill over the 25-doc corpus on this branch.
     - _Requirements:_ [R4](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [RFC D2](../rfcs/049-contract-drift-remediation.md#d2-ocr-01-c3-vs-hard-rule-5--the-decision-requires-explicit-approval)
     - _Properties:_ [Design Property 11](../designs/design-rfc049-contract-drift-remediation.md#property-11-corpus-verdicts-unchanged)
 
-  - [ ] <a id="82-diff-against-the-baseline"></a>8.2 Diff against the baseline
+  - [x] <a id="82-diff-against-the-baseline"></a>8.2 Diff against the baseline
 
     - Run the `corpus-score-diff` skill against [[rfc047-d9-final-baseline]]. Expect every verdict unchanged, and doc #12 still REJECTED for garbling (now with a `quarantine/` object). **(Amendment 2026-09-23, iter 2):** the object is `quarantine/<sha256>.json` + `.meta.json`. Doc #12 is rejected inside `_persist_flat_result`, so this expectation holds only if [Task 7.4](#74-quarantine-on-the-flat-guard) placed the write before `return None` (`:1879-1880`). A write at the dead `:2622` guard would never produce it. Any new REJECTED document is a regression and must be reported before [Phase 9](#9-close-out).
     - _Requirements:_ [RFC-049 Risk 1](../rfcs/049-contract-drift-remediation.md#risks) | [R4](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23)
     - _Properties:_ [Design Property 11](../designs/design-rfc049-contract-drift-remediation.md#property-11-corpus-verdicts-unchanged)
     - **Validates:** [Design Property 11](../designs/design-rfc049-contract-drift-remediation.md#property-11-corpus-verdicts-unchanged) | [RFC D2](../rfcs/049-contract-drift-remediation.md#d2-ocr-01-c3-vs-hard-rule-5--the-decision-requires-explicit-approval) | [RFC Test Strategy](../rfcs/049-contract-drift-remediation.md#test-strategy)
 
-- [ ] <a id="9-close-out"></a>9. Close-out
+- [x] <a id="9-close-out"></a>9. Close-out
 
   *Wave 3*
 
-  - [ ] <a id="91-set-rfc-status-accepted"></a>9.1 Set the RFC status to accepted
+  - [x] <a id="91-set-rfc-status-accepted"></a>9.1 Set the RFC status to accepted
 
     - Set the RFC-049, design and tasks frontmatter `status` to `accepted`. Update the RFC [Traceability](../rfcs/049-contract-drift-remediation.md#traceability) rows for Design and Tasks to point at these files.
     - _Requirements:_ all of [R1–R4](../rfcs/049-contract-drift-remediation.md#requirements)
     - _Properties:_ P1–P12 ([Design Correctness Properties](../designs/design-rfc049-contract-drift-remediation.md#correctness-properties))
 
-  - [ ] <a id="92-confluence-sync"></a>9.2 Sync to Confluence
+  - [x] <a id="92-confluence-sync"></a>9.2 Sync to Confluence
 
     - Sync the RFC, design and tasks to Confluence (CITRA space) via the `corpus-sync-commit` / mark flow.
     - _Requirements:_ [RFC-049 Consequences](../rfcs/049-contract-drift-remediation.md#consequences)

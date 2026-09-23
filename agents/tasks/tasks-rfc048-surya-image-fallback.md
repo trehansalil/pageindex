@@ -6,7 +6,7 @@
 id: "tasks-rfc048-surya-image-fallback"
 title: "Tasks: Surya OCR Fallback for Standalone Images"
 type: tasks
-status: draft
+status: implemented
 date: "2026-09-22"
 tags:
   - tasks
@@ -34,9 +34,9 @@ Two deliverables: (D1) add `/ocr/image` to the Surya service, (D2) wire quality-
 
 ## Tasks
 
-- [ ] 1. D1: Surya Service `/ocr/image` Endpoint
+- [x] 1. D1: Surya Service `/ocr/image` Endpoint
 
-  - [ ] 1.1 Add `/ocr/image` route to `services/surya-ocr-service/app.py`
+  - [x] 1.1 Add `/ocr/image` route to `services/surya-ocr-service/app.py`
 
     - Add `ImageOcrRequest` model (file upload via multipart)
     - Add `ImageOcrResponse` model matching `/ocr/pdf` response shape (`total_text`, `total_char_count`, `total_avg_confidence`, `regions`, `elapsed_s`)
@@ -44,7 +44,7 @@ Two deliverables: (D1) add `/ocr/image` to the Surya service, (D2) wire quality-
     - Return HTTP 400 on `PIL.UnidentifiedImageError` or empty file
     - _Requirements: RFC-048 R1 AC1–AC3_
 
-  - [ ] 1.2 Write tests for `/ocr/image` endpoint
+  - [x] 1.2 Write tests for `/ocr/image` endpoint
 
     - Test: valid PNG → 200 with text + confidence
     - Test: valid JPEG → 200
@@ -53,17 +53,17 @@ Two deliverables: (D1) add `/ocr/image` to the Surya service, (D2) wire quality-
     - Test: response schema matches `/ocr/pdf` shape (same field names)
     - _Requirements: RFC-048 R1 AC1–AC3, Design Property 6_
 
-- [ ] 2. Checkpoint — D1
+- [x] 2. Checkpoint — D1
 
   - Verify `/ocr/image` endpoint works against a running Surya service (manual smoke test with the corpus pie chart image)
   - Run `make test PYTEST_ARGS="tests/test_d8_surya_fallback.py -q"` to confirm existing Surya tests still pass
 
-- [ ] 3. D2: Quality-Gated Surya Fallback in Image Path
+- [x] 3. D2: Quality-Gated Surya Fallback in Image Path
 
-  - [ ] 3.0 Add `SURYA = "surya"` member to `OcrEngine` enum in `src/pageindex_mcp/picture_plane.py` **(Added 2026-09-22: GA-2 — enum member does not exist yet; required before task 3.2 can set `state.ocr_engine`)**
+  - [x] 3.0 Add `SURYA = "surya"` member to `OcrEngine` enum in `src/pageindex_mcp/picture_plane.py` **(Added 2026-09-22: GA-2 — enum member does not exist yet; required before task 3.2 can set `state.ocr_engine`)**
     - _Requirements: RFC-048 R2 AC5, Design Property 3_
 
-  - [ ] 3.1 Add `_surya_image_ocr` helper to `src/pageindex_mcp/client/indexer.py`
+  - [x] 3.1 Add `_surya_image_ocr` helper to `src/pageindex_mcp/client/indexer.py`
 
     - Async function: sends image bytes to `{surya_url}/ocr/image` via httpx
     - Returns `SuryaRecoveryResult | None` (reuse existing dataclass)
@@ -71,7 +71,7 @@ Two deliverables: (D1) add `/ocr/image` to the Surya service, (D2) wire quality-
     - Logs failure via `logger.warning`
     - _Requirements: RFC-048 R2 AC4_
 
-  - [ ] 3.2 Wire quality gate + Surya fallback into `_convert_to_tree` image branch **(Amendment 2026-09-22: GA-1 — gate runs AFTER `pic_results` construction; only replaces `standalone_ocr_text` + `pic_results[0].ocr_text`, never `md_content`)**
+  - [x] 3.2 Wire quality gate + Surya fallback into `_convert_to_tree` image branch **(Amendment 2026-09-22: GA-1 — gate runs AFTER `pic_results` construction; only replaces `standalone_ocr_text` + `pic_results[0].ocr_text`, never `md_content`)**
 
     - **Site:** BETWEEN `pic_results` construction (~line 1344) and `splice_picture_text_for_tree` (~line 1353). Gate must run before splice so Surya text propagates into `md_content` via the existing splice step. **(Amendment 2026-09-22: GB-2 — before splice, not after both)**
     - Compute `_tess_garbled` via `detect_garble(standalone_ocr_text, ...)`
@@ -85,14 +85,14 @@ Two deliverables: (D1) add `/ocr/image` to the Surya service, (D2) wire quality-
     - Map response field `total_char_count` → dataclass `total_chars` in `_surya_image_ocr` (GA-4)
     - _Requirements: RFC-048 R2 AC1–AC6, Design Properties 1, 1a, 2–4, 5a, 5c_ **(Amendment 2026-09-22: GC-1 — added 5a winner-selection, 5c decision event)**
 
-  - [ ] 3.3 Register `surya_image_fallback` decision event
+  - [x] 3.3 Register `surya_image_fallback` decision event
 
     - Add to `src/pageindex_mcp/obs/decision_points.py`
     - Choices: `recovery_succeeded`, `recovery_insufficient`, `recovery_failed`, `not_attempted`, `gate_not_triggered`
     - Attrs: `tesseract_chars`, `surya_chars`, `tesseract_garbled`, `surya_garbled`, `winner`, `surya_confidence`, `surya_duration_s`
     - _Requirements: RFC-048 R2 AC6_
 
-  - [ ] 3.4 Write tests for Surya image fallback
+  - [x] 3.4 Write tests for Surya image fallback
 
     - Test: `SURYA_FALLBACK_ENABLED=false` → no HTTP call to Surya (Property 4)
     - Test: Tesseract output good (above threshold, not garbled) → no Surya attempt (Property 1)
@@ -105,7 +105,7 @@ Two deliverables: (D1) add `/ocr/image` to the Surya service, (D2) wire quality-
     - Test: Surya wins → `pic_results[0]["ocr_text"]` == Surya text AND `md_content` markers (`<!-- image -->`) intact at gate time (Property 1a) **(Added 2026-09-22: GB-3)**
     - _Requirements: RFC-048 R2 AC1–AC6, Design Properties 1, 1a, 2–4, 5a, 5c_ **(Amendment 2026-09-22: GC-1 — added 5a winner-selection, 5c decision event)**
 
-- [ ] 4. Final Checkpoint
+- [x] 4. Final Checkpoint
 
   - Run `make test` (full suite) to verify no regressions
   - Run corpus ingest with `SURYA_FALLBACK_ENABLED=true` on the pie chart image → verify PASS/MARGINAL verdict
