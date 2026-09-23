@@ -5,8 +5,12 @@ phase: 2
 source: rfcs/001-initial-plan-review.md#amendment-1
 
 # Hard Rule 2: deleting the raw upload does NOT auto-remove derivatives. A DSR
-# delete must purge MinIO uploads/, processed/<id>.json, processed/<id>.meta.json,
-# the Redis cache key, and any documented backup — explicitly, in that order.
+# delete must purge, explicitly and in this order (the _ERASURE_MANIFEST in
+# storage/documents.py): MinIO uploads/, processed/<id>.json,
+# processed/<id>.flat.json, figures/, verdicts/, processed/<id>.meta.json,
+# quarantine/<sha256>.{json,meta.json}, the Redis cache (and the reconcile-etag
+# entry), the hash cache, the Postgres registry row, preloaded/, and any
+# documented backup.
 contracts:
   - id: ERASE-01-C1
     desc: "A DSR delete for a doc_id cascades across all derived stores in the mandated order"

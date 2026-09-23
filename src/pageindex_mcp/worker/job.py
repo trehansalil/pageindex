@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from pathlib import Path
 import json
 import logging
 import os
@@ -12,6 +11,7 @@ import shutil
 import tempfile
 import time
 import uuid
+from pathlib import Path
 
 import redis.asyncio as aioredis
 
@@ -168,7 +168,14 @@ async def process_document_job(  # noqa: C901, PLR0915
                 file_sha256 = await asyncio.to_thread(
                     lambda: hashlib.sha256(Path(local_path).read_bytes()).hexdigest()
                 )
-            except FileNotFoundError:
+            except Exception:
+                # Best-effort: the digest is diagnostic metadata (RFC-049 Task 7.5d),
+                # never a reason to fail a job that would otherwise index fine.
+                logger.warning(
+                    "Failed to hash staged file for job=%s; sha256 will be omitted",
+                    job_id,
+                    exc_info=True,
+                )
                 file_sha256 = None
 
             # Memory-admission gate: with up to 2 worker pods, wait until the node
@@ -262,7 +269,15 @@ async def process_document_job(  # noqa: C901, PLR0915
                     ttl=JOB_TTL,
                     reason=reason,
                     error=exc.stderr_tail,
-                    **({"sha256": file_sha256} if file_sha256 else {}),
+                    # RFC-049 D2-C (Task 7.5d): sha256 is the *quarantine key*, so it
+                    # is surfaced only for the rejection that actually writes one.
+                    # Attaching it to converter_oom / converter_timeout bodies would
+                    # advertise a quarantine/<sha256>.json that was never written.
+                    **(
+                        {"sha256": file_sha256}
+                        if reason == "low_quality_tree" and file_sha256
+                        else {}
+                    ),
                     **job_start_fields,
                 )
                 UPLOADS.labels(status="error").inc()

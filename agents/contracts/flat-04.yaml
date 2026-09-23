@@ -19,5 +19,5 @@ contracts:
   - id: FLAT-04-C2
     desc: "Garbling low_quality_tree remains a terminal error (unchanged)"
     trigger: "process_document_job observes a LowQualityTreeError (reason=low_quality_tree, i.e. garbling) raised by index()"
-    effect: "The job hash is set to status=error with reason=low_quality_tree; the failure is terminal — no DLQ push and no arq retry; behavior is byte-for-byte unchanged from WORKER-01-C2"
+    effect: "The job hash is set to status=error with reason=low_quality_tree and a sha256 field naming the quarantine key (RFC-049 D2-C); the failure is terminal — no DLQ push and no arq retry; otherwise unchanged from WORKER-01-C2"
     boundary: "The raised reason maps to low_quality_tree (the only remaining terminal validate_tree reason after Amendment 1)"

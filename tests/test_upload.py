@@ -175,6 +175,26 @@ async def test_upload_01_c3_status_poll_returns_current_status(client, fake_redi
     assert not failures, "status poll mismatches: " + "; ".join(failures)
 
 
+async def test_flat_04_c2_rejected_job_status_carries_the_quarantine_sha256(client, fake_redis):
+    """FLAT-04-C2 / RFC-049 Task 7.5d: the status endpoint needs no code change
+    to surface sha256 — it returns the job hash verbatim. This pins that
+    pass-through so a future field filter cannot silently drop the operator's
+    only handle on the quarantine object."""
+    sha = "a" * 64
+    await fake_redis.hset(
+        "pageindex:job:job-rejected",
+        mapping={"status": "error", "reason": "low_quality_tree", "sha256": sha},
+    )
+
+    resp = await client.get("/status/job-rejected", headers={"X-API-Key": TEST_API_KEY})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "error"
+    assert body["reason"] == "low_quality_tree"
+    assert body["sha256"] == sha
+
+
 async def test_unknown_job_id_returns_404(client):
     response = await client.get("/status/nonexistent-job-id", headers={"X-API-Key": TEST_API_KEY})
     assert response.status_code == 404

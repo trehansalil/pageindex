@@ -2031,6 +2031,35 @@ OCR_REACHING_MODULES: frozenset[str] = frozenset(
 )
 
 
+@check("quarantine-prefix-confined")
+def check_quarantine_prefix_confined():
+    """R4 AC3 (RFC-049 Task 7.10): the ``quarantine/`` prefix is confined to
+    ``storage/documents.py``.
+
+    HR5 permits the unserved diagnostic copy only for as long as nothing
+    serves it. The five registered MCP query tools and every HTTP route are
+    prefix-scoped today, but that is a property of the *current* call sites,
+    not an enforced one -- a single ``list_objects(prefix="quarantine/")``
+    added anywhere else would expose rejected garbled trees through the query
+    surface with no test turning red. Confining the literal is the cheap
+    structural guard: a new reader has to move the string to get built, and
+    moving it fails here.
+    """
+    owner = "src/pageindex_mcp/storage/documents.py"
+    for path in src_files():
+        if rel(path) == owner:
+            continue
+        for lineno, line in enumerate(read(path).splitlines(), start=1):
+            if '"quarantine/"' in line or "'quarantine/'" in line:
+                yield Violation(
+                    rel(path),
+                    lineno,
+                    "quarantine-prefix-confined",
+                    f"the quarantine/ prefix may only appear in {owner}; no MCP tool "
+                    "or HTTP route may read the quarantine store (RFC-049 R4 AC3, HR5)",
+                )
+
+
 @check("ocr-attribution-closed-world")
 def check_ocr_attribution_closed_world():
     """R2.8/Property 2 (RFC-046): OCR reachability is a closed world.

@@ -168,6 +168,42 @@ def test_gate_ignores_the_banned_pattern_in_comments_and_docstrings(tmp_path):
     assert not offenders, f"comment/docstring prose reported as a violation: {offenders}"
 
 
+def test_quarantine_prefix_confined_catches_a_new_reader(tmp_path):
+    """RFC-049 R4 AC3 / Task 7.10: a module other than storage/documents.py
+    that names the quarantine prefix is reported.
+
+    This is the guard's whole point -- the served-surface audit is only true
+    of today's call sites, so the invariant has to fail when someone adds a
+    reader tomorrow."""
+    pkg = tmp_path / "src" / "pageindex_mcp" / "storage"
+    pkg.mkdir(parents=True)
+    (pkg / "documents.py").write_text('PREFIX = "quarantine/"\n')
+    (tmp_path / "src" / "pageindex_mcp" / "server.py").write_text(
+        'def peek(client):\n    return client.list_objects(prefix="quarantine/")\n'
+    )
+
+    offenders = _with_root(tmp_path, lambda: list(gate.check_quarantine_prefix_confined()))
+
+    assert len(offenders) == 1, f"expected exactly the server.py reader, got {offenders}"
+    assert offenders[0].path == "src/pageindex_mcp/server.py"
+    assert offenders[0].line == 2
+    assert offenders[0].invariant == "quarantine-prefix-confined"
+
+
+def test_quarantine_prefix_confined_allows_the_owning_module(tmp_path):
+    """storage/documents.py owns the prefix: registration, the manifest and
+    the erasure step all name it there and must stay silent."""
+    pkg = tmp_path / "src" / "pageindex_mcp" / "storage"
+    pkg.mkdir(parents=True)
+    (pkg / "documents.py").write_text(
+        'register_storage_prefix("quarantine/")\n_MAP = {"quarantine/": ("quarantine",)}\n'
+    )
+
+    offenders = _with_root(tmp_path, lambda: list(gate.check_quarantine_prefix_confined()))
+
+    assert not offenders, f"the owning module was reported: {offenders}"
+
+
 # ---------------------------------------------------------------------------
 # 2. module_bindings -- the trickiest parsing helper
 # ---------------------------------------------------------------------------

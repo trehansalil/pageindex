@@ -14,7 +14,7 @@ contracts:
   - id: WORKER-01-C2
     desc: "validate_tree failure surfaces as error reason=low_quality_tree and the tree is not persisted"
     trigger: "validate_tree() called inside client.index() returns a failing result (depth < 2 or node_count < 3 or garbling detected)"
-    effect: "save_doc is NOT called; pageindex:job:<job_id> set to status=error with reason=low_quality_tree; pageindex_low_quality_trees_total counter incremented; tree is discarded and never written to MinIO processed/<doc_id>.json"
+    effect: "save_doc is NOT called; pageindex:job:<job_id> set to status=error with reason=low_quality_tree (carrying a sha256 field, the quarantine key, per RFC-049 D2-C); pageindex_low_quality_trees_total counter incremented; the tree is never written to MinIO processed/<doc_id>.json — for a garbling rejection it is copied to the unserved quarantine/<sha256>.json for diagnosis (OCR-01-C4), which no MCP tool or HTTP route reads"
     boundary: "Phase 1 warn-only mode -- the counter increments and status=error is set, but the depth/node_count thresholds are not yet enforced as a hard CI gate (pending calibration against GHV corpus)"
 
   - id: WORKER-01-C3

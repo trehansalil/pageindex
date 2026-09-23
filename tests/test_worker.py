@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
 import json
 import signal
 import time
+from pathlib import Path
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import fakeredis.aioredis
@@ -39,13 +41,12 @@ from pageindex_mcp.worker import (
 )
 from pageindex_mcp.worker.constants import (
     CHILD_TIMEOUT,
-    INSPECTOR_OCR_MULTIPLIER,
     INSPECTOR_CONFIDENCE_THRESHOLD,
+    INSPECTOR_OCR_MULTIPLIER,
     JOB_TIMEOUT,
     MAX_EFFECTIVE_TIMEOUT,
     REAP_GRACE,
 )
-
 
 # --- from test_worker.py ---
 
@@ -180,6 +181,95 @@ async def test_flat_04_c2_low_quality_tree_is_terminal_without_dlq_or_retry(fake
     assert state["status"] == "error"
     assert state["reason"] == "low_quality_tree"
     assert await fake_redis.llen(DLQ_KEY) == 0
+
+
+def _staging_writer(payload: bytes):
+    """Return a download_staging stand-in that actually materialises the file.
+
+    The other worker tests patch download_staging with a bare MagicMock, so
+    local_path never exists and the sha256 hash is skipped. The RFC-049 Task
+    7.5d tests need real bytes on disk to assert the digest.
+    """
+
+    def _write(_staging_key: str, local_path: str) -> None:
+        Path(local_path).write_bytes(payload)
+
+    return _write
+
+
+async def _run_child_error_job(fake_redis, job_id, error_class, *, payload=b"garbled bytes"):
+    """Drive process_document_job to a ConverterChildError with a staged file."""
+    staging_key = f"uploads/staging/{job_id}/doc.pdf"
+    ctx = {"redis": fake_redis, "job_try": MAX_TRIES}
+    err = ConverterChildError(1, f"{error_class}: boom", error_class)
+
+    with (
+        patch(
+            "pageindex_mcp.worker.job._run_converter_subprocess",
+            AsyncMock(side_effect=err),
+        ),
+        patch("pageindex_mcp.worker.job.download_staging", _staging_writer(payload)),
+        patch("pageindex_mcp.worker.job.delete_staging"),
+        patch("pageindex_mcp.worker.job.shutil"),
+    ):
+        result = await process_document_job(ctx, staging_key, job_id)
+
+    return result, await fake_redis.hgetall(f"pageindex:job:{job_id}")
+
+
+@pytest.mark.asyncio
+async def test_flat_04_c2_rejection_surfaces_the_quarantine_sha256(fake_redis):
+    """FLAT-04-C2 / RFC-049 Task 7.5d: a low_quality_tree rejection writes the
+    document's sha256 — the quarantine key — into the job hash, and stays
+    terminal (return "", no DLQ push, no retry)."""
+    payload = b"garbled bytes"
+    result, state = await _run_child_error_job(
+        fake_redis, "job-sha", "LowQualityTreeError", payload=payload
+    )
+
+    assert result == ""
+    assert state["reason"] == "low_quality_tree"
+    assert state["sha256"] == hashlib.sha256(payload).hexdigest()
+    assert await fake_redis.llen(DLQ_KEY) == 0
+
+
+@pytest.mark.asyncio
+async def test_flat_04_c2_hash_failure_omits_sha256_and_stays_terminal(fake_redis):
+    """RFC-049 Task 7.5d: hashing is best-effort. If the digest cannot be
+    computed the field is simply absent — the rejection is unaffected."""
+    staging_key = "uploads/staging/job-nohash/doc.pdf"
+    ctx = {"redis": fake_redis, "job_try": MAX_TRIES}
+    err = ConverterChildError(1, "LowQualityTreeError: boom", "LowQualityTreeError")
+
+    with (
+        patch(
+            "pageindex_mcp.worker.job._run_converter_subprocess",
+            AsyncMock(side_effect=err),
+        ),
+        # Bare mock: the file is never written, so read_bytes raises.
+        patch("pageindex_mcp.worker.job.download_staging"),
+        patch("pageindex_mcp.worker.job.delete_staging"),
+        patch("pageindex_mcp.worker.job.shutil"),
+    ):
+        result = await process_document_job(ctx, staging_key, "job-nohash")
+
+    assert result == ""
+    state = await fake_redis.hgetall("pageindex:job:job-nohash")
+    assert state["reason"] == "low_quality_tree"
+    assert "sha256" not in state
+    assert await fake_redis.llen(DLQ_KEY) == 0
+
+
+@pytest.mark.asyncio
+async def test_non_rejection_child_error_writes_no_sha256(fake_redis):
+    """RFC-049 Task 7.5d: sha256 names a quarantine object. A child error that
+    writes no quarantine copy must not advertise one."""
+    with pytest.raises(ConverterChildError):
+        await _run_child_error_job(fake_redis, "job-other", "RuntimeError")
+
+    state = await fake_redis.hgetall("pageindex:job:job-other")
+    assert state["reason"] != "low_quality_tree"
+    assert "sha256" not in state
 
 
 # ── process_document_job: subprocess-boundary error translation ─────────────
