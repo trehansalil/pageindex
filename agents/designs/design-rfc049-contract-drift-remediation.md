@@ -1,5 +1,5 @@
 <!-- Space: CITRA -->
-<!-- Title: Design Document: Contract Drift Remediation -->
+<!-- Title: Design: Contract Drift Remediation -->
 <!-- Folder: Designs -->
 
 ---
