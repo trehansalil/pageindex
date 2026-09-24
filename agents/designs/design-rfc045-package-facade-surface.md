@@ -31,7 +31,28 @@ governs:
 | Implementation Plan | [[tasks-rfc045-package-facade-surface]] |
 | Manifest | `audit/FACADE_SURFACE_MANIFEST_2026-09-07.md` |
 | Measurement | `scripts/facade_surface_measure.py` |
-| Guard | `tests/test_facade_surface_guard.py` |
+| Guard | `scripts/gates/source_invariants.py` (`facade-frozen`, `facade-removed-bindings-gone`, `unexercised-consumer-contract`, `consumer-references-resolve`); script tested by `tests/test_source_invariants.py` |
+
+**(Amendment 2026-09-24, RFC-049.)** This document was written against a
+`scripts/gates/source_invariants.py` (`facade-frozen`) that no longer exists. The ICR-97
+test-budget consolidation folded it — together with
+`tests/test_source_invariants.py` (facade measurement pins) — into the `static` gate, and
+`FROZEN_SURFACE` moved with it: its canonical home is now
+`scripts/gates/source_invariants.py:150`, which says so in a comment at
+:46. The mapping is:
+
+| Named here | Actually lives in |
+|---|---|
+| `scripts/gates/source_invariants.py` (`facade-frozen`) frozen-list assertion | `@check("facade-frozen")` — `scripts/gates/source_invariants.py:2233` |
+| Property 2 (`__all__` entry *and* binding both go) | `@check("facade-removed-bindings-gone")` — `:2288` |
+| The 17 external pins | `@check("unexercised-consumer-contract")` — `:2324` |
+| `TestConsumerReferencesResolve` | `@check("consumer-references-resolve")` — `:2402` |
+| `tests/test_source_invariants.py` (facade measurement pins) pins | `tests/test_source_invariants.py::test_facade_disposition_measurement_matches_the_rfc045_pins` — `:598` |
+
+`tests/test_rfc045_wave_invariants.py` was never built; Amendment 3 below
+withdraws it as a deliverable, and Property 2 landed as
+`facade-removed-bindings-gone` instead. References to it in Amendments 2
+and 3 are left intact as the record of that decision.
 
 ## Overview
 
@@ -71,7 +92,7 @@ must retain at least one surviving name.
 - **Startup, not tests, is the failure mode for a wired producer.** `FEATURE_WIRINGS` resolves five producer paths through a facade, via `gates.py` `rsplit(".", 1)` → `importlib.import_module(mod_path)` → `getattr(mod, attr_name, None)` → `AssertionError`. It is called from `server.py:83-86` and `worker/lifecycle.py:60-63`. Deleting one of those import bindings takes the server and the worker down at boot. The overlap with the removal set is empty, and stays checked per wave.
 - **`services/docling-service` is a separate deployable that copies this source.** Its three facade imports (`app.py:87`, `:159`, `:189`) are not exercised by this repo's suite; they break inside its own image at runtime. They are pinned, not merely retained.
 - **The container command is a consumer.** `arq pageindex_mcp.worker.WorkerSettings` in `apps/pageindex-mcp/worker-deployment.yaml:27` reaches the worker facade from outside any Python file.
-- **The frozen list must be updated in the same commit as the removal it describes.** A wave that removes entries without updating `tests/test_facade_surface_guard.py` leaves the suite red; a wave that updates it without the external pin re-check leaves the suite green and production broken.
+- **The frozen list must be updated in the same commit as the removal it describes.** A wave that removes entries without updating `scripts/gates/source_invariants.py` (`facade-frozen`) leaves the suite red; a wave that updates it without the external pin re-check leaves the suite green and production broken.
 - **The measurement tests pin the pre-shrink facade.** They self-skip once wave 1 lands. Re-pinning them is a task of the final verification wave, not an incidental fixup along the way.
 
 ## Architecture
@@ -193,7 +214,7 @@ outcomes together:
 | Broad_Rule | 10 of 59 | 49 |
 | Narrow_Rule | 48 of 59 | 11 |
 
-`tests/test_rfc045_facade_measurement.py` pins the population, both counts, the
+`tests/test_source_invariants.py` (facade measurement pins) pins the population, both counts, the
 per-package split, and the 11-name hand-review set with the signal that catches
 each — so the set a human must rule on cannot drift silently. The signal
 battery is honest about being heuristic: the cross-package check is a proxy for
@@ -215,7 +236,7 @@ that *kept* references resolve. This decision therefore now names a deliverable,
 first removal, where a surprise consumer costs nothing — and re-run in wave 7.
 
 **(Amendment 2026-09-09, iteration 2.)** That deliverable is **not** a new
-script. `TestConsumerReferencesResolve` (`tests/test_facade_surface_guard.py:596-693`)
+script. `TestConsumerReferencesResolve` (now `@check("consumer-references-resolve")`, `scripts/gates/source_invariants.py:2402`)
 already performs alias-tracked `ImportFrom` + `Attribute` resolution over
 `issue/`, `services/`, `scripts/` and the five entrypoints; the residual gap is
 only that it does not sweep `src/` or `tests/`, where a lazy in-function facade
@@ -308,7 +329,7 @@ Facade_Channel imports and zero Attr_Channel references across `src/`,
 `<pkg>` yields the empty set.
 
 **Test:** The positive-controlled AST pass of D7, re-run per wave; plus
-`tests/test_facade_surface_guard.py` external pin for the off-suite half.
+`scripts/gates/source_invariants.py` (`facade-frozen`) external pin for the off-suite half.
 
 ### Property 2: A removal deletes the entry and the binding
 
@@ -351,7 +372,7 @@ not: Property 4 is enforced by the startup validation above, and Property 3 by
 disappears. Only Property 2's `not hasattr(pkg, name)` half is genuinely
 untested, and its failure mode — a binding surviving without its `__all__`
 entry — is cosmetic rather than breaking. Task 0.4 therefore adds that single
-assertion to `tests/test_facade_surface_guard.py` rather than a parameterized
+assertion to `scripts/gates/source_invariants.py` (`facade-frozen`) rather than a parameterized
 module.
 
 ### Property 5: The external contract resolves
@@ -364,13 +385,13 @@ continue to resolve. Formally: all 44 off-suite `(module, name)` references
 resolve.
 
 **Test:** `TestConsumerReferencesResolve` in
-`tests/test_facade_surface_guard.py`, with its `>= 40` floor assertion so the
+`scripts/gates/source_invariants.py` (`facade-frozen`), with its `>= 40` floor assertion so the
 sweep cannot go vacuously green.
 
 ### Property 6: The frozen surface matches after each wave
 
 Each package's `__all__` SHALL equal the frozen literal in
-`tests/test_facade_surface_guard.py`, updated in the same commit as the removal.
+`scripts/gates/source_invariants.py` (`facade-frozen`), updated in the same commit as the removal.
 
 **Test:** The frozen-list guard, which fails on any drift with an
 added/removed diff.
@@ -382,7 +403,7 @@ pinned. While the facade is un-shrunk the pins assert the pre-shrink numbers;
 once wave 1 lands the reproduction tests self-skip with an explanatory message,
 and the final verification wave re-pins them against the post-shrink source.
 
-**Test:** `tests/test_rfc045_facade_measurement.py`. Mutation-checked: dropping
+**Test:** `tests/test_source_invariants.py` (facade measurement pins). Mutation-checked: dropping
 one signal from the Narrow_Rule fails 3 of its 5 tests.
 
 ## Risk Mitigation

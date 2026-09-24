@@ -12,10 +12,10 @@ contracts:
     boundary: "Staged file exists in MinIO; client.index() and save_doc() both succeed"
 
   - id: WORKER-01-C2
-    desc: "validate_tree failure surfaces as error reason=low_quality_tree and the tree is not persisted"
-    trigger: "validate_tree() called inside client.index() returns a failing result (depth < 2 or node_count < 3 or garbling detected)"
-    effect: "save_doc is NOT called; pageindex:job:<job_id> set to status=error with reason=low_quality_tree (carrying a sha256 field, the quarantine key, per RFC-049 D2-C); pageindex_low_quality_trees_total counter incremented; the tree is never written to MinIO processed/<doc_id>.json — for a garbling rejection it is copied to the unserved quarantine/<sha256>.json for diagnosis (OCR-01-C4), which no MCP tool or HTTP route reads"
-    boundary: "Phase 1 warn-only mode -- the counter increments and status=error is set, but the depth/node_count thresholds are not yet enforced as a hard CI gate (pending calibration against GHV corpus)"
+    desc: "A failing validate_tree result is ROUTED, not uniformly rejected; only the reject routes surface error reason=low_quality_tree, and only a garbling reject writes a quarantine copy"
+    trigger: "validate_tree() called inside client.index() returns a failing result (depth < 2 or node_count < 3 or garbling detected); finalize_gate_and_route then selects a Route, and the exhaustive (ok, route) dispatch at client/indexer.py:2680-2745 decides the outcome"
+    effect: "(a) Route.FLAT -- the DEFAULT for NODE_COUNT_LOW/DEPTH_LOW defects under flat_doc_routing -- persists a FLAT document, returns a doc_id and the job reaches status=done; pageindex_low_quality_trees_total is NOT incremented and nothing is quarantined. (b) Route.REJECT -- save_doc is NOT called, LOW_QUALITY_TREES is incremented and LowQualityTreeError is raised, so pageindex:job:<job_id> is set to status=error with reason=low_quality_tree; the unserved quarantine/<sha256>.json copy (OCR-01-C4), which no MCP tool or HTTP route reads, is written ONLY when first_defect is GARBLING or NODE_GARBLING (:2716-2731). A NODE_COUNT_LOW/DEPTH_LOW reject, and a Route.FLAT persist that returns None because flat_md is None (:1754), write NO quarantine. (c) Route.TREE / Route.PERSIST_FAIL -- the tree IS persisted, carrying a FAIL verdict. worker/job.py:272-278 attaches sha256 to every reason=low_quality_tree body, so that field is a usable quarantine key only for the garbling rejections in (b)"
+    boundary: "Phase 1 warn-only mode -- the counter increments and status=error is set, but the depth/node_count thresholds are not enforced as a hard CI gate (pending calibration against the GHV corpus) and, under flat_doc_routing, do not reject at all"
 
   - id: WORKER-01-C3
     desc: "On final failure after max_tries the job is pushed to the DLQ"
