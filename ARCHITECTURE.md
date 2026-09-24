@@ -767,6 +767,11 @@ The `validate_tree` thresholds must be **calibrated before** the gate is wired a
   current provider docs at deployment time.
 
 ### ADR-006 — PyMuPDF in the OCR sidecar services (HR4)
+- **Update (2026-09-24, RFC-051).** The `ocr-spike` evaluation trio — `services/paddleocr-service`,
+  `services/docling-ocr-service`, and `services/paddleocr-vl-service` — was removed as part of RFC-051
+  codebase trimming; `scripts/ocr_spike_eval.py`, their only consumer, was deleted with them.
+  `services/surya-ocr-service` remains live and continues to carry the AGPL exposure and terms recorded
+  below; the `paddleocr-vl-service` mentions below describe the sidecar as it existed before removal.
 - **Context.** The RFC-046 OCR engine evaluation added two FastAPI sidecars, `services/surya-ocr-service`
   and `services/paddleocr-vl-service`. Both rasterize PDF input for their `/ocr/pdf` endpoint through
   **PyMuPDF** (`fitz`): open the byte stream, read `page_count`, render each page to a PIL image

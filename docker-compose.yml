@@ -222,76 +222,10 @@ services:
       start_period: 30s
     restart: unless-stopped
 
-  # ─── RFC-036 D7 OCR spike services (evaluation only, NOT production) ───────
-  # Behind their own `ocr-spike` profile: heavy images (PaddlePaddle / EasyOCR
-  # model weights) that only scripts/ocr_spike_eval.py talks to. Start with
-  # `docker compose --profile ocr-spike up`.
-  paddleocr-service:
-    build:
-      context: services/paddleocr-service
-      dockerfile: Dockerfile
-    container_name: pageindex-paddleocr-service
-    profiles: ["ocr-spike"]
-    environment:
-      PADDLEOCR_LANG: ${PADDLEOCR_LANG:-ar}
-      PADDLEOCR_USE_GPU: ${PADDLEOCR_USE_GPU:-false}
-    ports:
-      - "8202:8202"
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8202/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 60s
-    restart: unless-stopped
-
-  docling-ocr-service:
-    build:
-      context: services/docling-ocr-service
-      dockerfile: Dockerfile
-    container_name: pageindex-docling-ocr-service
-    profiles: ["ocr-spike"]
-    environment:
-      DOCLING_OCR_LANG: ${DOCLING_OCR_LANG:-ar,en}
-    ports:
-      - "8203:8203"
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8203/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 60s
-    restart: unless-stopped
-
-  # app.py proxies OCR requests to an Ollama server — Ollama is NOT part of
-  # this compose file and is deliberately not added here (it is a shared,
-  # already-running dependency on the host or elsewhere). OLLAMA_BASE_URL
-  # just points at wherever that is; host.docker.internal is the Dockerfile
-  # default for "Ollama running on the Docker host" and needs the
-  # extra_hosts entry below on Linux to resolve.
-  paddleocr-vl-service:
-    build:
-      context: services/paddleocr-vl-service
-      dockerfile: Dockerfile
-    container_name: pageindex-paddleocr-vl-service
-    profiles: ["ocr-spike"]
-    environment:
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      PADDLEOCR_VL_MODEL: ${PADDLEOCR_VL_MODEL:-hf.co/PaddlePaddle/PaddleOCR-VL-1.6-GGUF}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    ports:
-      # Loopback-only (ADR-006). A bare "8204:8204" publishes on 0.0.0.0,
-      # i.e. the LAN, and this sidecar rasterizes with AGPL-3.0 PyMuPDF.
-      # Every consumer uses http://localhost:8204, so this costs nothing.
-      - "127.0.0.1:8204:8204"
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8204/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 60s
-    restart: unless-stopped
+  # RFC-036 D7 OCR spike services (paddleocr-service, docling-ocr-service,
+  # paddleocr-vl-service) and their `ocr-spike` compose profile were removed
+  # 2026-09-24 (RFC-051 D1) — scripts/ocr_spike_eval.py, their only consumer,
+  # was deleted with them. surya-ocr-service below is live and unaffected.
 
   # Surya downloads its model weights via huggingface_hub at first request,
   # not at build time (unlike docling-service, which bakes them into the

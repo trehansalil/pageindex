@@ -31,15 +31,36 @@ governs:
 
 ## Overview
 
+**Current contract (2026-09-24, Iter 9)**
+
+This design covers two subtractive changes only: deletion of two dead spike scripts (`table_separator_baseline.py`, `ocr_spike_eval.py`) with their compose/service/test residue, and archival of an explicitly reviewed list of stale audit artifacts. `facade_surface_measure.py` is kept. The `decision_points.py` YAML extraction (D4) and test-merge-residue consolidation (D3) are dropped; the hash-cache legacy removal (formerly bundled into D1) moves to a separate operator task. No new features, no API changes, no pipeline logic modifications — the effort is now ~3h.
+
+<details><summary>Amendment history (Iter 7-8 overview, superseded)</summary>
+
 This design covers the systematic removal of dead code, archival of stale audit artifacts, cleanup of test merge residue, and extraction of the `decision_points.py` data registry into a structured YAML file. All changes are subtractive or structural — no new features, no API changes, no pipeline logic modifications. The goal is a leaner codebase that accurately reflects active code paths.
 
+</details>
+
 ## Key Design Principles
+
+**Current contract (2026-09-24, Iter 9)**
+
+1. **Verify before delete**: Every deletion is preceded by automated verification (search_graph + grep) confirming zero callers.
+2. **Archive over delete for audit artifacts**: an explicitly reviewed list of stale reports is moved, not deleted, preserving historical context.
+3. **Atomic commits**: each deletion is a separate commit for easy revert if an unexpected dependency surfaces.
+4. **Withdraw rather than force**: when a planned deletion turns out to still be load-bearing (`facade_surface_measure.py`) or its cleanup work belongs elsewhere (hash-cache legacy code), the RFC withdraws or splits it out rather than forcing it through.
+
+~~Principles 3 (API preservation) and 5 (coverage-gated test cleanup)~~ dropped along with D3/D4 — see history.
+
+<details><summary>Amendment history (Iter 7-8 principles, superseded)</summary>
 
 1. **Verify before delete**: Every deletion is preceded by automated verification (search_graph + grep) confirming zero callers.
 2. **Archive over delete for audit artifacts**: Stale reports are moved, not deleted, preserving historical context while decluttering the active view.
 3. **API preservation**: The `decision_points.py` refactor changes internals only — all callers see the same public interface.
 4. **Atomic commits**: Each deletion category is a separate commit for easy revert if an unexpected dependency surfaces.
 5. **Coverage-gated test cleanup**: Tests are only consolidated after coverage analysis confirms redundancy.
+
+</details>
 
 ## Launch Constraints
 
@@ -55,17 +76,31 @@ This RFC makes no architectural changes. All modifications are subtractive (dele
 
 ### Architecture Decisions
 
-**D1: Separate commits per deletion category (RFC-051 D1):** Each dead script is deleted in its own commit. Alternative: batch all deletions — rejected because granular commits make revert trivial if a "dead" script turns out to have an undocumented caller.
+**Current contract (2026-09-24, Iter 9)**
 
-**D2: Archive directory structure (RFC-051 D2):** `audit/archive/` mirrors the original directory structure. Alternative: flat archive — rejected because hierarchical structure preserves context and makes manual lookups easier.
+**D1: Separate commits per deletion category (RFC-051 D1):** `table_separator_baseline.py` and `ocr_spike_eval.py` (with their compose/service/test residue) are each deleted in their own commit. `facade_surface_measure.py` is kept — no commit touches it. The hash-cache legacy removal is out of scope for this RFC's commits; it is a separate operator task.
+
+**D2: Archive directory structure (RFC-051 D2):** `audit/archive/` mirrors the original directory structure for the explicitly reviewed file list. Unchanged from Iter 7-8.
+
+~~**D3: YAML over JSON for decision points.**~~ **DROPPED (Iter 9)** — D4 (decision points extraction) is dropped in full.
+
+~~**D4: Thin loader pattern.**~~ **DROPPED (Iter 9)** — no refactor of `decision_points.py` under this RFC.
+
+<details><summary>Amendment history (Iter 7 architecture decisions D3/D4, dropped in Iter 9)</summary>
 
 **D3: YAML over JSON for decision points (RFC-051 D4):** YAML supports comments and multi-line strings, which are prevalent in the decision points data. Alternative: JSON — rejected because the data contains human-readable descriptions that benefit from YAML's readability.
 
 **D4: Thin loader pattern (RFC-051 D4):** The refactored `decision_points.py` loads YAML at import time and exposes the same API via simple dict lookups. **(Amendment 2026-09-24, Iter 7):** "thin" applies to the data only. The YAML replaces the `_*_POINTS` table literals. `DecisionPoint` (with its `Phase` enum), `_build_index` validation (~78 lines), the five policy functions and the redaction constants stay in Python. There is no line cap. The file name is kept because `source_invariants.py:2155` special-cases it. Alternative: lazy loading — rejected because the data is small enough (~2K lines of YAML) that eager loading adds negligible startup cost and simplifies the code.
 
+</details>
+
 ## Service Contracts
 
 ### No New Services
+
+**Current contract (2026-09-24, Iter 9):** This RFC introduces no new services and makes no contract change of any kind. `obs/decision_points.py` is untouched — D4 is dropped.
+
+<details><summary>Amendment history (Iter 7-8 decision_points.py API-preservation contract, dropped in Iter 9)</summary>
 
 This RFC introduces no new services. The only contract change is internal: `obs/decision_points.py` switches from inline data to YAML-backed data, but its public API remains identical.
 
@@ -106,7 +141,13 @@ Known direct callers: `tests/test_recovery.py:1746` (`point_for`) and `tests/tes
 - **Loader.** It reads the file through `importlib.resources.files(__package__).joinpath("decision_points.yaml")`.
 - **Wheel check.** `uv build`, then an import in a temporary venv, runs as a **CI step**, not a collected test.
 
+</details>
+
 ## Data Models
+
+**Current contract (2026-09-24, Iter 9):** No data models. `decision_points.yaml` is not created — D4 is dropped.
+
+<details><summary>Amendment history (Iter 7-8 decision_points.yaml schema, dropped in Iter 9)</summary>
 
 ### decision_points.yaml Schema
 
@@ -136,11 +177,19 @@ storage:                       # was _STORAGE_POINTS
     attrs: [...]
 ```
 
+</details>
+
 ## Correctness Properties
 
 ### Property 1: Zero Caller Guarantee
 
+**Current contract (2026-09-24, Iter 9):** *For any* script deleted (`table_separator_baseline.py`, `ocr_spike_eval.py`), there SHALL be zero import statements, zero function calls, and zero string references to that script in the entire codebase (excluding git history and this RFC). `facade_surface_measure.py` is out of scope for this property — it is kept, so its `test_source_invariants.py` references are untouched.
+
+<details><summary>Amendment history (Iter 2, facade_surface_measure.py included, superseded)</summary>
+
 *For any* script deleted in Wave 1, there SHALL be zero import statements, zero function calls, and zero string references to that script in the entire codebase (excluding git history and this RFC). **(Amendment 2026-09-24, Iteration 2): Iteration-2 review confirmed active references for 2 of 4 scripts: `ocr_spike_eval.py` → `test_ocr_fallback.py` (6 refs), `TEST_INDEX.yaml`, `docker-compose.yml`; `facade_surface_measure.py` → `test_source_invariants.py` (import + invariant test). These must be removed BEFORE script deletion to satisfy this property.**
+
+</details>
 
 **Validates: Requirement 1**
 
@@ -158,13 +207,23 @@ storage:                       # was _STORAGE_POINTS
 
 **Validates: Requirement 2 (AC3)**
 
-### Property 4: API Equivalence
+### Property 4: API Equivalence — DROPPED (Iter 9)
+
+**Current contract (2026-09-24, Iter 9):** Dropped along with D4. `decision_points.py` is untouched, so there is no equivalence property to prove.
+
+<details><summary>Amendment history (Iter 7 property, dropped in Iter 9)</summary>
 
 *For any* call to the `decision_points` public API, the YAML-backed implementation SHALL return the identical result as the current inline-data implementation. **(Amendment 2026-09-24, Iter 7):** "public API" means the 11 names at `obs/__init__.py:21`. Equivalence is checked name by name against a frozen snapshot taken before extraction. The module SHALL contain no `_*_POINTS` data literals afterwards.
 
 **Validates: Requirement 4**
 
-### Property 5: Test Coverage Preservation
+</details>
+
+### Property 5: Test Coverage Preservation — DROPPED (Iter 9)
+
+**Current contract (2026-09-24, Iter 9):** Dropped along with D3. The facade invariant test is no longer at risk either — `facade_surface_measure.py` is kept, so `test_facade_disposition_measurement_matches_the_rfc045_pins` is never rewritten, never touched.
+
+<details><summary>Amendment history (Iter 7-8 property, dropped in Iter 9)</summary>
 
 *For any* test removed during consolidation, there SHALL exist at least one remaining test that exercises the same code path. **(Amendment 2026-09-24, Iter 7):**
 - This also covers invariant tests removed with a deleted script. `test_facade_disposition_measurement_matches_the_rfc045_pins` is rewritten as a frozen-value assertion rather than deleted, so the RFC-045 invariant stays covered.
@@ -176,7 +235,13 @@ storage:                       # was _STORAGE_POINTS
 
 **Validates: Requirement 3 (AC3)**
 
-### Property 6: No Unreachable Hash-Cache Store (added 2026-09-24, Iter 8)
+</details>
+
+### Property 6: No Unreachable Hash-Cache Store — MOVED OUT (Iter 9)
+
+**Current contract (2026-09-24, Iter 9):** This property no longer belongs to an RFC-051 commit. The hash-cache legacy removal (D1) moves to a separate operator task; the property below is preserved verbatim as that task's correctness requirement. RFC-051 itself makes no change to `hash_cache.py` or `hash_cache_migrate.py`.
+
+<details><summary>Amendment history (Iter 8 property, now the operator task's recipe)</summary>
 
 *For any* commit that removes `_purge_legacy_hash_entry` or `_load_legacy_minio_hash_cache`, the legacy MinIO blob `hashes/processed_hashes.json` (`HASH_OBJECT`) SHALL already be absent (`stat_object` → `NoSuchKey`) on every deployment, and that evidence SHALL be recorded in the commit message. The hash-cache step of the Hard Rule 2 erasure cascade then consists only of the Redis `hdel` on `HASH_CACHE_KEY`.
 
@@ -192,23 +257,55 @@ In the same commit, the two names move from `FROZEN_SURFACE["storage"]` (`source
 
 **Validates: Requirement 1 (AC4)**
 
+</details>
+
 ## Error Handling
+
+**Current contract (2026-09-24, Iter 9):** No error-handling design applies — the only error paths RFC-051 could introduce (`decision_points.yaml` load failures) belong to D4, which is dropped.
+
+<details><summary>Amendment history (Iter 7 decision_points.yaml error handling, dropped in Iter 9)</summary>
 
 **decision_points.yaml load failure:**
 - YAML file not found → raise `FileNotFoundError` at import time (fail fast)
 - YAML parse error → raise `ValueError` with descriptive message at import time
 - Schema validation failure → raise `ValueError` listing which fields are invalid
 
+</details>
+
 ## Testing Strategy
 
+**Current contract (2026-09-24, Iter 9)**
+
 ### Testing Layers
+
+1. **Pre-deletion verification scripts**: Automated checks (search_graph + grep) confirming zero callers for `table_separator_baseline.py` and `ocr_spike_eval.py`.
+2. **Post-move regression**: Full `make test` after the script-deletion commit and after the archive-move commit.
+
+~~Layers 3-4 (API equivalence test, schema validation test)~~ dropped along with D4 — see history.
+
+### Key Test Scenarios
+
+**Critical Path Tests:**
+1. Delete dead script (`table_separator_baseline.py`, `ocr_spike_eval.py`) → `make test` passes → no import errors
+2. Archive reviewed audit files → `make test` passes → no broken references
+
+**Edge Cases:**
+- Script that appears dead but is referenced in a comment or docstring → grep catches it
+- Audit file referenced by a wikilink in an RFC → search_notes catches it before archival
+- `ocr-spike` removal: `docker-compose.yml:225-294` goes, and the Surya block from :296 stays. The `services/paddleocr-service/`, `services/paddleocr-vl-service/` and `services/docling-ocr-service/` directories are deleted only after a grep outside `audit/`, `agents/` and `.git/` finds no other user, and ARCHITECTURE.md:771-780 is updated. The `arbitrate.py:31-32` engine enum values stay.
+- A pinned audit file (`audit/zones/_index.md`) is never selected for archival, even when older than superseding artifacts.
+- `hash_cache_migrate.py` deletion and the legacy-blob edge case move to the separate operator task; its test recipe is [Property 6](#property-6-no-unreachable-hash-cache-store--moved-out-iter-9).
+
+<details><summary>Amendment history (Iter 7-8 testing layers and scenarios, decision_points/consolidation items dropped, hash-cache moved out)</summary>
+
+### Testing Layers (Iter 7-8)
 
 1. **Pre-deletion verification scripts**: Automated checks (search_graph + grep) confirming zero callers for each deletion target.
 2. **Post-move regression**: Full `make test` after each wave.
 3. **API equivalence test**: Load current inline data, load YAML-backed data, assert identical for all decision point IDs.
 4. **Schema validation test**: Malformed YAML entries are rejected with descriptive errors.
 
-### Key Test Scenarios
+### Key Test Scenarios (Iter 7-8)
 
 **Critical Path Tests:**
 1. Delete dead script → `make test` passes → no import errors
@@ -221,6 +318,8 @@ In the same commit, the two names move from `FROZEN_SURFACE["storage"]` (`source
 - Audit file referenced by a wikilink in an RFC → search_notes catches it before archival
 - Decision point with special characters in description → YAML round-trip preserves them
 - **(Amendment 2026-09-24, Iter 7):** installed wheel (not the source tree) → `import pageindex_mcp.obs.decision_points` succeeds, so the YAML is packaged
-- **(Amendment 2026-09-24, Iter 7):** `hash_cache_migrate.py` deletion → only after confirming migration completion. The `hash_cache_get` legacy fallback (~~`storage/hash_cache.py:80-94`~~ **Iter 8:** `:90-94`) is removed in the same commit, and `test_storage` hash-cache tests still pass. **(Amendment 2026-09-24, Iter 8):** the legacy blob is deleted first, and the loader, lock and purge tests are removed with the code ([Property 6](#property-6-no-unreachable-hash-cache-store-added-2026-09-24-iter-8)).
+- **(Amendment 2026-09-24, Iter 7):** `hash_cache_migrate.py` deletion → only after confirming migration completion. The `hash_cache_get` legacy fallback (~~`storage/hash_cache.py:80-94`~~ **Iter 8:** `:90-94`) is removed in the same commit, and `test_storage` hash-cache tests still pass. **(Amendment 2026-09-24, Iter 8):** the legacy blob is deleted first, and the loader, lock and purge tests are removed with the code ([Property 6](#property-6-no-unreachable-hash-cache-store--moved-out-iter-9)).
 - **(Amendment 2026-09-24, Iter 8):** `ocr-spike` removal. `docker-compose.yml:225-294` goes, and the Surya block from :296 stays. The `services/paddleocr-service/`, `services/paddleocr-vl-service/` and `services/docling-ocr-service/` directories are deleted only after a grep outside `audit/`, `agents/` and `.git/` finds no other user, and ARCHITECTURE.md:771-780 is updated. The `arbitrate.py:31-32` engine enum values stay.
 - **(Amendment 2026-09-24, Iter 7):** a pinned audit file (`audit/zones/_index.md`) is never selected for archival, even when older than the baseline
+
+</details>

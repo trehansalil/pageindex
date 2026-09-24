@@ -28,11 +28,19 @@ After 49 RFCs and 8 implementation waves, the PageIndex codebase has accumulated
 
 The accumulation is natural for a project that has undergone rapid iteration with formal RFC governance — each wave lands code, and cleanup is deferred to avoid scope creep. This RFC formalizes the cleanup as a deliberate, auditable sweep.
 
-Key categories:
+**Current contract (2026-09-24, Iter 9) — scope is now minimal, ~3h:**
+- **Dead scripts** (~1,578 LOC): `table_separator_baseline.py` + `ocr_spike_eval.py`, plus the `ocr-spike` compose/service cleanup. `facade_surface_measure.py` is kept (still generates the ruling RFC-045 manifest). `hash_cache_migrate.py` and the legacy hash-cache code move to a separate operator task, out of this RFC.
+- **Stale audit artifacts:** an explicit reviewed file list, archived to `audit/archive/` — no category sweep, no line quota.
+- ~~Test merge residue~~ and ~~data registry extraction~~ are DROPPED (D3, D4) — see Goals and Decision Summary.
+
+<details><summary>Amendment history (original key categories)</summary>
+
 - **Dead scripts** (~2,322 LOC): one-time migration and spike scripts that produced their outputs and have no callers **(Amendment 2026-09-24: revised from ~550 — `ocr_spike_eval.py` is 1,474 LOC)**
 - **Stale audit artifacts** (~15,000 lines): old Run-6/7/8 reports, zone deltas superseded by POST-RFC043 baselines, old remediation plans
 - **Test merge residue** (~2,000–4,000 LOC): dead helpers from test consolidation, duplicated test coverage across files
 - **Data registry extraction** (~1,800 LOC): `obs/decision_points.py` is a 2,017-line static data registry that could be extracted to YAML/JSON
+
+</details>
 
 ### Relationship to Prior RFCs
 
@@ -40,6 +48,15 @@ Key categories:
 - [[RFC-045]]: package facade surface — confirmed export surface is guarded, but some compatibility shims may now be removable
 
 ## Goals
+
+**Current contract (2026-09-24, Iter 9)**
+
+- **G1 (deleted):** ~1,578 script lines — `table_separator_baseline.py` (104 LOC) + `ocr_spike_eval.py` (1,474 LOC) — plus ~4,250 lines of `ocr-spike` service build directories if the verify step clears them. `facade_surface_measure.py` (621 LOC) is KEPT, not deleted (D1). `hash_cache_migrate.py` (123 LOC) and the legacy hash-cache code (~130 lines) move OUT of this RFC to a separate operator task (D1) and are no longer counted here.
+- **G2 (archived):** whatever the D2 reviewed file list totals, moved to `audit/archive/` with `audit/archive/MANIFEST.md` — no ≥15,000-line quota. `audit/` is ~27.8k lines across ~199 files today.
+- ~~G3: Eliminate confirmed dead test helpers and reduce test file duplication.~~ **DROPPED (Iter 9) — D3 dropped; suite is at a safe test floor as of 2026-09-24.**
+- ~~G4: Extract `decision_points.py` static data to YAML.~~ **DROPPED (Iter 9) — D4 dropped; no demonstrated need, type-fidelity risk (`Phase` enum, frozensets), no non-Python contributors evidenced.**
+
+<details><summary>Amendment history (Iter 7-8 goals)</summary>
 
 - **G1**: ~~Remove ≥15,000 lines of dead/stale content from the active codebase view.~~ **(Amendment 2026-09-24, Iter 8 — two separate counts, because archived lines stay in the repo):**
   - **G1a (archived):** ≥15,000 lines moved out of the active `audit/` view into `audit/archive/`. For scale, `audit/` holds ~37.8k lines of md/html/json/yaml today.
@@ -51,6 +68,8 @@ Key categories:
 - **G2**: Archive (not delete) stale audit artifacts to `audit/archive/` so they remain accessible for historical reference without cluttering active listings.
 - **G3**: Eliminate confirmed dead test helpers and reduce test file duplication.
 - **G4**: Extract `decision_points.py` static data to a structured data file (YAML or JSON), ~~reducing the Python module to a thin loader~~. **(Amendment 2026-09-24, Iter 7):** only the `_*_POINTS` data tables move; the `DecisionPoint` class, `_build_index` validation, the five policy functions and the redaction constants stay in Python.
+
+</details>
 
 ## Non-Goals
 
@@ -74,7 +93,13 @@ Key categories:
 
 **User Story:** As a developer, I want dead one-shot scripts removed from the repo root, so that the file listing reflects only active code.
 
-#### Acceptance Criteria
+**Current contract (2026-09-24, Iter 9)**
+
+- **Deleted by this RFC:** `scripts/table_separator_baseline.py` (104 LOC, zero refs) and `scripts/ocr_spike_eval.py` (1,474 LOC), together with its test refs (`tests/test_ocr_fallback.py`, `tests/TEST_INDEX.yaml`), the `docker-compose.yml` `ocr-spike` profile block (L225-294), the `services/paddleocr-service/`, `services/paddleocr-vl-service/` and `services/docling-ocr-service/` directories, and the `ARCHITECTURE.md:771-780` AGPL note update recording their removal.
+- **KEPT — withdrawn from deletion:** `scripts/facade_surface_measure.py` (621 LOC). It still generates `audit/FACADE_SURFACE_MANIFEST_2026-09-07.md`, the ruling artifact for RFC-045's 26 blocked facade entries. The Iter 7 "rewrite `test_facade_disposition_measurement_matches_the_rfc045_pins()` as a frozen-value assertion, then delete the script" plan is withdrawn in full: the script, its dynamic import in `tests/test_source_invariants.py:52-54`, and the live invariant test all stay unchanged.
+- **Moved OUT of this RFC:** `src/pageindex_mcp/hash_cache_migrate.py` and the legacy MinIO-blob code in `storage/hash_cache.py` (the fallback, loader, lock helpers, `_purge_legacy_hash_entry`, `HASH_OBJECT`, and the `FROZEN_SURFACE`→`REMOVED_SURFACE` move). This becomes a separate operator task, tracked outside RFC-051. The Iter 8 procedure (operator blob-deletion step, then the one-commit code removal) is preserved below as the recipe for that task. Standing observation, still unconfirmed on k3s: `hashes/processed_hashes.json` returns `NoSuchKey` on the working bucket — consistent with (but not proof of) migration completion; confirm on k3s remote before running the operator step there.
+
+<details><summary>Amendment history (Iter 2, 7, 8 acceptance criteria)</summary>
 
 1. THE following scripts SHALL be deleted after verifying zero callers in the code graph and zero references in CI/Makefile: **(Amendment 2026-09-24: corrected file paths and LOC counts per review)**
    - `src/pageindex_mcp/hash_cache_migrate.py` (123 LOC — one-time migration, already whitelisted as "one-shot")
@@ -116,7 +141,24 @@ Key categories:
 
 ### Requirement 2: Audit Archive
 
-**User Story:** As a developer, I want stale audit reports moved to an archive subdirectory, so that `audit/` only shows current-baseline reports.
+**User Story:** As a developer, I want an explicitly reviewed list of stale audit reports moved to an archive subdirectory, so that `audit/` only shows current-baseline reports.
+
+**Current contract (2026-09-24, Iter 9)**
+
+- Archival is by **explicit reviewed file list only** — no category sweeps. Each candidate is individually checked against AC3's reference grep before being added to the list.
+- `audit/archive/MANIFEST.md` documents the reviewed list: path, reason, superseding artifact.
+- Pinned and never archived (unchanged): `audit/zones/_index.md`, `audit/zones/ZONE_OWNERSHIP.yaml`, `audit/CORPUS_REINGESTION_AUDIT_RUN-*`, `audit/FACADE_SURFACE_MANIFEST_*`.
+- G1's archive target is "whatever the reviewed list totals" — the prior ≥15,000-line quota is dropped (`audit/` is ~27.8k lines / ~199 files today).
+
+**Iter 9 acceptance criteria:**
+
+1. AN explicit, individually reviewed file list SHALL be produced (not a category rule); each entry SHALL have passed the AC3 reference grep before being listed.
+2. THE archive move SHALL preserve directory structure via `git mv`.
+3. NO file referenced by an active RFC, design doc, task file, code, CI, or tooling (`scripts/`, `tests/`, `.github/`, the `Makefile`, `.claude/skills/`), including glob references, SHALL be archived.
+4. THE pinned files SHALL NEVER appear on the reviewed list.
+5. `audit/archive/MANIFEST.md` SHALL enumerate the reviewed list with reason and superseding artifact per entry. There is no line-count acceptance threshold.
+
+<details><summary>Amendment history (Iter 7 category-sweep acceptance criteria, superseded by the explicit-list contract above)</summary>
 
 #### Acceptance Criteria
 
@@ -132,7 +174,13 @@ Key categories:
    - `audit/zones/ZONE_OWNERSHIP.yaml` (read by the CI workflow and `rfc_lifecycle_lint.py`)
    - every file matching `audit/CORPUS_REINGESTION_AUDIT_RUN-*` (globbed by the `Makefile`, `confluence_sync.sh` and the corpus-* skills). Superseded runs matching this glob stay in place, or the globs are updated in the same commit.
 
-### Requirement 3: Test Merge Residue Cleanup
+</details>
+
+### Requirement 3: Test Merge Residue Cleanup — DROPPED (Iter 9)
+
+**Current contract (2026-09-24, Iter 9):** Dropped in full. The test suite is at a safe floor as of 2026-09-24 (only ~10 safely removable tests remain), and a prior consolidation pass already broke contract tests once. The two named dead helpers were already confirmed absent (no-op); the overlap-analysis AC never ran and is withdrawn. No further action under this RFC.
+
+<details><summary>Amendment history (Iter 7 requirement, dropped in Iter 9)</summary>
 
 **User Story:** As a developer, I want dead test helpers removed, so that the test suite accurately reflects active test coverage.
 
@@ -143,7 +191,15 @@ Key categories:
 3. NO test that covers a unique code path SHALL be removed.
 4. **(Amendment 2026-09-24, Iter 7):** the AC2 overlap analysis SHALL run after RFC-050 Wave 2 lands. RFC-050 Task 3.1b adds tests to `test_helpers_combined.py`, and the analysis must see them.
 
-### Requirement 4: Decision Points Data Extraction
+</details>
+
+### Requirement 4: Decision Points Data Extraction — DROPPED (Iter 9)
+
+**Current contract (2026-09-24, Iter 9):** Dropped in full. No demonstrated need for non-Python editing of `decision_points.py`, a type-fidelity risk on round-tripping the `Phase` enum and frozensets through YAML, and no non-Python contributors have been evidenced. `obs/decision_points.py` stays as-is.
+
+<details><summary>Amendment history (Iter 7-8 requirement, dropped in Iter 9)</summary>
+
+#### Requirement 4 (superseded): Decision Points Data Extraction
 
 **User Story:** As a developer, I want `obs/decision_points.py` refactored from a 2,017-line Python data registry into a structured data file with a thin loader, so that the data is editable without Python knowledge. **(Amendment 2026-09-24, Iter 7):** only the data moves out. The validation and policy logic stay in the module; see AC2.
 
@@ -171,7 +227,19 @@ Key categories:
    - The installed-wheel check is a **CI step** (`uv build`, then import the module in a temporary venv), not a collected pytest test.
 6. **(Amendment 2026-09-24, Iter 7):** D4 SHALL be implemented after RFC-050 Wave 2 has landed. **(Amendment 2026-09-24, Iter 8):** the precondition is pinned to RFC-050 task IDs `1.5`, `3.1a` and `3.1b`, not to a wave label. Any `decision()` event that RFC-050 adds after D4 lands (for example, D5 per-method timing) goes into the YAML, not into Python. RFC-050 adds decision events to this registry: a stage-timing event (Task 1.5) and `quarantine_extracted_write` (Task 3.1a). Those events are migrated into the YAML along with the rest.
 
+</details>
+
 ## Decision Summary
+
+**Current contract (2026-09-24, Iter 9)**
+
+- **D1:** Delete `table_separator_baseline.py` + `ocr_spike_eval.py` (with test refs, `TEST_INDEX.yaml`, the `ocr-spike` compose block and its 3 service dirs, and the `ARCHITECTURE.md` AGPL note update). `facade_surface_measure.py` is KEPT — the Iter 7 "frozen-value pin, then delete" plan is withdrawn. `hash_cache_migrate.py` and the legacy hash-cache code move OUT to a separate operator task; the Iter 8 procedure below is recorded as that task's recipe. Standing, unconfirmed-on-k3s observation: `hashes/processed_hashes.json` returns `NoSuchKey` on the working bucket.
+- **D2:** Archive an explicit reviewed file list (not category sweeps) with `audit/archive/MANIFEST.md`. Pinned paths unchanged. G1's archive target is "whatever the list totals" — no ≥15k quota.
+- ~~D3 (test consolidation)~~ — **DROPPED.** Suite is at a safe floor as of 2026-09-24 (~10 safely removable tests); a prior consolidation pass already broke contracts once.
+- ~~D4 (decision_points YAML)~~ — **DROPPED.** No demonstrated need, type-fidelity risk (`Phase` enum, frozensets), no non-Python contributors evidenced.
+- Cross-RFC ordering dependencies on RFC-050 tasks 1.5/3.1a/3.1b existed only to gate D3/D4; with both dropped, D1 and D2 have no external dependency and can land at any time.
+
+<details><summary>Amendment history (Iter 2, 7, 8 decision summary, including the now-dropped D3/D4)</summary>
 
 **D1 (Requirement 1):** Delete all 4 scripts with their active test coverage removed in the same commit. **(Amendment 2026-09-24, Iteration 2): Reference-check confirmed `ocr_spike_eval.py` has 6 test refs in `test_ocr_fallback.py` and `facade_surface_measure.py` has an active invariant test in `test_source_invariants.py`. Both test files' references must be removed/stubbed before script deletion. `hash_cache_migrate.py` needs `static.sh` whitelist cleanup. `table_separator_baseline.py` is the only clean delete.** Each deletion is a separate commit for easy revert. **(Amendment 2026-09-24, Iter 7):**
 - The RFC-045 pin test is rewritten as a frozen-value assertion, not deleted (R1 AC3).
@@ -201,11 +269,22 @@ Key categories:
   - **Precondition.** RFC-050 tasks 1.5, 3.1a and 3.1b.
   - Design: [API Preservation](../designs/design-rfc051-codebase-trimming-audit-archive.md#decision_pointspy--api-preservation), [Schema](../designs/design-rfc051-codebase-trimming-audit-archive.md#decision_pointsyaml-schema), [Property 4](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-4-api-equivalence).
 
+</details>
+
 ## Implementation Plan
 
 ### Sequencing
 
-**Current contract (2026-09-24, Iter 8)**
+**Current contract (2026-09-24, Iter 9)**
+
+| Wave | Deliverable | Effort | Runs after |
+|------|-------------|--------|------------|
+| 1 | D1: `table_separator_baseline.py` + `ocr_spike_eval.py` deletion, `ocr-spike` compose block + 3 service dirs, ARCHITECTURE.md AGPL update. `facade_surface_measure.py` kept. Hash-cache legacy removal split out as a separate operator task (not scheduled here). | ~1.5h | — |
+| 2 | D2: audit archive — explicit reviewed file list + `audit/archive/MANIFEST.md` (pinned files excluded) | ~1.5h | — |
+
+**Total: ~3h.** ~~D3 and D4 (5-6.5h combined)~~ are dropped, and with them the cross-RFC ordering on RFC-050 tasks 1.5/3.1a/3.1b — D1 and D2 have no external dependency and can land in either order or together.
+
+<details><summary>Amendment history (Iter 8 table, superseded — D3/D4 waves dropped in Iter 9)</summary>
 
 | Wave | Deliverable | Effort | Runs after |
 |------|-------------|--------|------------|
@@ -219,6 +298,8 @@ Key categories:
 - D4 −0.5h: packaging becomes verify-only, and the wheel check moves to CI.
 
 Every commit passes `test_budget.sh` (±15 band). Whichever RFC lands second rebases `TEST_BUDGET.baseline`.
+
+</details>
 
 <details><summary>Amendment history (original table, Iter 2 and Iter 7 revisions)</summary>
 
@@ -246,6 +327,16 @@ Every commit passes `test_budget.sh` (±15 band). Whichever RFC lands second reb
 
 ## Test Strategy
 
+**Current contract (2026-09-24, Iter 9)**
+
+1. **Pre-deletion verification**: for `table_separator_baseline.py` and `ocr_spike_eval.py`, confirm zero callers via `search_graph` and zero CI references via grep, including the `ocr-spike` service directories.
+2. **Post-archive verification**: run `make test` after the audit archive move to confirm no test references break.
+3. `facade_surface_measure.py` is unchanged — no test work needed for it under this RFC.
+4. Decision-points and test-consolidation test items are dropped along with D3/D4 — see history below.
+5. Hash-cache legacy removal (blob deletion, `stat_object` → `NoSuchKey` evidence, `source_invariants` `REMOVED_SURFACE` move, legacy test removal) is out of scope here; it moves with D1's hash-cache split to the separate operator task, which inherits the Iter 8 steps below as its own test plan.
+
+<details><summary>Amendment history (Iter 7-8 test strategy, items 3-7 dropped or moved in Iter 9)</summary>
+
 1. **Pre-deletion verification**: For each dead script, confirm zero callers via `search_graph` and zero CI references via grep.
 2. **Post-archive verification**: Run `make test` after audit archive move to confirm no test references break.
 3. **Post-cleanup verification**: Run full test suite after test helper deletion to confirm zero regressions.
@@ -257,7 +348,20 @@ Every commit passes `test_budget.sh` (±15 band). Whichever RFC lands second reb
    - After it, the `hash_cache_delete` test still asserts the Redis `hdel`.
    - `source_invariants` passes with `HASH_OBJECT` and `_load_legacy_minio_hash_cache` in `REMOVED_SURFACE["storage"]`.
 
+</details>
+
 ## Risks
+
+**Current contract (2026-09-24, Iter 9)**
+
+1. **A "dead" script may have an undocumented caller.** Mitigation: verify via both `search_graph` and `grep -r` before deletion — now applies only to `table_separator_baseline.py` and `ocr_spike_eval.py`.
+2. **A spike service directory has an unnoticed user** (the ARCHITECTURE.md AGPL note, a skill or a script). Mitigation: grep outside `audit/`, `agents/` and `.git/` before deleting, and update ARCHITECTURE.md:771-780 in the same commit. `services/surya-ocr-service/` is out of scope.
+3. **Archived audit files may be referenced by external documentation.** Mitigation: the `audit/archive/MANIFEST.md` provides a forwarding reference; the reviewed list is per-file, not per-category, so this risk is smaller than under the old sweep approach.
+4. **The separate operator task for the hash-cache legacy removal never runs**, leaving the blob and its purge code in place indefinitely. Mitigation: the Iter 8 procedure is preserved verbatim in D1 as that task's recipe, and the standing `NoSuchKey`-on-working-bucket observation is carried forward as its starting evidence, still unconfirmed on k3s.
+
+Risks 4-8 from Iter 7/8 (decision-points YAML, test consolidation, cross-RFC ordering) no longer apply — see history below.
+
+<details><summary>Amendment history (Iter 7-8 risks, superseded)</summary>
 
 1. **A "dead" script may have an undocumented caller.** Mitigation: verify via both `search_graph` (code graph) and `grep -r` (string references) before deletion.
 2. **Archived audit files may be referenced by external documentation.** Mitigation: the `audit/archive/MANIFEST.md` provides a forwarding reference.
@@ -272,7 +376,21 @@ Every commit passes `test_budget.sh` (±15 band). Whichever RFC lands second reb
 7. **(Amendment 2026-09-24, Iter 7) The hash-cache migration is incomplete on some deployment.** Deleting the script and the fallback would lose legacy hash-cache hits. Mitigation: R1 AC4 gates the deletion on confirmed completion, and otherwise defers it. **(Amendment 2026-09-24, Iter 8):** a second failure mode: the legacy purge code is removed while the blob still exists, so filename→sha256 entries in `hashes/processed_hashes.json` can no longer be erased (Hard Rule 2). Mitigation: the code is removed only after the per-deployment blob deletion is evidenced (`NoSuchKey`), in the same commit.
 8. **(Amendment 2026-09-24, Iter 8) A spike service directory has an unnoticed user** (the ARCHITECTURE.md AGPL note, a skill or a script). Mitigation: grep outside `audit/`, `agents/` and `.git/` before deleting, and update ARCHITECTURE.md:771-780 in the same commit. `services/surya-ocr-service/` is out of scope.
 
+</details>
+
 ## Consequences
+
+**Current contract (2026-09-24, Iter 9)**
+
+- **Deleted:** ~1,578 script lines (`table_separator_baseline.py` + `ocr_spike_eval.py`) plus ~4,250 spike-service lines if the verify step clears the three build directories. `facade_surface_measure.py` (621 LOC) is no longer counted here — it's kept. The ~130 legacy hash-cache lines move to the separate operator task's scope.
+- **Archived:** whatever the D2 reviewed list totals, moved to `audit/archive/` with full git history — no ≥15,000-line target.
+- `audit/` becomes a curated view of the reviewed-and-archived files only; it is not swept to a quota.
+- `obs/decision_points.py` and the test suite are untouched by this RFC (D3, D4 dropped).
+- The RFC-045 facade invariant is untouched — no rewrite, no risk to it.
+- The hash-cache legacy removal is deferred indefinitely until the separate operator task runs; this RFC carries no obligation to land it.
+- Historical audit data remains accessible in `audit/archive/` with full git history.
+
+<details><summary>Amendment history (Iter 7-8 consequences, superseded)</summary>
 
 - ~~Active codebase shrinks by ~19,500–21,500 lines (15,000 archived + 4,500 deleted).~~ **(Amendment 2026-09-24, Iter 8 — reconciled with R1; the two counts are reported separately per G1a/G1b):**
   - **Archived:** ≥15,000 lines move to `audit/archive/`. They stay in the repo.
@@ -282,6 +400,8 @@ Every commit passes `test_budget.sh` (±15 band). Whichever RFC lands second reb
 - `obs/decision_points.py` becomes editable by non-Python contributors. **(Amendment 2026-09-24, Iter 7):** the decision *data* becomes editable. The policy logic and redaction contract stay in Python.
 - **(Amendment 2026-09-24, Iter 7):** the RFC-045 facade invariant survives as a frozen-value assertion. If the hash-cache migration can't be confirmed complete, `hash_cache_migrate.py` stays, and this is recorded here at implementation time.
 - Historical audit data remains accessible in `audit/archive/` with full git history.
+
+</details>
 
 ## Traceability
 

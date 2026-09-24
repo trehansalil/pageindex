@@ -624,6 +624,3 @@ standalone:
   scripts/facade_surface_measure.py:
     tests:
       - test_source_invariants.py    # RFC-045 D6 disposition rule
-  scripts/ocr_spike_eval.py:
-    tests:
-      - test_ocr_fallback.py    # RFC-046 Wave 2 / D1 OCR eval
