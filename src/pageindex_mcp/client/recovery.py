@@ -128,8 +128,7 @@ def _keep_best_wins(
         if script_context is not None
         else ScriptContext(
             dominant_script=expected_script,
-            # pre-NFKC: post-normalize but safe — returns False on destroyed PF
-            had_presentation_forms=_infer_presentation_forms(_pre_text),
+            had_presentation_forms=_infer_presentation_forms(_pre_text),  # pre-NFKC
             source="ocr_retry_keep_best",
         )
     )
@@ -542,8 +541,7 @@ class RecoveryMixin:
                 if script_context is not None
                 else ScriptContext(
                     dominant_script=expected_script,
-                    # pre-NFKC: post-normalize but safe
-                    had_presentation_forms=_infer_presentation_forms(_md_text),
+                    had_presentation_forms=_infer_presentation_forms(_md_text),  # pre-NFKC
                     source="pre_rebuild_md_quality",  # pre-NFKC
                 )
             )

@@ -1104,8 +1104,7 @@ def _garble_ratio(text, expected_script=None, *, script_context=None):
         if script_context is not None
         else ScriptContext(
             dominant_script=expected_script,
-            # pre-NFKC: post-normalize but safe — returns False on destroyed PF
-            had_presentation_forms=_infer_presentation_forms(text),
+            had_presentation_forms=_infer_presentation_forms(text),  # pre-NFKC
             source="garble_ratio",
         )
     )
