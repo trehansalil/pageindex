@@ -70,11 +70,13 @@ dependencies = [
 
 [project.optional-dependencies]
 pdf-inspection = ["pdf-inspector>=0.2.6"]
-# lupa is what lets fakeredis execute EVAL. The job-status and reconcile-etag
-# compare-and-set paths are Lua scripts (the check and the write have to be one
-# round trip); without lupa fakeredis answers "unknown command 'eval'" and those
-# paths are untestable rather than tested.
-dev = ["pytest", "pytest-asyncio", "pytest-cov", "httpx", "fakeredis[aioredis]", "lupa", "hypothesis", "langchain-mcp-adapters", "langchain[openai]", "ruff>=0.15.17", "pdf-inspector>=0.2.6"]
+# fakeredis's `lua` extra is what lets it execute EVAL (it pulls lupa, pinned to
+# the version fakeredis tests against -- a bare `lupa` would leave a compiled
+# extension's embedded Lua semantics free to drift). The job-status and
+# reconcile-etag compare-and-set paths are Lua scripts (the check and the write
+# have to be one round trip); without it fakeredis answers "unknown command
+# 'eval'" and those paths are untestable rather than tested.
+dev = ["pytest", "pytest-asyncio", "pytest-cov", "httpx", "fakeredis[aioredis,lua]", "hypothesis", "langchain-mcp-adapters", "langchain[openai]", "ruff>=0.15.17", "pdf-inspector>=0.2.6"]
 # AGPL-3.0 (HR4). pymupdf4llm is the secondary/fallback PDF->markdown route behind
 # Docling; it transitively pulls PyMuPDF (AGPL). Moved OUT of core deps (RFC-004 Q2
 # follow-up, Amendment 4) so the DEFAULT install carries no first-party AGPL converter.

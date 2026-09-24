@@ -17,7 +17,8 @@ documented elsewhere in this repo's history but not what the code does.
 Inference is proxied to Ollama, but **PDF rasterization is local and uses
 PyMuPDF (`pymupdf`), which is AGPL-3.0**:
 
-- `app.py:123` — renders a page to a PIL image before base64-encoding it
+- `app.py:123` — `_page_to_png`, renders a page to PNG bytes from a PyMuPDF
+  pixmap (`pix.tobytes("png")`) which `_ocr_image_bytes` then base64-encodes
 - `app.py:223` — `/ocr/pdf`, opens the stream to read `page_count`
 
 The main application does **not** use PyMuPDF for this. It uses

@@ -952,6 +952,11 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/0d/43/83508ccf8177a840aec118bf4d20b0c25ddca6ccecd13f1f89caabcb1a45/fakeredis-2.35.0-py3-none-any.whl", hash = "sha256:565d337a5492e8c19be33a89e7acc078374741c65cb6d4413bd8818346b8c252", size = 129578, upload-time = "2026-04-09T18:02:13.264Z" },
 ]
 
+[package.optional-dependencies]
+lua = [
+    { name = "lupa" },
+]
+
 [[package]]
 name = "fastapi"
 version = "0.135.3"
@@ -2715,12 +2720,11 @@ agpl-fallback = [
     { name = "pymupdf4llm" },
 ]
 dev = [
-    { name = "fakeredis" },
+    { name = "fakeredis", extra = ["lua"] },
     { name = "httpx" },
     { name = "hypothesis" },
     { name = "langchain", extra = ["openai"] },
     { name = "langchain-mcp-adapters" },
-    { name = "lupa" },
     { name = "pdf-inspector" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -2738,7 +2742,7 @@ requires-dist = [
     { name = "asyncpg", specifier = ">=0.30.0" },
     { name = "docling", specifier = ">=2.96.0" },
     { name = "docling-hierarchical-pdf", specifier = ">=0.1.8" },
-    { name = "fakeredis", extras = ["aioredis"], marker = "extra == 'dev'" },
+    { name = "fakeredis", extras = ["aioredis", "lua"], marker = "extra == 'dev'" },
     { name = "fastapi", specifier = ">=0.135.3" },
     { name = "fastmcp", specifier = ">=3.2.3" },
     { name = "gunicorn", specifier = ">=25.3.0" },
@@ -2750,7 +2754,6 @@ requires-dist = [
     { name = "langchain-mcp-adapters", marker = "extra == 'dev'" },
     { name = "langfuse", specifier = ">=3.0.0" },
     { name = "litellm", specifier = ">=1.83.0" },
-    { name = "lupa", marker = "extra == 'dev'" },
     { name = "minio", specifier = ">=7.2.20" },
     { name = "openai", specifier = ">=2.31.0" },
     { name = "openpyxl", specifier = ">=3.1.0" },

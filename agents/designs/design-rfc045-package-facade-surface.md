@@ -34,7 +34,7 @@ governs:
 | Guard | `scripts/gates/source_invariants.py` (`facade-frozen`, `facade-removed-bindings-gone`, `unexercised-consumer-contract`, `consumer-references-resolve`); script tested by `tests/test_source_invariants.py` |
 
 **(Amendment 2026-09-24, RFC-049.)** This document was written against a
-`scripts/gates/source_invariants.py` (`facade-frozen`) that no longer exists. The ICR-97
+pytest file, `tests/test_facade_surface_guard.py`, that no longer exists. The ICR-97
 test-budget consolidation folded it — together with
 `tests/test_source_invariants.py` (facade measurement pins) — into the `static` gate, and
 `FROZEN_SURFACE` moved with it: its canonical home is now
@@ -43,7 +43,7 @@ test-budget consolidation folded it — together with
 
 | Named here | Actually lives in |
 |---|---|
-| `scripts/gates/source_invariants.py` (`facade-frozen`) frozen-list assertion | `@check("facade-frozen")` — `scripts/gates/source_invariants.py:2233` |
+| `tests/test_facade_surface_guard.py` frozen-list assertion | `@check("facade-frozen")` — `scripts/gates/source_invariants.py:2233` |
 | Property 2 (`__all__` entry *and* binding both go) | `@check("facade-removed-bindings-gone")` — `:2288` |
 | The 17 external pins | `@check("unexercised-consumer-contract")` — `:2324` |
 | `TestConsumerReferencesResolve` | `@check("consumer-references-resolve")` — `:2402` |
@@ -92,7 +92,7 @@ must retain at least one surviving name.
 - **Startup, not tests, is the failure mode for a wired producer.** `FEATURE_WIRINGS` resolves five producer paths through a facade, via `gates.py` `rsplit(".", 1)` → `importlib.import_module(mod_path)` → `getattr(mod, attr_name, None)` → `AssertionError`. It is called from `server.py:83-86` and `worker/lifecycle.py:60-63`. Deleting one of those import bindings takes the server and the worker down at boot. The overlap with the removal set is empty, and stays checked per wave.
 - **`services/docling-service` is a separate deployable that copies this source.** Its three facade imports (`app.py:87`, `:159`, `:189`) are not exercised by this repo's suite; they break inside its own image at runtime. They are pinned, not merely retained.
 - **The container command is a consumer.** `arq pageindex_mcp.worker.WorkerSettings` in `apps/pageindex-mcp/worker-deployment.yaml:27` reaches the worker facade from outside any Python file.
-- **The frozen list must be updated in the same commit as the removal it describes.** A wave that removes entries without updating `scripts/gates/source_invariants.py` (`facade-frozen`) leaves the suite red; a wave that updates it without the external pin re-check leaves the suite green and production broken.
+- **The frozen list must be updated in the same commit as the removal it describes.** A wave that removes entries without updating `FROZEN_SURFACE` in `scripts/gates/source_invariants.py` (`facade-frozen`) leaves the suite red; a wave that updates it without the external pin re-check leaves the suite green and production broken.
 - **The measurement tests pin the pre-shrink facade.** They self-skip once wave 1 lands. Re-pinning them is a task of the final verification wave, not an incidental fixup along the way.
 
 ## Architecture
@@ -329,7 +329,7 @@ Facade_Channel imports and zero Attr_Channel references across `src/`,
 `<pkg>` yields the empty set.
 
 **Test:** The positive-controlled AST pass of D7, re-run per wave; plus
-`scripts/gates/source_invariants.py` (`facade-frozen`) external pin for the off-suite half.
+`scripts/gates/source_invariants.py` (`unexercised-consumer-contract`) external pin for the off-suite half.
 
 ### Property 2: A removal deletes the entry and the binding
 
@@ -372,7 +372,7 @@ not: Property 4 is enforced by the startup validation above, and Property 3 by
 disappears. Only Property 2's `not hasattr(pkg, name)` half is genuinely
 untested, and its failure mode — a binding surviving without its `__all__`
 entry — is cosmetic rather than breaking. Task 0.4 therefore adds that single
-assertion to `scripts/gates/source_invariants.py` (`facade-frozen`) rather than a parameterized
+assertion to `scripts/gates/source_invariants.py` (`facade-removed-bindings-gone`) rather than a parameterized
 module.
 
 ### Property 5: The external contract resolves
@@ -385,7 +385,7 @@ continue to resolve. Formally: all 44 off-suite `(module, name)` references
 resolve.
 
 **Test:** `TestConsumerReferencesResolve` in
-`scripts/gates/source_invariants.py` (`facade-frozen`), with its `>= 40` floor assertion so the
+`scripts/gates/source_invariants.py` (`consumer-references-resolve`), with its `>= 40` floor assertion so the
 sweep cannot go vacuously green.
 
 ### Property 6: The frozen surface matches after each wave

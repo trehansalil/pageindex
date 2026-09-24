@@ -1,8 +1,8 @@
-# ALLOW-NEW-TEST-FILE: not tests/test_storage.py because quarantine is a
-# reject-path behaviour spanning the gate verdict, the worker error and the
-# erasure cascade, not a storage primitive; test_storage.py owns the MinIO
-# object helpers and extending it would bury a cross-cutting contract inside
-# a single-layer file.
+# ALLOW-NEW-TEST-FILE: not tests/test_storage.py because quarantine spans the
+# gate verdict, the worker error, the erasure cascade AND its storage helpers
+# (TestSaveQuarantine / TestEraseQuarantine / TestClearQuarantine below);
+# test_storage.py owns single-layer MinIO object helpers, and extending it
+# would bury a cross-cutting reject-path contract inside a single-layer file.
 """Red probe tests for RFC-049 D2-C: reject + quarantine unrecovered garbling.
 
 These probes assert the behaviour specified in OCR-01-C3, FLAT-03-C2 and R4.

@@ -16,7 +16,7 @@ from . import cache as _cache
 from .cache import JOB_TTL, job_status_get
 from .client import _SUPPORTED
 from .config import settings
-from .job_status import JobStatus, _job_key, _set_job_status
+from .job_status import JobStatus, _set_job_status
 from .storage import upload_staging
 
 logger = logging.getLogger(__name__)
@@ -194,7 +194,7 @@ def create_upload_app() -> FastAPI:
             except Exception:
                 # Nothing will ever move this job out of PENDING, so drop the
                 # hash rather than leave a job that polls as pending forever.
-                await redis.delete(_job_key(job_id))
+                await _cache.job_status_delete(job_id)
                 raise
 
             results.append({"job_id": job_id, "filename": filename})

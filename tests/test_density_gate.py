@@ -491,10 +491,11 @@ class TestLateSuccessReapRecovery:
         # Emulating the script here keeps both the transition rules and the
         # recorded writes real instead of accepting everything.
         redis._cas_writes = []
+        redis._cas_ttls: dict = {}
         store: dict = {}
 
         async def fake_eval(script, numkeys, key, *argv):
-            new_status, _ttl, n = argv[0], argv[1], int(argv[2])
+            new_status, ttl, n = argv[0], argv[1], int(argv[2])
             allowed = argv[3 : 3 + n]
             flat = argv[3 + n :]
             current = store.get(key, {}).get("status", "")
@@ -504,6 +505,11 @@ class TestLateSuccessReapRecovery:
             for i in range(0, len(flat), 2):
                 mapping[flat[i]] = flat[i + 1]
             redis._cas_writes.append(mapping)
+            # The real _CAS_SCRIPT runs EXPIRE whenever ARGV[2] != '', and every
+            # _set_job_status call from process_document_job passes ttl=JOB_TTL.
+            # Discarding it here would make a worker that stops passing the
+            # expiry invisible to this mock.
+            redis._cas_ttls.setdefault(new_status, []).append(ttl)
             store.setdefault(key, {}).update(mapping)
             return "OK"
 
@@ -599,6 +605,16 @@ class TestLateSuccessReapRecovery:
             for mapping in done:
                 assert "late_success" not in mapping
                 assert "reaped_recovery" not in mapping
+
+            from pageindex_mcp.cache import JOB_TTL
+
+            # The 24h expiry is part of the status contract, not incidental:
+            # a job hash written without it never expires, and one written
+            # with a short one disappears while a poller is still asking.
+            assert mock_redis._cas_ttls.get("done") == [str(JOB_TTL)], (
+                "DONE must be stamped with JOB_TTL; "
+                f"got {mock_redis._cas_ttls.get('done')!r}"
+            )
 
 
 # ===========================================================================

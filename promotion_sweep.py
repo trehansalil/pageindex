@@ -157,7 +157,7 @@ async def run_sweep() -> dict:
                 if not wrote:
                     errors += 1
                     logger.warning(
-                        "Sweep: registry write degraded for %s -> %s (queued for retry)",
+                        "Sweep: registry write degraded for %s -> %s",
                         doc_id,
                         verdict,
                     )

@@ -11,6 +11,7 @@ import io
 import logging
 import os
 import tempfile
+import threading
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from PIL import Image
@@ -29,23 +30,43 @@ MAX_IMAGE_PIXELS = int(os.environ.get("DOCLING_OCR_MAX_IMAGE_PIXELS", 64_000_000
 # Pillow's own decompression-bomb guard, aligned to the same bound.
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 
+# Admission control. `asyncio.to_thread` hands work to the default executor,
+# which is unbounded relative to this container's memory: a burst of requests
+# would hold that many MAX_UPLOAD_BYTES buffers at once AND race _get_converter,
+# building several Docling model graphs in parallel. Either alone can OOM the
+# container. MAX_CONCURRENT_OCR caps in-flight OCR; the lock makes the first
+# initialisation happen exactly once.
+MAX_CONCURRENT_OCR = int(os.environ.get("DOCLING_OCR_MAX_CONCURRENCY", "2"))
+
 app = FastAPI(title="docling-ocr-service")
 
+_ocr_semaphore = asyncio.Semaphore(MAX_CONCURRENT_OCR)
 _converter = None
+_converter_lock = threading.Lock()
 
 
 def _get_converter():
     global _converter
-    if _converter is None:
-        from docling.datamodel.base_models import InputFormat
-        from docling.datamodel.pipeline_options import EasyOcrOptions, PdfPipelineOptions
-        from docling.document_converter import DocumentConverter, PdfFormatOption
+    if _converter is not None:
+        return _converter
+    with _converter_lock:
+        # Re-check inside the lock: several threads can arrive here together
+        # and only the first may build the model graph.
+        if _converter is None:
+            from docling.datamodel.base_models import InputFormat
+            from docling.datamodel.pipeline_options import (
+                EasyOcrOptions,
+                PdfPipelineOptions,
+            )
+            from docling.document_converter import DocumentConverter, PdfFormatOption
 
-        ocr_options = EasyOcrOptions(lang=OCR_LANG.split(","), force_full_page_ocr=True)
-        pipeline_options = PdfPipelineOptions(do_ocr=True, ocr_options=ocr_options)
-        _converter = DocumentConverter(
-            format_options={InputFormat.IMAGE: PdfFormatOption(pipeline_options=pipeline_options)}
-        )
+            ocr_options = EasyOcrOptions(lang=OCR_LANG.split(","), force_full_page_ocr=True)
+            pipeline_options = PdfPipelineOptions(do_ocr=True, ocr_options=ocr_options)
+            _converter = DocumentConverter(
+                format_options={
+                    InputFormat.IMAGE: PdfFormatOption(pipeline_options=pipeline_options)
+                }
+            )
     return _converter
 
 
@@ -110,5 +131,7 @@ async def ocr(file: UploadFile = File(...)):
 
     # Model initialisation and conversion are synchronous and take seconds;
     # running them inline froze /health and every concurrent request.
-    text, confidence = await asyncio.to_thread(_run_ocr, raw)
+    # Bounded, so a burst queues instead of all landing in the executor at once.
+    async with _ocr_semaphore:
+        text, confidence = await asyncio.to_thread(_run_ocr, raw)
     return OcrResponse(text=text, confidence=confidence, lang=OCR_LANG)

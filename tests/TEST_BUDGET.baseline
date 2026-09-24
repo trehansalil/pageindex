@@ -42,8 +42,10 @@
 #                  `uv run pytest --collect-only -q`.
 # 2026-09-24  961  ICR-97 PR #24 review remediation: +20. Re-measured on this
 #                  tree with `uv run pytest --collect-only -q`. The delta is
-#                  NOT new test files (still 27) and NOT new cases from this
-#                  PR's review fixes -- those reused existing cases. It is the
+#                  NOT new cases from this
+#                  PR's review fixes -- those reused existing cases. The file
+#                  count moved 27 -> 28 (tests/test_quarantine.py, RFC-049
+#                  D2-C), which accounts for part of it. The rest is the
 #                  gap between the count recorded when the 941 line was written
 #                  and the count the suite actually collects; the PR body's
 #                  "923" was a third, earlier measurement. 961 is the measured

@@ -36,7 +36,21 @@ def upload_staging(job_id: str, filename: str, data: bytes) -> str:
         # The job is enqueued as soon as this returns, so the worker's
         # download_staging can outrun MinIO's read-after-write visibility
         # window. Same barrier the processed-artifact writes already use.
-        _minio_ops._confirm_write_visible(mc, settings.minio_bucket, key)
+        #
+        # If the barrier exhausts its retries the put itself may still have
+        # landed, and raising here happens *before* the job exists -- so the
+        # object would sit in uploads/staging/ with nothing to ever collect it.
+        # Remove it, but never let the cleanup mask why we are failing.
+        try:
+            _minio_ops._confirm_write_visible(mc, settings.minio_bucket, key)
+        except Exception:
+            try:
+                mc.remove_object(settings.minio_bucket, key)
+            except Exception:
+                logger.warning(
+                    "Failed to clean up unqueued staging object: %s", key, exc_info=True
+                )
+            raise
         logger.debug("Staged upload: %s (%d bytes)", key, len(data))
         return key
     finally:

@@ -775,8 +775,11 @@ The `validate_tree` thresholds must be **calibrated before** the gate is wired a
   records **pypdfium2** (BSD-3/Apache-2) as the rasterizer *because* of HR4, and `pypdfium2>=5.8.0` is
   already a direct runtime dependency. The sidecars therefore diverge from the house rule.
 - **Decision.** Keep PyMuPDF in both sidecars and accept the exposure explicitly, on these terms:
-  (1) both are **internal-only evaluation services** — reachable only on the `docker-compose` network,
-  published behind no public ingress, and not part of the deployed product surface;
+  (1) both are **internal-only evaluation services** — reachable on the `docker-compose` network or on
+  host loopback via the `ocr-spike` profile's published ports (`paddleocr-vl-service` `8204:8204`,
+  `surya-ocr-service` `8207:8207`), behind no public ingress, and not part of the deployed product
+  surface. Stated precisely because term (4) turns on reachability: these are host-published, not
+  network-internal only;
   (2) **neither is built or deployed by any workflow** in `.github/workflows/`;
   (3) the AGPL §13 network-source obligation this incurs is the **same obligation ADR-001 already booked**
   for the main application's `pymupdf` dependency — this is more surface on an outstanding obligation, not
