@@ -281,7 +281,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "8204:8204"
+      # Loopback-only (ADR-006). A bare "8204:8204" publishes on 0.0.0.0,
+      # i.e. the LAN, and this sidecar rasterizes with AGPL-3.0 PyMuPDF.
+      # Every consumer uses http://localhost:8204, so this costs nothing.
+      - "127.0.0.1:8204:8204"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8204/health"]
       interval: 10s
@@ -306,7 +309,11 @@ services:
     volumes:
       - surya_model_cache:/root/.cache/huggingface
     ports:
-      - "8207:8207"
+      # Loopback-only (ADR-006). This service has no `profiles:` gate, so a
+      # bare `docker compose up` starts it; a plain "8207:8207" would then
+      # publish an AGPL-3.0 PyMuPDF rasterizer on 0.0.0.0 with no opt-in.
+      # Every consumer uses http://localhost:8207, so this costs nothing.
+      - "127.0.0.1:8207:8207"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8207/health"]
       interval: 10s

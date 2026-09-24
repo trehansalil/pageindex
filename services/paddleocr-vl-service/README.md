@@ -30,8 +30,12 @@ That divergence is a recorded, accepted decision, **not a legal clearance**:
 see **ADR-006** in `ARCHITECTURE.md`. It holds only while this service stays
 what it is today — an internal-only evaluation sidecar behind no public
 ingress, built and deployed by no workflow in `.github/workflows/`. It is
-gated behind `profiles: ["ocr-spike"]` in `docker-compose.yml`, so it
-publishes `8204:8204` on the host only when that profile is selected.
+gated behind `profiles: ["ocr-spike"]` in `docker-compose.yml`, so it starts
+only when that profile is selected, and it is published as
+`127.0.0.1:8204:8204` — loopback only. The container itself listens on
+`0.0.0.0`, so that mapping is the only thing bounding who can reach it;
+widening it to all interfaces would put an AGPL-3.0 rasterizer on the LAN and
+voids ADR-006.
 
 **If this service is ever promoted to a deployed, externally reachable
 service, ADR-006 is void.** Swap the two call sites above to `pypdfium2`

@@ -52,8 +52,12 @@ def upload_staging(job_id: str, filename: str, data: bytes) -> str:
             # to the storage metrics.
             try:
                 if not delete_staging(key):
+                    # delete_staging has already logged the S3Error with its
+                    # traceback; this line says what the leak means.
                     logger.warning(
-                        "Unqueued staging object left behind after barrier failure: %s", key
+                        "Unqueued staging object left behind after barrier failure "
+                        "(nothing will ever collect it): %s",
+                        key,
                     )
             except Exception:
                 logger.warning(
@@ -89,7 +93,11 @@ def delete_staging(staging_key: str) -> bool:
         logger.debug("Deleted staging object: %s", staging_key)
         return True
     except S3Error:
-        logger.warning("Failed to delete staging object: %s", staging_key)
+        # exc_info, because STAGING_DELETE_FAILURES is an unlabeled counter: the
+        # S3 error code is the only thing that distinguishes a permissions
+        # problem from a missing bucket from a transient 5xx, and without the
+        # traceback it is lost for every caller of this function.
+        logger.warning("Failed to delete staging object: %s", staging_key, exc_info=True)
         STAGING_DELETE_FAILURES.inc()
         return False
     finally:

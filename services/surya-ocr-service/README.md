@@ -30,11 +30,22 @@ ingress, built and deployed by no workflow in `.github/workflows/`.
 **Note the exposure this service actually has.** Unlike the other OCR
 sidecars it carries **no `profiles:` entry** in `docker-compose.yml` — the
 `ocr-spike` gate was removed deliberately for RFC-048
-(`audit/CORPUS_REINGESTION_AUDIT_RUN-21_RFC048.md:31`). A bare
-`docker compose up` therefore starts it and publishes `8207:8207` on the
-host with no opt-in, while the application itself (`profiles: ["app"]`) does
-not start. Do not bind that port to a non-loopback interface, and do not put
-it behind any ingress, without voiding ADR-006 first.
+(`audit/CORPUS_REINGESTION_AUDIT_RUN-21_RFC048.md:31`). So both a bare
+`docker compose up` **and** `docker compose --profile app up` start it, and
+in the first case it starts while the application itself
+(`profiles: ["app"]`) does not.
+
+The container listens on `0.0.0.0` (`Dockerfile:24`, `uvicorn --host`), so
+nothing inside the service limits who can reach it — the **compose port
+mapping is the only bound**. It is published as `127.0.0.1:8207:8207`,
+loopback only. This matters: a plain `"8207:8207"` publishes on every host
+interface, which would put an AGPL-3.0 rasterizer on the LAN with no opt-in.
+Every consumer uses `http://localhost:8207`
+(`src/pageindex_mcp/config.py:351`, `scripts/ocr_spike_eval.py:47`), so the
+loopback binding costs nothing.
+
+**Widening that mapping, or putting this service behind any ingress, voids
+ADR-006** — swap the rasterizer to `pypdfium2` first.
 
 **If this service is ever promoted to a deployed, externally reachable
 service, ADR-006 is void.** Swap the two call sites above to `pypdfium2`
