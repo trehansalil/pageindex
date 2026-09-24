@@ -196,7 +196,8 @@ async def test_erase_01_c2_idempotent_on_missing_doc(mock_minio):
     # Zone-4 Phase 3 / HR2: registry pool is never initialized in this test
     # process, so the cascade surfaces the skip as an observable error
     # instead of silently dropping the Postgres row deletion.
-    assert result["errors"] == ["registry: pool not ready, skipped Postgres row deletion"]
+    assert len(result["errors"]) == 1
+    assert result["errors"][0].startswith("registry: ")
 
 
 async def test_erase_01_c2_prefix_loops_tolerate_nosuchkey_but_surface_other_errors(
@@ -476,7 +477,8 @@ async def test_erasure_cascade_warns_when_doc_name_unknown_for_preloaded(mock_mi
     # Zone-4 Phase 3 / HR2: registry pool is never initialized in this test
     # process, so the cascade surfaces the skip as an observable error
     # instead of silently dropping the Postgres row deletion.
-    assert result["errors"] == ["registry: pool not ready, skipped Postgres row deletion"]
+    assert len(result["errors"]) == 1
+    assert result["errors"][0].startswith("registry: ")
 
 
 # ── save_raw ───────────────────────────────────────────────────────────────

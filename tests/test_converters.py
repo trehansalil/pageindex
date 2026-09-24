@@ -2690,6 +2690,8 @@ def _neutralize_llm_gate(monkeypatch):
     neutralized to stay independent of ambient OPENAI_API_KEY in the runner."""
     monkeypatch.setattr("pageindex_mcp.client.llm.validate_llm_config", lambda: None)
     monkeypatch.setattr("pageindex_mcp.client.llm.configure_litellm", lambda: None)
+    monkeypatch.setattr("pageindex_mcp.client.validate_llm_config", lambda: None)
+    monkeypatch.setattr("pageindex_mcp.client.configure_litellm", lambda: None)
 
 
 def test_cli_missing_input_file_exits_1_with_json_error(tmp_path: Path):
