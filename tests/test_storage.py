@@ -789,13 +789,25 @@ def test_erasure_manifest_required_flags_match_behaviour():
     actual_required = {e.name: e.required for e in _ERASURE_MANIFEST}
     assert actual_required == expected_required
 
-    # Every step exposes a non-empty description and an awaitable executor.
+    # Every step exposes a non-empty description and a callable executor.
     for entry in _ERASURE_MANIFEST:
         assert entry.description.strip(), f"{entry.name} has no description"
         assert callable(entry.execute), f"{entry.name}.execute is not callable"
-        assert inspect.iscoroutinefunction(entry.execute), (
-            f"{entry.name}.execute must be a coroutine function"
-        )
+
+    # The sync/async split is pinned, not incidental. ``delete_doc`` awaits a
+    # coroutine executor directly and pushes a plain one through
+    # ``asyncio.to_thread``, so writing a blocking step as ``async def`` puts
+    # its network round-trips back on the event loop while still looking
+    # asynchronous -- which is what a twelve-store HR2 cascade did before
+    # RFC-049. Only the two steps that genuinely await belong on this list.
+    coroutine_steps = {
+        e.name for e in _ERASURE_MANIFEST if inspect.iscoroutinefunction(e.execute)
+    }
+    assert coroutine_steps == {"verdicts", "registry"}, (
+        "verdicts awaits get_doc_sha256 and registry awaits a bounded "
+        "asyncio.wait_for; every other step drives the synchronous MinIO/Redis "
+        f"clients and must stay a plain def. Got: {sorted(coroutine_steps)}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1473,7 +1485,12 @@ async def test_concurrent_admission_only_one_admits(monkeypatch):
 @patch("pageindex_mcp.worker.job.get_async_redis", new_callable=AsyncMock)
 async def test_worker_redis_fallback_uses_singleton(mock_get_redis):
     """When ctx has no 'redis' key, the fallback calls get_async_redis()."""
-    mock_get_redis.return_value = AsyncMock()
+    redis = AsyncMock()
+    # _set_job_status compare-and-sets through a Lua script; "OK" is the
+    # script's success return, and a bare AsyncMock reads as a refused
+    # transition.
+    redis.eval = AsyncMock(return_value="OK")
+    mock_get_redis.return_value = redis
 
     with (
         patch("pageindex_mcp.worker.job.download_staging"),

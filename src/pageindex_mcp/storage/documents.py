@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import logging
 import time
@@ -217,7 +219,14 @@ async def delete_doc(doc_id: str) -> dict:
                     f"_ERASURE_MANIFEST entry is {type(entry).__name__}, expected ErasureStep"
                 )
             try:
-                reached = await entry.execute(ctx)
+                # Sync steps go to a worker thread so an HR2 cascade -- twelve
+                # stores, each a blocking network round-trip -- does not pin
+                # the event loop. Awaiting the to_thread call keeps the
+                # manifest strictly sequential, which HR2 ordering requires.
+                if inspect.iscoroutinefunction(entry.execute):
+                    reached = await entry.execute(ctx)
+                else:
+                    reached = await asyncio.to_thread(entry.execute, ctx)
             except Exception as e:
                 # Known failure modes are recorded by the step itself; this
                 # only catches the unexpected ones, which must still be
@@ -304,7 +313,16 @@ class ErasureContext:
 # modes are appended to ``ctx.errors`` by the step itself so the exact,
 # store-specific message is preserved; the driver only catches the
 # unexpected ones.
-ErasureExecutor = Callable[["ErasureContext"], Awaitable[bool]]
+#
+# A step is written ``async def`` ONLY when it genuinely awaits (``verdicts``
+# awaits get_doc_sha256; ``registry`` awaits a bounded asyncio.wait_for).  The
+# other ten drive the *synchronous* MinIO and Redis clients, and wrapping those
+# in ``async def`` did not make them non-blocking -- it made a full HR2 cascade
+# stall the event loop for its whole duration while looking asynchronous.  They
+# are plain ``def`` now and ``delete_doc`` runs them via ``asyncio.to_thread``.
+# Manifest order is unchanged and still strictly sequential: exactly one step
+# touches ``ctx`` at a time, so no step needs to be thread-safe against another.
+ErasureExecutor = Callable[["ErasureContext"], Awaitable[bool] | bool]
 
 
 @dataclass(frozen=True)
@@ -313,10 +331,14 @@ class ErasureStep:
 
     *name* is a short, stable identifier (used in error messages and
     observability); *step* is the 1-based ordering from the CLAUDE.md
-    HR2 spec; *description* is a human-readable summary; *execute* is the
-    coroutine that purges the store; *required* marks stores that every
-    document is expected to have (an unreached required store is a
-    compliance gap worth a WARNING, an unreached optional store is not).
+    HR2 spec; *description* is a human-readable summary; *execute* purges
+    the store and is EITHER a coroutine function (when the step genuinely
+    awaits) or a plain blocking function (when it drives the synchronous
+    MinIO/Redis clients) -- ``delete_doc`` dispatches on which, so a step
+    author picks whichever matches the client it uses; *required* marks
+    stores that every document is expected to have (an unreached required
+    store is a compliance gap worth a WARNING, an unreached optional store
+    is not).
 
     RFC-043 D4 -- ordering-dependency annotations, two layers:
     *produces*/*consumes* track ``ctx.*`` fields (e.g. ``ctx.doc_name``
@@ -357,7 +379,7 @@ def _remove_object_idempotent(
         return True  # NoSuchKey is idempotent success
 
 
-async def _erase_uploads(ctx: ErasureContext) -> bool:
+def _erase_uploads(ctx: ErasureContext) -> bool:
     """Step 1: uploads/<doc_id>/*  (also recovers doc_name for steps 5 and 7)."""
     removed = 0
     try:
@@ -394,7 +416,7 @@ async def _erase_uploads(ctx: ErasureContext) -> bool:
         return False
 
 
-async def _erase_processed_json(ctx: ErasureContext) -> bool:
+def _erase_processed_json(ctx: ErasureContext) -> bool:
     """Step 2: processed/<doc_id>.json (tree artifact)."""
     return _remove_object_idempotent(
         ctx,
@@ -404,7 +426,7 @@ async def _erase_processed_json(ctx: ErasureContext) -> bool:
     )
 
 
-async def _erase_processed_flat_json(ctx: ErasureContext) -> bool:
+def _erase_processed_flat_json(ctx: ErasureContext) -> bool:
     """Step 2b: processed/<doc_id>.flat.json (FLAT-02-C2 derived store)."""
     return _remove_object_idempotent(
         ctx,
@@ -414,7 +436,7 @@ async def _erase_processed_flat_json(ctx: ErasureContext) -> bool:
     )
 
 
-async def _erase_figures(ctx: ErasureContext) -> bool:
+def _erase_figures(ctx: ErasureContext) -> bool:
     """Step 2c: figures/<doc_id>/* image crops."""
     try:
         fig_removed = 0
@@ -483,7 +505,7 @@ async def _erase_verdicts(ctx: ErasureContext) -> bool:
     )
 
 
-async def _erase_meta_json(ctx: ErasureContext) -> bool:
+def _erase_meta_json(ctx: ErasureContext) -> bool:
     """Step 3: processed/<doc_id>.meta.json sidecar."""
     return _remove_object_idempotent(
         ctx,
@@ -493,7 +515,7 @@ async def _erase_meta_json(ctx: ErasureContext) -> bool:
     )
 
 
-async def _erase_redis_cache(ctx: ErasureContext) -> bool:
+def _erase_redis_cache(ctx: ErasureContext) -> bool:
     """Step 4: Redis pageindex:doc:<doc_id> cache entry."""
     try:
         from ..cache import doc_cache_delete  # lazy: no top-level storage->cache edge
@@ -506,7 +528,7 @@ async def _erase_redis_cache(ctx: ErasureContext) -> bool:
         return False
 
 
-async def _erase_reconcile_etag(ctx: ErasureContext) -> bool:
+def _erase_reconcile_etag(ctx: ErasureContext) -> bool:
     """Step 4b: reconcile-etag map entry (C-3 derived store)."""
     try:
         from .reconcile_etag import reconcile_etag_delete  # lazy: cross-submodule dep
@@ -519,7 +541,7 @@ async def _erase_reconcile_etag(ctx: ErasureContext) -> bool:
         return False
 
 
-async def _erase_hash_cache(ctx: ErasureContext) -> bool:
+def _erase_hash_cache(ctx: ErasureContext) -> bool:
     """Step 5: hash-cache entry (filename -> sha256), Redis + legacy blob."""
     if not ctx.doc_name:
         logger.warning(
@@ -550,8 +572,6 @@ async def _erase_registry(ctx: ErasureContext) -> bool:
         ctx.errors.append("registry: skipped (registry_enabled=False or postgres_dsn missing)")
         return False
 
-    import asyncio
-
     from ..registry import delete_doc as _registry_delete_doc
     from ..registry import get_pool
 
@@ -574,7 +594,7 @@ async def _erase_registry(ctx: ErasureContext) -> bool:
         return False
 
 
-async def _erase_preloaded(ctx: ErasureContext) -> bool:
+def _erase_preloaded(ctx: ErasureContext) -> bool:
     """Step 7: preloaded/<doc_name> raw object (RFC-011 D2 / ISS-41)."""
     if not ctx.doc_name:
         logger.warning(
@@ -589,7 +609,7 @@ async def _erase_preloaded(ctx: ErasureContext) -> bool:
     )
 
 
-async def _erase_quarantine(ctx: ErasureContext) -> bool:
+def _erase_quarantine(ctx: ErasureContext) -> bool:
     """Erase quarantine/<sha256>.json and quarantine/<sha256>.meta.json."""
     if not ctx.sha256:
         logger.debug("ERASE %s quarantine: sha256 unavailable, skipping", ctx.doc_id)
