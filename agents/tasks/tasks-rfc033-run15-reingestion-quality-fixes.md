@@ -179,11 +179,11 @@ RFC-033 lands nine code-level fixes surfaced by the Run-15 corpus re-ingestion a
   - Confirm no regression against Batch 2's Arabic fragment/bidi detectors on shared synthetic fixtures (D8 depends on D2's groundwork per the RFC's stated batch ordering).
   - Ask the user if questions arise before proceeding.
 
-- [ ] <a id="9-batch-4--d2-part-b-bidi-enforcement-promotion"></a>9. Batch 4 — D2 Part B: `BIDI_COHERENCE_ENFORCE` Promotion ([RFC-033 D2](../rfcs/033-run15-run15-reingestion-quality-fixes.md#d2-arabic-single-letter-fragment-detection-and-bidi-coherence-enforcement) Part B)
+- [x] <a id="9-batch-4--d2-part-b-bidi-enforcement-promotion"></a>9. Batch 4 — D2 Part B: `BIDI_COHERENCE_ENFORCE` Promotion ([RFC-033 D2](../rfcs/033-run15-run15-reingestion-quality-fixes.md#d2-arabic-single-letter-fragment-detection-and-bidi-coherence-enforcement) Part B)
 
   > ⚠️ **THE BATCH SEPARATION IS LOAD-BEARING — DO NOT MERGE THIS INTO BATCH 2.** D2 was folded into a single decision with two parts (reconciliation H-1), but Parts A and B **must not land together**. If an implementer reads "D2" as one unit and ships it in Batch 2, `BIDI_COHERENCE_ENFORCE` goes live against titles **our own pipeline corrupted** ([Task 1.11](#111-heading-reversal-guard-d2-part-a)) — mass-capping documents at MARGINAL for damage we inflicted. D2's own blast-radius document (حقوق الإنسان) is the first casualty. This batch is blocked until Part A has landed and the scoped re-ingest below has run.
 
-  - [ ] <a id="91-scoped-reingest-and-remeasure"></a>9.1 **[GATE]* Scoped re-ingest and re-measurement of `bidi_coherence_violations`
+  - [x] <a id="91-scoped-reingest-and-remeasure"></a>9.1 **[GATE]* Scoped re-ingest and re-measurement of `bidi_coherence_violations`
 
     - **Blocked on [Task 1.11](#111-heading-reversal-guard-d2-part-a) landing and its property tests ([1.12](#112-property-heading-guard-idempotence)) passing.**
     - Re-ingest the Arabic documents exhibiting reversed-heading signatures (**scoped re-ingest**, per the 2026-08-06 H-1(b) decision — not the full Arabic corpus). Hand off to the `corpus-ingest-score` / `corpus-cycle` skills; this file does not perform ingestion.
@@ -202,13 +202,13 @@ RFC-033 lands nine code-level fixes surfaced by the Run-15 corpus re-ingestion a
     - Construct a tree with bidi-reversed node titles (e.g. modeled on تايوتحملا / ةصالخلا); verify `bidi_degraded` is set and the verdict is capped at MARGINAL, but `validate_tree` does NOT raise `LowQualityTreeError` (the tree is still persisted).
     - **Validates: [RFC-033 D2](../rfcs/033-run15-run15-reingestion-quality-fixes.md#d2-arabic-single-letter-fragment-detection-and-bidi-coherence-enforcement) (Part B)**
 
-- [ ] <a id="10-checkpoint--batch-4"></a>10. Checkpoint — Batch 4
+- [x] <a id="10-checkpoint--batch-4"></a>10. Checkpoint — Batch 4
 
   - Run `uv run pytest` and verify [Task 9.3](#93-property-bidi-degraded-caps-verdict-not-persistence) passes.
   - Confirm the promotion justification cites the [Task 9.1](#91-scoped-reingest-and-remeasure) measurement **with its sampling frame stated**, not as a corpus-wide FP rate.
   - Ask the user if questions arise before proceeding.
 
-- [ ] <a id="11-final-checkpoint"></a>11. Final Checkpoint
+- [x] <a id="11-final-checkpoint"></a>11. Final Checkpoint
 
   - Run `uv run pytest` (full suite) and verify zero failures.
   - Verify no code path outside `wipe_processed()` performs a raw `processed/*` MinIO delete (Task [1.2](#12-wire-wipe_processed-into-skills-and-workflows)).
