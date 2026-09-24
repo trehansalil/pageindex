@@ -20,8 +20,15 @@ from minio import Minio
 
 WINDOW_START = "2026-07-30"
 WINDOW_END = "2026-08-04"
-UNREPAIRED_RE = re.compile(r"\|-{3,}\| ")
-REPAIRED_RE = re.compile(r"\| --- \|")
+# Both patterns are lookaheads so adjacent columns in one separator row are
+# counted individually rather than consuming each other's shared pipe.
+#
+# The unrepaired form carries no spaces at all. Requiring a trailing space
+# after the closing pipe (the previous `\|-{3,}\| `) only ever matched a
+# separator that ended a row, so the repository's standard `|---|---|---|`
+# scored zero unrepaired rows and the baseline read as clean.
+UNREPAIRED_RE = re.compile(r"(?=\|-{3,}\|)")
+REPAIRED_RE = re.compile(r"(?=\| --- \|)")
 
 OUT_PATH = "audit/TABLE_SEPARATOR_BASELINE_2026-08-08.md"
 

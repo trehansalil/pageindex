@@ -33,6 +33,10 @@ def upload_staging(job_id: str, filename: str, data: bytes) -> str:
             len(data),
             content_type="application/octet-stream",
         )
+        # The job is enqueued as soon as this returns, so the worker's
+        # download_staging can outrun MinIO's read-after-write visibility
+        # window. Same barrier the processed-artifact writes already use.
+        _minio_ops._confirm_write_visible(mc, settings.minio_bucket, key)
         logger.debug("Staged upload: %s (%d bytes)", key, len(data))
         return key
     finally:

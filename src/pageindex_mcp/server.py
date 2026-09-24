@@ -3,8 +3,11 @@
 import asyncio
 import contextlib
 import logging
+import secrets
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
+from fastmcp.server.dependencies import get_http_headers
 from starlette.routing import Route
 
 from . import queue_metrics
@@ -34,7 +37,24 @@ mcp.tool()(_tools.get_page_content)
 # Zone-5 / HR2: delete_document — exposes storage.delete_doc so the right-to-
 # erasure cascade is reachable in production (CLAUDE.md Hard Rule 2).
 # Gated behind the same UPLOAD_API_KEY as the upload endpoints.
+#
+# The bearer middleware in auth.py authenticates the MCP transport, not this
+# tool: a bearer holder (or any caller when MCP_ALLOW_UNAUTHENTICATED=true)
+# would otherwise reach a destructive, irreversible cascade. The check below
+# is enforced at the tool boundary and fails closed when no HTTP request is in
+# scope (e.g. stdio transport), where an X-API-Key cannot be presented at all.
 # ---------------------------------------------------------------------------
+
+
+def _require_upload_api_key() -> None:
+    configured = settings.upload_api_key
+    if not configured:
+        raise ToolError("Upload API key not configured; delete_document is unavailable")
+
+    headers = get_http_headers()
+    provided = headers.get("x-api-key", "")
+    if not provided or not secrets.compare_digest(provided, configured):
+        raise ToolError("Invalid or missing X-API-Key")
 
 
 @mcp.tool()
@@ -48,8 +68,12 @@ async def delete_document(doc_id: str) -> dict:
     Returns ``{"errors": [...]}`` — every individual store failure is reported,
     never raised (partial-failure visibility).
 
-    **Authentication**: requires a valid UPLOAD_API_KEY (same as /upload/files).
+    **Authentication**: requires a valid ``X-API-Key`` header carrying
+    UPLOAD_API_KEY (same credential as /upload/files). Enforced here at the
+    tool boundary, independently of MCP bearer auth.
     """
+    _require_upload_api_key()
+
     from .storage import delete_doc
 
     return await delete_doc(doc_id)

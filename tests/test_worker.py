@@ -34,10 +34,12 @@ from pageindex_mcp.worker import (
     _mirror_registry_write_failure_to_redis,
     _run_converter_subprocess,
     _upsert_registry_row,
-    process_document_job,
     reap_stale_jobs,
     shutdown,
     startup,
+)
+from pageindex_mcp.worker import (
+    process_document_job as _process_document_job,
 )
 from pageindex_mcp.worker.constants import (
     CHILD_TIMEOUT,
@@ -49,6 +51,18 @@ from pageindex_mcp.worker.constants import (
 )
 
 # --- from test_worker.py ---
+
+
+async def process_document_job(ctx, staging_key, job_id):
+    """Run the worker job the way production reaches it.
+
+    ``upload_app`` opens every job at PENDING before enqueueing, and the
+    worker's first write is PROCESSING, which the state machine accepts only
+    from PENDING (or ERROR, on a retry). Seeding that here keeps the
+    precondition in one place instead of at every call site below.
+    """
+    await ctx["redis"].hsetnx(f"pageindex:job:{job_id}", "status", "pending")
+    return await _process_document_job(ctx, staging_key, job_id)
 
 
 def _preclassify_on():
@@ -65,7 +79,12 @@ def _preclassify_on():
 
 @pytest.fixture
 def mock_redis():
-    return AsyncMock()
+    redis = AsyncMock()
+    # _set_job_status compare-and-sets through a Lua script; "OK" is the
+    # script's success return. A bare AsyncMock returns a mock object, which
+    # the caller correctly reads as a refused transition.
+    redis.eval = AsyncMock(return_value="OK")
+    return redis
 
 
 def _settings(**overrides):

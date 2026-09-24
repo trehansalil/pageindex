@@ -2,15 +2,46 @@
 
 from __future__ import annotations
 
+import re
+
+# A cell boundary is a pipe that is not itself escaped. XLSX conversion emits
+# ``\|`` for a literal pipe inside a cell, so splitting on every ``|`` shifted
+# every column after a value like ``B|C`` and corrupted both ``rows`` and
+# ``row_records``. A pipe preceded by an even number of backslashes is a real
+# delimiter; an odd number means the pipe is escaped.
+_UNESCAPED_PIPE = re.compile(r"(?<!\\)((?:\\\\)*)\|")
+
 
 def _flat_split_pipe_row(line: str) -> list[str]:
-    """Split a markdown table row into trimmed cells (outer pipes stripped)."""
+    """Split a markdown table row into trimmed cells (outer pipes stripped).
+
+    Only unescaped pipes delimit cells; ``\\|`` is unescaped back to a literal
+    ``|`` inside the cell value.
+    """
     s = line.strip()
     if s.startswith("|"):
         s = s[1:]
-    if s.endswith("|"):
+    # An escaped trailing pipe is cell content, not the closing delimiter.
+    if s.endswith("|") and not _is_escaped_at(s, len(s) - 1):
         s = s[:-1]
-    return [c.strip() for c in s.split("|")]
+    parts = _UNESCAPED_PIPE.split(s)
+    # re.split with one capturing group interleaves the captured backslash runs;
+    # stitch them back onto the preceding fragment.
+    cells: list[str] = [parts[0]]
+    for i in range(1, len(parts), 2):
+        cells[-1] += parts[i]
+        cells.append(parts[i + 1] if i + 1 < len(parts) else "")
+    return [c.strip().replace("\\|", "|") for c in cells]
+
+
+def _is_escaped_at(s: str, index: int) -> bool:
+    """True when ``s[index]`` is preceded by an odd number of backslashes."""
+    backslashes = 0
+    i = index - 1
+    while i >= 0 and s[i] == "\\":
+        backslashes += 1
+        i -= 1
+    return backslashes % 2 == 1
 
 
 def _flat_is_pipe_row(line: str) -> bool:

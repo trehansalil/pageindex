@@ -37,7 +37,10 @@ SPACE = "CITRA"
 TITLE_RE = re.compile(r"<!--\s*Title:\s*(.+?)\s*-->", re.IGNORECASE)
 SPACE_RE = re.compile(r"<!--\s*Space:", re.IGNORECASE)
 MD_LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]+)\)")
-WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
+# Inside a markdown table the alias separator is escaped as ``\|`` so it is
+# not read as a cell boundary; without the optional backslash those wiki
+# links never matched and stayed raw Obsidian syntax in Confluence.
+WIKILINK_RE = re.compile(r"\[\[([^\]|]+?)(?:\\?\|([^\]]+))?\]\]")
 
 
 def _detect_github_url() -> str:

@@ -49,6 +49,7 @@ from .minio_ops import (
 from .reconcile_etag import (
     RECONCILE_ETAG_KEY,
     reconcile_etag_delete,
+    reconcile_etag_generation,
     reconcile_etag_get_all,
     reconcile_etag_prune,
     reconcile_etag_set_many,
@@ -94,6 +95,7 @@ __all__ = [
     "presigned_get_url",
     "read_registry_fields",
     "reconcile_etag_delete",
+    "reconcile_etag_generation",
     "reconcile_etag_get_all",
     "reconcile_etag_prune",
     "reconcile_etag_set_many",

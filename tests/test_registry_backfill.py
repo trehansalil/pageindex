@@ -254,7 +254,8 @@ def reconcile_env(monkeypatch):
     monkeypatch.setattr("pageindex_mcp.cache.get_async_redis", AsyncMock(return_value=redis_mock))
     # Neutralize the etag map + stale-delete side-effects unless a test overrides.
     # These are looked up via _pkg() in reconcile.py, so patching the package works.
-    monkeypatch.setattr(rb, "reconcile_etag_set_many", MagicMock())
+    monkeypatch.setattr(rb, "reconcile_etag_set_many", MagicMock(return_value=True))
+    monkeypatch.setattr(rb, "reconcile_etag_generation", MagicMock(return_value="0"))
     monkeypatch.setattr(rb, "reconcile_etag_prune", MagicMock())
     monkeypatch.setattr(rb, "_delete_stale_rows", AsyncMock())
     return redis_mock
@@ -333,7 +334,7 @@ async def test_reconcile_stores_etag_only_after_successful_upsert(reconcile_env,
 
     await rb.reconcile_registry_drift()
 
-    rb.reconcile_etag_set_many.assert_called_once_with({"d5": "e5"})
+    rb.reconcile_etag_set_many.assert_called_once_with({"d5": "e5"}, "0")
 
 
 @pytest.mark.asyncio

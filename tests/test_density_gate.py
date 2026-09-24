@@ -486,10 +486,36 @@ class TestLateSuccessReapRecovery:
     def mock_redis(self):
         redis = AsyncMock()
         redis.expire = AsyncMock()
+        # Status writes go through job_status._CAS_SCRIPT, so the mappings
+        # these tests assert on arrive as eval() args, not hset(mapping=...).
+        # Emulating the script here keeps both the transition rules and the
+        # recorded writes real instead of accepting everything.
+        redis._cas_writes = []
+        store: dict = {}
+
+        async def fake_eval(script, numkeys, key, *argv):
+            new_status, _ttl, n = argv[0], argv[1], int(argv[2])
+            allowed = argv[3 : 3 + n]
+            flat = argv[3 + n :]
+            current = store.get(key, {}).get("status", "")
+            if current not in allowed:
+                return current
+            mapping = {"status": new_status}
+            for i in range(0, len(flat), 2):
+                mapping[flat[i]] = flat[i + 1]
+            redis._cas_writes.append(mapping)
+            store.setdefault(key, {}).update(mapping)
+            return "OK"
+
+        redis.eval = AsyncMock(side_effect=fake_eval)
+        redis._cas_store = store
         return redis
 
     @pytest.fixture
     def ctx(self, mock_redis):
+        # upload_app opens the job at PENDING before enqueueing; the worker's
+        # first write is PROCESSING, which is reachable only from PENDING.
+        mock_redis._cas_store["pageindex:job:job-2"] = {"status": "pending"}
         return {"redis": mock_redis, "job_try": 1}
 
     def _patches(self, converter_result, job_dir):
@@ -565,12 +591,14 @@ class TestLateSuccessReapRecovery:
             assert doc_id == "doc-456"
             mock_upsert.assert_called_once()
 
-            for call in mock_redis.hset.call_args_list:
-                mapping = call.kwargs.get("mapping", {})
-                if mapping.get("status") == "done":
-                    assert "late_success" not in mapping
-                    assert "reaped_recovery" not in mapping
-                    break
+            done = [m for m in mock_redis._cas_writes if m.get("status") == "done"]
+            assert done, (
+                "worker never wrote a DONE status; "
+                f"writes were {[m.get('status') for m in mock_redis._cas_writes]}"
+            )
+            for mapping in done:
+                assert "late_success" not in mapping
+                assert "reaped_recovery" not in mapping
 
 
 # ===========================================================================

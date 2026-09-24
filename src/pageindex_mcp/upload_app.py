@@ -12,10 +12,11 @@ from arq import create_pool
 from arq.connections import RedisSettings
 from fastapi import Depends, FastAPI, Header, HTTPException, UploadFile
 
-from .cache import job_status_get, job_status_set
+from . import cache as _cache
+from .cache import JOB_TTL, job_status_get
 from .client import _SUPPORTED
 from .config import settings
-from .job_status import JobStatus
+from .job_status import JobStatus, _job_key, _set_job_status
 from .storage import upload_staging
 
 logger = logging.getLogger(__name__)
@@ -165,21 +166,36 @@ def create_upload_app() -> FastAPI:
             )
             logger.debug("Staged upload in MinIO: %s", staging_key)
 
-            await arq_pool.enqueue_job(
-                "process_document_job",
-                staging_key,
+            # Zone-verdict-persistence: open the job at PENDING through the
+            # validated state machine *before* enqueueing. Writing it after
+            # the enqueue let a fast worker reach PROCESSING first, and this
+            # write then regressed the hash to PENDING — after which the
+            # worker's own PROCESSING->DONE transition was refused and a
+            # successful job reported PENDING until its TTL expired.
+            now = datetime.now(UTC).isoformat()
+            # Module-qualified so a test patching cache.get_async_redis is
+            # honoured; a from-import would bind the real one at import time.
+            redis = await _cache.get_async_redis()
+            await _set_job_status(
+                redis,
                 job_id,
+                JobStatus.PENDING,
+                ttl=JOB_TTL,
+                filename=filename,
+                submitted_at=now,
             )
 
-            now = datetime.now(UTC).isoformat()
-            # Zone-verdict-persistence: use validated state machine for the
-            # initial PENDING write. job_status_set still writes to the
-            # high-level cache; _set_job_status writes the Redis hash that
-            # the worker's state machine tracks.
-            await job_status_set(
-                job_id,
-                {"status": JobStatus.PENDING.value, "filename": filename, "submitted_at": now},
-            )
+            try:
+                await arq_pool.enqueue_job(
+                    "process_document_job",
+                    staging_key,
+                    job_id,
+                )
+            except Exception:
+                # Nothing will ever move this job out of PENDING, so drop the
+                # hash rather than leave a job that polls as pending forever.
+                await redis.delete(_job_key(job_id))
+                raise
 
             results.append({"job_id": job_id, "filename": filename})
             logger.info("Enqueued job %s for file %s", job_id, filename)

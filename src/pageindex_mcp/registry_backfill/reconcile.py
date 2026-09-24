@@ -180,6 +180,10 @@ async def reconcile_registry_drift() -> None:
         await _record_reconcile_heartbeat(redis_client)
         return
 
+    # Read the generation before the map: an erasure landing between the two
+    # reads then bumps the generation past this value and the write-back below
+    # is refused, rather than re-creating the erased doc's etag.
+    etag_generation = await asyncio.to_thread(pkg.reconcile_etag_generation)
     stored = await asyncio.to_thread(pkg.reconcile_etag_get_all)
     # Built from the LISTING (not just the delta) so it stays the complete
     # live doc set for deletion detection even though we GET only changed
@@ -205,7 +209,15 @@ async def reconcile_registry_drift() -> None:
         # keeps its old/missing etag so it is retried on the next tick.
         to_store = {did: etag for (k, etag, did) in changed if k not in failed_set}
         if to_store:
-            await asyncio.to_thread(pkg.reconcile_etag_set_many, to_store)
+            stored_ok = await asyncio.to_thread(
+                pkg.reconcile_etag_set_many, to_store, etag_generation
+            )
+            if not stored_ok:
+                logger.info(
+                    "reconcile_registry_drift: etag write-back skipped for %d doc(s) "
+                    "-- an erasure landed during this pass; next tick will re-derive",
+                    len(to_store),
+                )
 
     # heal no-sidecar orphans (processed/<id>.json|.flat.json with no
     # .meta.json) — one full-JSON GET each, then a fat sidecar is written so

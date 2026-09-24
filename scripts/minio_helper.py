@@ -30,13 +30,18 @@ def client():
 
 
 def get_object_with_retry(c, bucket, *keys):
-    """Fetch the first available key, retrying transient read failures.
+    """Fetch the first available key's *bytes*, retrying transient read failures.
 
     Each attempt tries every key in order before backing off, so a document
     that only has the flat artifact does not pay the full backoff budget on
     the primary key before the fallback is considered. Non-transient S3
     errors propagate immediately; exhausted retries re-raise the last error
     after logging the attempt count (never silently swallowed).
+
+    The body is consumed here rather than handed back as an open response:
+    a truncated read raised outside the caller's try block, skipping the
+    flat-file fallback entirely and surfacing as an uncaught error. Reading
+    inside the loop also releases the connection on every path.
     """
     attempts = (0, *RETRY_DELAYS)
     last_error = None
@@ -45,13 +50,22 @@ def get_object_with_retry(c, bucket, *keys):
             time.sleep(delay)
         for key in keys:
             try:
-                return c.get_object(bucket, key)
+                response = c.get_object(bucket, key)
             except S3Error as e:
                 if e.code != "NoSuchKey":
                     raise
                 last_error = e
+                continue
             except (HTTPError, OSError) as e:
                 last_error = e
+                continue
+            try:
+                return response.read()
+            except (HTTPError, OSError) as e:
+                last_error = e
+            finally:
+                response.close()
+                response.release_conn()
     print(
         f"MinIO read failed for {bucket}/{keys} after {len(attempts)} attempts: {last_error}",
         file=sys.stderr,
@@ -70,7 +84,7 @@ def cmd_list():
 def cmd_meta(doc_id):
     c = client()
     data = get_object_with_retry(c, "pageindex", f"processed/{doc_id}.meta.json")
-    print(data.read().decode())
+    print(data.decode())
 
 
 def cmd_tree(doc_id, max_lines=500):
@@ -85,7 +99,7 @@ def cmd_tree(doc_id, max_lines=500):
     except Exception as e:
         print(f"No tree or flat file found for {doc_id}: {e}", file=sys.stderr)
         return
-    lines = data.read().decode().split("\n")[:max_lines]
+    lines = data.decode().split("\n")[:max_lines]
     print("\n".join(lines))
 
 

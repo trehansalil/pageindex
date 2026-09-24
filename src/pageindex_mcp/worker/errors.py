@@ -28,7 +28,12 @@ _CHILD_ERROR_REGISTRY: dict[str, ChildErrorClassification] = {
     # Deterministic: same input always produces same failure → no retry
     "LowQualityTreeError": ChildErrorClassification("low_quality_tree", terminal=True),
     "TessdataUnavailableError": ChildErrorClassification("converter_env_missing", terminal=True),
-    "FuturesTimeoutError": ChildErrorClassification("converter_timeout", terminal=True),
+    # docling_conv.py raises via the ``FuturesTimeoutError`` import alias, but
+    # concurrent.futures.TimeoutError *is* the builtin TimeoutError, so the
+    # child reports ``type(exc).__name__ == "TimeoutError"``. Keyed on the
+    # alias this entry never matched, and Docling chunk timeouts fell through
+    # to the transient default and were retried instead of ending terminally.
+    "TimeoutError": ChildErrorClassification("converter_timeout", terminal=True),
     # Transient: may recover on retry (MinIO glitch, transient env issue, etc.)
     "FileNotFoundError": ChildErrorClassification("input_missing", terminal=False),
     "RuntimeError": ChildErrorClassification("converter_child_failed", terminal=False),

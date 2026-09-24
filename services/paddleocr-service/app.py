@@ -33,7 +33,35 @@ logger = logging.getLogger(__name__)
 
 # --- Configuration via env vars ------------------------------------------------
 
-PADDLEOCR_USE_GPU = os.environ.get("PADDLEOCR_USE_GPU", "false").lower() == "true"
+_PADDLEOCR_USE_GPU_REQUESTED = os.environ.get("PADDLEOCR_USE_GPU", "false").lower() == "true"
+
+
+def _gpu_available() -> bool:
+    """True only when this image's paddlepaddle build can actually reach a GPU.
+
+    The Dockerfile installs the CPU-only ``paddlepaddle`` wheel, so a Compose
+    override of PADDLEOCR_USE_GPU=true otherwise asked every engine for a
+    device that does not exist and failed at initialisation. The override is
+    refused rather than honoured into a crash.
+    """
+    if not _PADDLEOCR_USE_GPU_REQUESTED:
+        return False
+    try:
+        import paddle
+
+        if paddle.device.is_compiled_with_cuda() and paddle.device.cuda.device_count() > 0:
+            return True
+    except Exception:
+        logger.warning("PADDLEOCR_USE_GPU=true but paddle GPU probe failed", exc_info=True)
+        return False
+    logger.warning(
+        "PADDLEOCR_USE_GPU=true ignored: this image ships the CPU-only "
+        "paddlepaddle build, or no CUDA device is visible. Running on CPU."
+    )
+    return False
+
+
+PADDLEOCR_USE_GPU = _gpu_available()
 PADDLEOCR_VERSION = os.environ.get("PADDLEOCR_VERSION", "PP-OCRv6")
 PADDLEOCR_ARABIC_VERSION = os.environ.get("PADDLEOCR_ARABIC_VERSION", "PP-OCRv5")
 PADDLEOCR_DET_THRESH = float(os.environ.get("PADDLEOCR_DET_THRESH", "0.3"))

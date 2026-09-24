@@ -49,6 +49,9 @@ configure_obs()
 
 from ..config import settings as settings  # noqa: E402
 from ..storage import (  # noqa: E402
+    reconcile_etag_generation as reconcile_etag_generation,
+)
+from ..storage import (  # noqa: E402
     reconcile_etag_get_all as reconcile_etag_get_all,
 )
 from ..storage import (  # noqa: E402

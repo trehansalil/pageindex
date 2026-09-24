@@ -62,7 +62,13 @@ def phase(
     # R12.9: the guard comes before the dict is built, not inside _emit --
     # otherwise safe_attrs() walks every value on a disabled logger. decision()
     # already gets this ordering right.
-    safe = safe_attrs(attrs) if log.isEnabledFor(logging.INFO) else {}
+    # safe_attrs() itself walks caller-supplied values, so a hostile __repr__
+    # or __eq__ can raise here -- before _emit()'s own guard is reached, which
+    # would break the phase body and contradict the never-raise contract.
+    try:
+        safe = safe_attrs(attrs) if log.isEnabledFor(logging.INFO) else {}
+    except Exception:
+        safe = {}
     start = time.monotonic()
     with bind_log_context(phase=ph.value, phase_seq=seq):
         _emit(log, KIND_PHASE_ENTRY, ph, safe, dur_ms=None)
