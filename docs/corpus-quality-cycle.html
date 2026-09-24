@@ -583,29 +583,29 @@
   <div style="background: linear-gradient(135deg, var(--teal-bg), var(--accent-bg)); border: 1px solid var(--border); border-radius: 8px; padding: 1.2rem 1.5rem; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap;">
     <div style="flex: 0 0 auto;">
       <div style="font-family: var(--font-label); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 0.3rem;">Latest Run</div>
-      <div style="font-family: var(--font-mono); font-size: 1.8rem; font-weight: 700; color: var(--accent);">Run 19</div>
+      <div style="font-family: var(--font-mono); font-size: 1.8rem; font-weight: 700; color: var(--accent);">Run 22</div>
     </div>
     <div style="flex: 1; display: flex; gap: 1rem; flex-wrap: wrap; align-items: center;">
       <div style="text-align: center; min-width: 60px;">
-        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--teal);">9</div>
+        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--teal);">18</div>
         <div style="font-family: var(--font-label); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted);">PASS</div>
       </div>
       <div style="text-align: center; min-width: 60px;">
-        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--accent);">12</div>
+        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--accent);">7</div>
         <div style="font-family: var(--font-label); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted);">MARGINAL</div>
       </div>
       <div style="text-align: center; min-width: 60px;">
-        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--rose);">1</div>
+        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--teal);">0</div>
         <div style="font-family: var(--font-label); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted);">FAIL</div>
       </div>
       <div style="text-align: center; min-width: 60px;">
-        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--rose);">3</div>
-        <div style="font-family: var(--font-label); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted);">ERROR</div>
+        <div style="font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--teal);">0</div>
+        <div style="font-family: var(--font-label); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted);">ERROR / REJ</div>
       </div>
     </div>
     <div style="flex: 0 0 auto; font-family: var(--font-label); font-size: 0.8rem; color: var(--text-muted); text-align: right;">
-      <div>RFC-031/032 &middot; 2026-08-06</div>
-      <div style="color: var(--teal); font-weight: 600;">PASS improved 9&rarr;11, FAIL 2&rarr;1</div>
+      <div>RFC-049 &middot; 2026-09-23</div>
+      <div style="color: var(--teal); font-weight: 600;">0 FAIL &middot; 0 REJECTED &middot; 0 ERROR &mdash; held doc-for-doc from Run 21b</div>
     </div>
   </div>
 
@@ -618,7 +618,7 @@
           <th style="text-align: center; padding: 0.5rem 0.8rem; color: var(--teal);">PASS</th>
           <th style="text-align: center; padding: 0.5rem 0.8rem; color: var(--accent);">MARGINAL</th>
           <th style="text-align: center; padding: 0.5rem 0.8rem; color: var(--rose);">FAIL</th>
-          <th style="text-align: center; padding: 0.5rem 0.8rem; color: var(--rose);">ERROR</th>
+          <th style="text-align: center; padding: 0.5rem 0.8rem; color: var(--rose);">ERROR / REJ</th>
           <th style="text-align: left; padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted);">RFC</th>
           <th style="text-align: left; padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted);">Key Change</th>
         </tr>
@@ -732,14 +732,78 @@
           <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">RFC-034/035</td>
           <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">Table/meta/landscape fixes, FAIL 4&rarr;3</td>
         </tr>
-        <tr style="background: var(--accent-bg, rgba(245,158,11,0.08)); border-bottom: 1px solid var(--border);">
-          <td style="padding: 0.5rem 0.8rem; font-weight: 700; color: var(--accent);">19</td>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 0.5rem 0.8rem; font-weight: 600;">19</td>
           <td style="text-align: center; padding: 0.5rem 0.8rem; font-weight: 600;">9</td>
           <td style="text-align: center; padding: 0.5rem 0.8rem; font-weight: 600;">12</td>
           <td style="text-align: center; padding: 0.5rem 0.8rem;">1</td>
           <td style="text-align: center; padding: 0.5rem 0.8rem;">3</td>
           <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">RFC-035/036</td>
           <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">Landscape/write-barrier/enrichment, FAIL 3&rarr;1</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 0.5rem 0.8rem; font-weight: 600;">20</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">5</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">12</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">5</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">3</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">RFC-037/038/039</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">Verdict CAS, worker-timeout unification, HR3 egress; OCR-lang fallback refusal &rarr; 2 ERRORs, stricter depth/garble gates, PASS 9&rarr;5</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);"><td colspan="7" style="padding: 0.45rem 0.8rem; font-family: var(--font-label); font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;">&darr; From here: gate-verdict scoring (stored <code>meta.json</code> verdicts, attributed per document) &mdash; E column = ERROR + REJECTED (HR5) + TIMEOUT</td></tr>
+        <tr style="background: var(--teal-bg, rgba(46,125,110,0.07)); border-bottom: 1px solid var(--border);">
+          <td style="padding: 0.5rem 0.8rem; font-weight: 600; color: var(--teal);">B &middot; 1.C</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">13</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">6</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">3</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">3</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">RFC-040&ndash;045 &rarr; RFC-046 W1</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">Attributed baseline: 2 REJECTED (garbling) + 1 TIMEOUT (world-stats, 3600&nbsp;s); 0 OOM events</td>
+        </tr>
+        <tr style="background: var(--teal-bg, rgba(46,125,110,0.07)); border-bottom: 1px solid var(--border);">
+          <td style="padding: 0.5rem 0.8rem; font-weight: 600; color: var(--teal);">B &middot; 7.1</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">16</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">5</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">3</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">1</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">RFC-046 W2&ndash;7</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">OCR attribution &amp; failure-cluster fixes: PASS 13&rarr;16, TIMEOUT cleared, 1 REJECTED (&#1608;&#1575;&#1585;&#1583; 597)</td>
+        </tr>
+        <tr style="background: var(--teal-bg, rgba(46,125,110,0.07)); border-bottom: 1px solid var(--border);">
+          <td style="padding: 0.5rem 0.8rem; font-weight: 600; color: var(--teal);">B &middot; 047 W1&ndash;3</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">15</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">6</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">3</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">1</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">RFC-047 W1&ndash;3</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">Gate-layer fixes + updated Docling image on clean purge; &#1608;&#1575;&#1585;&#1583; 597 REJECTED&rarr;PASS, pie chart FAIL&rarr;REJECTED</td>
+        </tr>
+        <tr style="background: var(--teal-bg, rgba(46,125,110,0.07)); border-bottom: 1px solid var(--border);">
+          <td style="padding: 0.5rem 0.8rem; font-weight: 600; color: var(--teal);">B &middot; D9</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">18</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">6</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem; color: var(--teal);">0</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">1</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">RFC-047 D1&ndash;D8</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">First 0-FAIL corpus: char-mass ratio, flat-path re-derivation, Arabic density floor 800 (general 1500&rarr;1200)</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 0.5rem 0.8rem; font-weight: 600;">21b</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">18</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">7</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem; color: var(--teal);">0</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem; color: var(--teal);">0</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">RFC-048</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">Surya image fallback + post-VT parallel VLM: pie chart REJECTED&rarr;MARGINAL &mdash; first 0 FAIL / 0 REJECTED</td>
+        </tr>
+        <tr style="background: var(--accent-bg, rgba(245,158,11,0.08)); border-bottom: 1px solid var(--border);">
+          <td style="padding: 0.5rem 0.8rem; font-weight: 700; color: var(--accent);">22</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">18</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem;">7</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem; color: var(--teal);">0</td>
+          <td style="text-align: center; padding: 0.5rem 0.8rem; color: var(--teal);">0</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">RFC-049</td>
+          <td style="padding: 0.5rem 0.8rem; font-family: var(--font-label); font-size: 0.78rem;">Contract-drift remediation: clean-slate reset in <code>_ERASURE_MANIFEST</code> order, D2-C reject override &mdash; 0 verdict changes</td>
         </tr>
       </tbody>
     </table>
@@ -748,8 +812,8 @@
   <!-- ═══════════ RUN TREND CHART ═══════════ -->
   <div style="margin: 1.5rem 0; padding: 1.2rem; background: var(--card-bg); border-radius: 0.6rem; border: 1px solid var(--border);">
     <h2 style="font-family: var(--font-label); font-size: 1.1rem; font-weight: 600; margin-bottom: 1rem;">Verdict Trend</h2>
-    <div style="overflow-x: auto;">
-      <svg viewBox="0 0 1230 270" style="width: 100%; max-width: 960px; height: auto; font-family: var(--font-label, 'Inter', sans-serif);">
+    <div id="verdict-trend-scroll" style="overflow-x: auto;">
+      <svg viewBox="0 0 1850 290" width="1480" height="232" style="display: block; min-width: 1480px; height: auto; font-family: var(--font-label, 'Inter', sans-serif);">
         <!-- Y axis labels -->
         <text x="30" y="30" fill="var(--text-muted)" font-size="10" text-anchor="end">25</text>
         <text x="30" y="80" fill="var(--text-muted)" font-size="10" text-anchor="end">20</text>
@@ -757,11 +821,11 @@
         <text x="30" y="180" fill="var(--text-muted)" font-size="10" text-anchor="end">10</text>
         <text x="30" y="230" fill="var(--text-muted)" font-size="10" text-anchor="end">5</text>
         <!-- Grid lines -->
-        <line x1="40" y1="30" x2="1190" y2="30" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
-        <line x1="40" y1="80" x2="1190" y2="80" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
-        <line x1="40" y1="130" x2="1190" y2="130" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
-        <line x1="40" y1="180" x2="1190" y2="180" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
-        <line x1="40" y1="230" x2="1190" y2="230" stroke="var(--border)" stroke-width="0.5"/>
+        <line x1="40" y1="30" x2="1810" y2="30" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
+        <line x1="40" y1="80" x2="1810" y2="80" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
+        <line x1="40" y1="130" x2="1810" y2="130" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
+        <line x1="40" y1="180" x2="1810" y2="180" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
+        <line x1="40" y1="230" x2="1810" y2="230" stroke="var(--border)" stroke-width="0.5"/>
 
         <!-- Run 5: 11P 9M 3F 2E = 25 -->
         <rect x="50" y="142" width="50" height="88" rx="3" fill="var(--teal, #2e7d6e)"/>
@@ -871,21 +935,89 @@
         <rect x="1130" y="54" width="50" height="8" rx="0" fill="var(--rose, #a8505a)"/>
         <rect x="1130" y="30" width="50" height="24" rx="3" fill="#6b5b73"/>
         <text x="1155" y="198" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">9</text>
-        <text x="1155" y="248" fill="var(--accent)" font-size="10" font-weight="700" text-anchor="middle">R19</text>
+        <text x="1155" y="248" fill="var(--text-muted)" font-size="10" font-weight="600" text-anchor="middle">R19</text>
+
+        <!-- Run 20: 5P 12M 5F 3E = 25 -->
+        <rect x="1220" y="190" width="50" height="40" rx="3" fill="var(--teal, #2e7d6e)"/>
+        <text x="1245" y="214" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">5</text>
+        <rect x="1220" y="94" width="50" height="96" rx="0" fill="var(--accent, #d4943a)"/>
+        <text x="1245" y="146" fill="#fff" font-size="9" font-weight="600" text-anchor="middle">12</text>
+        <rect x="1220" y="54" width="50" height="40" rx="0" fill="var(--rose, #a8505a)"/>
+        <rect x="1220" y="30" width="50" height="24" rx="3" fill="#6b5b73"/>
+        <text x="1245" y="248" fill="var(--text-muted)" font-size="10" font-weight="600" text-anchor="middle">R20</text>
+
+        <!-- Methodology separator -->
+        <line x1="1297" y1="20" x2="1297" y2="232" stroke="var(--text-muted)" stroke-width="1" stroke-dasharray="4,3"/>
+        <text x="1303" y="22" fill="var(--text-muted)" font-size="9">gate-verdict scoring &rarr;</text>
+
+        <!-- Baseline RFC-046 1.C: 13P 6M 3F 2REJ+1TIMEOUT = 25 -->
+        <rect x="1310" y="126" width="50" height="104" rx="3" fill="var(--teal, #2e7d6e)" stroke="var(--teal, #2e7d6e)" stroke-width="1.5" stroke-dasharray="3,2" fill-opacity="0.75"/>
+        <text x="1335" y="182" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">13</text>
+        <rect x="1310" y="78" width="50" height="48" rx="0" fill="var(--accent, #d4943a)" stroke="var(--teal, #2e7d6e)" stroke-width="1.5" stroke-dasharray="3,2" fill-opacity="0.75"/>
+        <text x="1335" y="106" fill="#fff" font-size="9" font-weight="600" text-anchor="middle">6</text>
+        <rect x="1310" y="54" width="50" height="24" rx="0" fill="var(--rose, #a8505a)" stroke="var(--teal, #2e7d6e)" stroke-width="1.5" stroke-dasharray="3,2" fill-opacity="0.75"/>
+        <rect x="1310" y="30" width="50" height="24" rx="3" fill="#6b5b73" stroke="var(--teal, #2e7d6e)" stroke-width="1.5" stroke-dasharray="3,2" fill-opacity="0.75"/>
+        <text x="1335" y="248" fill="var(--teal)" font-size="10" font-weight="600" text-anchor="middle">B</text>
+        <text x="1335" y="259" fill="var(--teal)" font-size="10" font-weight="600" text-anchor="middle">1.C</text>
+
+        <!-- Baseline RFC-046 7.1: 16P 5M 3F 1REJ = 25 -->
+        <rect x="1400" y="102" width="50" height="128" rx="3" fill="var(--teal, #2e7d6e)" stroke="var(--teal, #2e7d6e)" stroke-width="1.5" stroke-dasharray="3,2" fill-opacity="0.75"/>
+        <text x="1425" y="170" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">16</text>
+        <rect x="1400" y="62" width="50" height="40" rx="0" fill="var(--accent, #d4943a)" stroke="var(--teal, #2e7d6e)" stroke-width="1.5" stroke-dasharray="3,2" fill-opacity="0.75"/>
+        <text x="1425" y="86" fill="#fff" font-size="9" font-weight="600" text-anchor="middle">5</text>
+        <rect x="1400" y="38" width="50" height="24" rx="0" fill="var(--rose, #a8505a)" stroke="var(--teal, #2e7d6e)" stroke-width="1.5" stroke-dasharray="3,2" fill-opacity="0.75"/>
+        <rect x="1400" y="30" width="50" height="8" rx="3" fill="#6b5b73" stroke="var(--teal, #2e7d6e)" stroke-width="1.5" stroke-dasharray="3,2" fill-opacity="0.75"/>
+        <text x="1425" y="248" fill="var(--teal)" font-size="10" font-weight="600" text-anchor="middle">B</text>
+        <text x="1425" y="259" fill="var(--teal)" font-size="10" font-weight="600" text-anchor="middle">7.1</text>
+
+        <!-- Baseline RFC-047 W1-3: 15P 6M 3F 1REJ = 25 -->
+        <rect x="1490" y="110" width="50" height="120" rx="3" fill="var(--teal, #2e7d6e)" stroke="var(--teal, #2e7d6e)" stroke-width="1.5" stroke-dasharray="3,2" fill-opacity="0.75"/>
+        <text x="1515" y="174" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">15</text>
+        <rect x="1490" y="62" width="50" height="48" rx="0" fill="var(--accent, #d4943a)" stroke="var(--teal, #2e7d6e)" stroke-width="1.5" stroke-dasharray="3,2" fill-opacity="0.75"/>
+        <text x="1515" y="90" fill="#fff" font-size="9" font-weight="600" text-anchor="middle">6</text>
+        <rect x="1490" y="38" width="50" height="24" rx="0" fill="var(--rose, #a8505a)" stroke="var(--teal, #2e7d6e)" stroke-width="1.5" stroke-dasharray="3,2" fill-opacity="0.75"/>
+        <rect x="1490" y="30" width="50" height="8" rx="3" fill="#6b5b73" stroke="var(--teal, #2e7d6e)" stroke-width="1.5" stroke-dasharray="3,2" fill-opacity="0.75"/>
+        <text x="1515" y="248" fill="var(--teal)" font-size="10" font-weight="600" text-anchor="middle">B</text>
+        <text x="1515" y="259" fill="var(--teal)" font-size="10" font-weight="600" text-anchor="middle">047W3</text>
+
+        <!-- Baseline RFC-047 D9: 18P 6M 0F 1REJ = 25 -->
+        <rect x="1580" y="86" width="50" height="144" rx="3" fill="var(--teal, #2e7d6e)" stroke="var(--teal, #2e7d6e)" stroke-width="1.5" stroke-dasharray="3,2" fill-opacity="0.75"/>
+        <text x="1605" y="162" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">18</text>
+        <rect x="1580" y="38" width="50" height="48" rx="0" fill="var(--accent, #d4943a)" stroke="var(--teal, #2e7d6e)" stroke-width="1.5" stroke-dasharray="3,2" fill-opacity="0.75"/>
+        <text x="1605" y="66" fill="#fff" font-size="9" font-weight="600" text-anchor="middle">6</text>
+        <rect x="1580" y="30" width="50" height="8" rx="3" fill="#6b5b73" stroke="var(--teal, #2e7d6e)" stroke-width="1.5" stroke-dasharray="3,2" fill-opacity="0.75"/>
+        <text x="1605" y="248" fill="var(--teal)" font-size="10" font-weight="600" text-anchor="middle">B</text>
+        <text x="1605" y="259" fill="var(--teal)" font-size="10" font-weight="600" text-anchor="middle">D9</text>
+
+        <!-- Run 21b: 18P 7M 0F 0E = 25 -->
+        <rect x="1670" y="86" width="50" height="144" rx="3" fill="var(--teal, #2e7d6e)"/>
+        <text x="1695" y="162" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">18</text>
+        <rect x="1670" y="30" width="50" height="56" rx="3" fill="var(--accent, #d4943a)"/>
+        <text x="1695" y="62" fill="#fff" font-size="9" font-weight="600" text-anchor="middle">7</text>
+        <text x="1695" y="248" fill="var(--text-muted)" font-size="10" font-weight="600" text-anchor="middle">R21b</text>
+
+        <!-- Run 22: 18P 7M 0F 0E = 25 -->
+        <rect x="1760" y="86" width="50" height="144" rx="3" fill="var(--teal, #2e7d6e)"/>
+        <text x="1785" y="162" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">18</text>
+        <rect x="1760" y="30" width="50" height="56" rx="3" fill="var(--accent, #d4943a)"/>
+        <text x="1785" y="62" fill="#fff" font-size="9" font-weight="600" text-anchor="middle">7</text>
+        <text x="1785" y="248" fill="var(--accent)" font-size="10" font-weight="700" text-anchor="middle">R22</text>
 
         <!-- Legend -->
-        <rect x="40" y="258" width="10" height="10" rx="2" fill="var(--teal, #2e7d6e)"/>
-        <text x="54" y="267" fill="var(--text-muted)" font-size="9">PASS</text>
-        <rect x="100" y="258" width="10" height="10" rx="2" fill="var(--accent, #d4943a)"/>
-        <text x="114" y="267" fill="var(--text-muted)" font-size="9">MARGINAL</text>
-        <rect x="185" y="258" width="10" height="10" rx="2" fill="var(--rose, #a8505a)"/>
-        <text x="199" y="267" fill="var(--text-muted)" font-size="9">FAIL</text>
-        <rect x="240" y="258" width="10" height="10" rx="2" fill="#6b5b73"/>
-        <text x="254" y="267" fill="var(--text-muted)" font-size="9">ERROR</text>
+        <rect x="40" y="274" width="10" height="10" rx="2" fill="var(--teal, #2e7d6e)"/>
+        <text x="54" y="283" fill="var(--text-muted)" font-size="9">PASS</text>
+        <rect x="100" y="274" width="10" height="10" rx="2" fill="var(--accent, #d4943a)"/>
+        <text x="114" y="283" fill="var(--text-muted)" font-size="9">MARGINAL</text>
+        <rect x="185" y="274" width="10" height="10" rx="2" fill="var(--rose, #a8505a)"/>
+        <text x="199" y="283" fill="var(--text-muted)" font-size="9">FAIL</text>
+        <rect x="240" y="274" width="10" height="10" rx="2" fill="#6b5b73"/>
+        <text x="254" y="283" fill="var(--text-muted)" font-size="9">ERROR / REJ / TIMEOUT</text>
+        <rect x="370" y="274" width="10" height="10" rx="2" fill="var(--teal, #2e7d6e)" fill-opacity="0.75" stroke="var(--teal, #2e7d6e)" stroke-dasharray="3,2"/>
+        <text x="384" y="283" fill="var(--text-muted)" font-size="9">Baseline run (B)</text>
       </svg>
     </div>
     <div style="font-family: var(--font-label); font-size: 0.75rem; color: var(--text-muted); margin-top: 0.5rem;">
-      Run 19: PASS steady at 9, FAIL dropped 3&rarr;1 (best since Run 14), 3 ERRORs (write-barrier timing + 2 persistent gaps). RFC-035/036 landscape/write-barrier/enrichment fixes. Run 17 skipped (no remote scoring access). Trend: FAIL converging, ERROR persistence-timing race remains.
+      Run 22: 18 PASS / 7 MARGINAL / 0 FAIL / 0 ERROR &mdash; a doc-for-doc match to Run 21b, the first run with 0 FAIL and 0 REJECTED. Path: Run 20 dipped to 5 PASS (RFC-037&ndash;039 OCR-lang fallback refusal + stricter gates); scoring then switched to attributed gate verdicts, and the RFC-046 baselines climbed 13&rarr;16 PASS, RFC-047 D9 reached 18 PASS / 0 FAIL, and RFC-048's Surya/VLM image fallback cleared the last REJECTED. Runs 5&ndash;20 use the LLM-judge scorecard; baselines (B) and Runs 21b&ndash;22 use stored gate verdicts, so the two halves are not strictly comparable. Remaining 7 MARGINAL are structural (depth_inadequate, leaf_concentration, flat_mixed). Run 17 skipped (no remote scoring access).
     </div>
   </div>
 
@@ -1435,6 +1567,7 @@ When updating tasks files (agents/tasks/tasks-*.md), ALWAYS use Serena MCP serve
       <div class="card-detail">
         <strong>8P / 12M / 3F / 1E</strong> &mdash; 24 docs scored (1 absent). RFC-035 table degenerate guard, pdf-inspector class enrichment, landscape rasterize-rotate-reextract. FAIL 4&rarr;3. 1 ERROR (RTL reversal gate rejection, وارد 597). Run 17 skipped (no remote scoring access).
       </div>
+    <script>(function(){var e=document.getElementById("verdict-trend-scroll");if(e){var f=function(){e.scrollLeft=e.scrollWidth;};f();window.addEventListener("load",f);}})();</script>
     </div>
 
     <div class="card" style="margin-bottom: 0.6rem;">
@@ -1442,6 +1575,62 @@ When updating tasks files (agents/tasks/tasks-*.md), ALWAYS use Serena MCP serve
       <div class="card-title">Landscape / Write-Barrier / Enrichment Fixes</div>
       <div class="card-detail">
         <strong>9P / 12M / 1F / 3E</strong> &mdash; FAIL dropped to 1 (best since Run 14). 3 ERRORs: write-barrier backoff pushed SLA doc past scorer window, وارد 597 RTL rejection persists, world-stats-pocketbook still absent from store. RFC-036 targets landscape page cap, write-barrier retry mapping, enrichment density-preserve, RTL flat-fallback routing, and PictureResult skip metadata propagation.
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom: 0.6rem;">
+      <div class="card-label">2026-08-27 &middot; Run 20 &middot; RFC-037/038/039</div>
+      <div class="card-title">Verdict CAS, Timeout Unification, HR3 Egress</div>
+      <div class="card-detail">
+        <strong>5P / 12M / 5F / 3E</strong> &mdash; PASS regressed 9&rarr;5. OCR-language fix refused the Latin-only fallback for mixed-script requests, so MOU MOHRE and the pie-chart .jpg never persisted (2 ERRORs); world-stats still absent. Config layering tightened depth expectations (2 PASS&rarr;MARGINAL) and the garble fix surfaced pre-existing Arabic font-encoding corruption. Improvements: uae_numbers landscape FAIL&rarr;MARGINAL, &#1608;&#1575;&#1585;&#1583; 597 ERROR&rarr;MARGINAL.
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom: 0.6rem;">
+      <div class="card-label">2026-09-16 &middot; Baseline 1.C &middot; RFC-040&ndash;045 &rarr; RFC-046 W1</div>
+      <div class="card-title">Attributed Corpus Baseline (scoring switches to gate verdicts)</div>
+      <div class="card-detail">
+        <strong>13P / 6M / 3F + 2 REJECTED + 1 TIMEOUT</strong> &mdash; after RFC-040 (verdict/garble zone remediation), 041 (recurring defects), 042 (verdict &amp; config unification), 043 (OCR recovery, garble defense, erasure hardening), 044 (recovery dispatch wiring), 045 (facade shrink). Every verdict now attributed to a gate reason from stored <code>meta.json</code>. 2 docs HR5-rejected for garbling; world-stats timed out at 3600&nbsp;s (4th consecutive). Peak swap 4.4&nbsp;GB, 0 OOM events.
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom: 0.6rem;">
+      <div class="card-label">2026-09-21 &middot; Baseline 7.1 &middot; RFC-046 Waves 2&ndash;7</div>
+      <div class="card-title">OCR Attribution &amp; Failure-Cluster Remediation</div>
+      <div class="card-detail">
+        <strong>16P / 5M / 3F / 1 REJECTED</strong> &mdash; PASS 13&rarr;16, MARGINAL 6&rarr;5, REJECTED 2&rarr;1, TIMEOUT 1&rarr;0 (world-stats now completes). Surviving FAILs: uae_numbers portrait + landscape (table extraction) and &#1608;&#1575;&#1585;&#1583; 597 (OCR oscillating FAIL&harr;REJECTED).
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom: 0.6rem;">
+      <div class="card-label">2026-09-22 &middot; Baseline W1&ndash;3 &middot; RFC-047</div>
+      <div class="card-title">Gate-Layer Correctness (Waves 1&ndash;3, clean purge + updated Docling)</div>
+      <div class="card-detail">
+        <strong>15P / 6M / 3F / 1 REJECTED</strong> &mdash; mixed-script regex fix (D1). Clean re-ingestion on an updated Docling image: &#1608;&#1575;&#1585;&#1583; 597 REJECTED&rarr;PASS, federal_decree_law 33 recovered to PASS; pie chart FAIL&rarr;REJECTED (char-mass ratio correctly catches garbled OCR); Reitlehrer and &#1575;&#1604;&#1602;&#1585;&#1575;&#1585; &#1575;&#1604;&#1578;&#1606;&#1592;&#1610;&#1605;&#1610; dipped then recovered.
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom: 0.6rem;">
+      <div class="card-label">2026-09-22 &middot; Baseline D9 &middot; RFC-047 D1&ndash;D8</div>
+      <div class="card-title">First Zero-FAIL Corpus</div>
+      <div class="card-detail">
+        <strong>18P / 6M / 0F / 1 REJECTED</strong> &mdash; FAIL 3&rarr;0. D2 character-mass ratio, D3 per-block garble field-clear, D4 flat-path defect re-derivation (uae_numbers portrait FAIL&rarr;PASS), D7 Arabic density floor 800 with general floor 1500&rarr;1200. D8 Surya fallback enabled but never triggered. Engine-tier successor RFC judged not warranted.
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom: 0.6rem;">
+      <div class="card-label">2026-09-23 &middot; Run 21b &middot; RFC-048</div>
+      <div class="card-title">Surya OCR Fallback for Standalone Images</div>
+      <div class="card-detail">
+        <strong>18P / 7M / 0F / 0E</strong> &mdash; vs D9: 0 regressions, 1 improvement. Pie-chart .jpg REJECTED&rarr;MARGINAL via post-VT parallel VLM + Surya <code>/ocr/image</code> fallback. First corpus with <strong>0 FAIL and 0 REJECTED</strong>. world-stats stable at PASS (115 sections) after the Surya memory fix. Run 21a (before the post-VT fallback) left the pie chart REJECTED and regressed world-stats to ERROR.
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom: 0.6rem;">
+      <div class="card-label">2026-09-23 &middot; Run 22 &middot; RFC-049</div>
+      <div class="card-title">Contract Drift Remediation</div>
+      <div class="card-detail">
+        <strong>18P / 7M / 0F / 0E</strong> &mdash; doc-for-doc identical to Run 21b (0 regressions, 0 improvements), the intended result: the D2-C reject override is guarded to garbling defects. Full clean-slate reset in <code>_ERASURE_MANIFEST</code> order (MinIO 290 objects, registry, Redis, hash cache) before a serial ingest; single run_id across all 25 docs. MARGINAL residue (7): depth_inadequate, leaf_concentration, flat_mixed.
       </div>
     </div>
 
@@ -1509,6 +1698,22 @@ When updating tasks files (agents/tasks/tasks-*.md), ALWAYS use Serena MCP serve
       <div class="card-title">Run 19 Landscape / Write-Barrier / Enrichment Fixes</div>
       <div class="card-detail">
         D0 landscape page cap + thread kill + fragmentation guard. D1 write-barrier retry cap + terminal error mapping. D2 land staged enrichment density-preserve. D3 RTL flat-fallback routing. D4 PictureResult skip metadata propagation.
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom: 0.6rem;">
+      <div class="card-label">2026-09-24 &middot; RFC-050 (next)</div>
+      <div class="card-title">Pipeline Acceleration &amp; Raw Export</div>
+      <div class="card-detail">
+        Target &ge;30% wall-clock reduction on the 25-doc corpus, measured via <code>make ingest</code> (1 replica, 2 runs per arm, medians) against a pre-change baseline. Admission-floor + MAX_JOBS tuning, stage timing, raw extracted-markdown persistence with erasure cascade, 30-day quarantine TTL (HR5), and a host-only dry-run replay CLI behind a fail-closed write barrier. Est. 37&ndash;41h.
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom: 0.6rem;">
+      <div class="card-label">2026-09-24 &middot; RFC-051 (next)</div>
+      <div class="card-title">Codebase Trimming &amp; Audit Archive</div>
+      <div class="card-detail">
+        &ge;15,000 lines moved out of the active <code>audit/</code> view plus ~2.5k deleted lines (dead scripts, legacy hash-cache blob path after migration, ocr-spike compose block). DecisionPoint data tables move to YAML. Est. 12&ndash;13h.
       </div>
     </div>
 
