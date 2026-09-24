@@ -916,8 +916,11 @@ def save_quarantine(
     meta = {"filenames": merged}
     meta_content = json.dumps(meta, indent=2).encode()
     mc.put_object(
-        bkt, meta_key, BytesIO(meta_content),
-        len(meta_content), content_type="application/json",
+        bkt,
+        meta_key,
+        BytesIO(meta_content),
+        len(meta_content),
+        content_type="application/json",
     )
 
     QUARANTINE_WRITES_TOTAL.labels(result="ok").inc()
@@ -933,11 +936,10 @@ def save_quarantine(
     )
     logger.info(
         "save_quarantine: wrote %s (%d bytes, %d filenames)",
-        data_key, len(content), len(merged),
+        data_key,
+        len(content),
+        len(merged),
     )
-
-
-
 
 
 def erase_quarantine(sha256: str) -> list[str]:

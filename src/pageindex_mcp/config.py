@@ -348,7 +348,9 @@ def _load_settings() -> Settings:
         not in ("0", "false", "no"),
         surya_fallback_enabled=os.environ.get("SURYA_FALLBACK_ENABLED", "false").strip().lower()
         in ("1", "true", "yes"),
-        surya_service_url=(os.environ.get("SURYA_SERVICE_URL") or "http://localhost:8207").rstrip("/"),
+        surya_service_url=(os.environ.get("SURYA_SERVICE_URL") or "http://localhost:8207").rstrip(
+            "/"
+        ),
         surya_fallback_timeout_s=float(os.environ.get("SURYA_FALLBACK_TIMEOUT_S", "120")),
     )
 

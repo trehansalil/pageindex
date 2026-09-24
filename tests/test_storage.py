@@ -198,6 +198,7 @@ async def test_erase_01_c2_idempotent_on_missing_doc(mock_minio):
     # instead of silently dropping the Postgres row deletion.
     assert result["errors"] == ["registry: pool not ready, skipped Postgres row deletion"]
 
+
 async def test_erase_01_c2_prefix_loops_tolerate_nosuchkey_but_surface_other_errors(
     mock_minio, monkeypatch
 ):
@@ -251,9 +252,7 @@ async def test_erase_01_c2_prefix_loops_tolerate_nosuchkey_but_surface_other_err
     assert not failures, "; ".join(failures)
 
 
-async def test_erase_01_c1_cascade_order_observable_and_hash_cache_cleared(
-    mock_minio, monkeypatch
-):
+async def test_erase_01_c1_cascade_order_observable_and_hash_cache_cleared(mock_minio, monkeypatch):
     """ERASE-01-C1 (HR2): a DSR delete of a fully-indexed doc removes the MinIO
     objects in the mandated order uploads/<id>/ -> processed/<id>.json ->
     processed/<id>.meta.json, THEN deletes the Redis cache key
@@ -800,9 +799,7 @@ def test_erasure_manifest_required_flags_match_behaviour():
     # its network round-trips back on the event loop while still looking
     # asynchronous -- which is what a twelve-store HR2 cascade did before
     # RFC-049. Only the two steps that genuinely await belong on this list.
-    coroutine_steps = {
-        e.name for e in _ERASURE_MANIFEST if inspect.iscoroutinefunction(e.execute)
-    }
+    coroutine_steps = {e.name for e in _ERASURE_MANIFEST if inspect.iscoroutinefunction(e.execute)}
     assert coroutine_steps == {"verdicts", "registry"}, (
         "verdicts awaits get_doc_sha256 and registry awaits a bounded "
         "asyncio.wait_for; every other step drives the synchronous MinIO/Redis "

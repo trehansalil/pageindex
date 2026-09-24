@@ -90,8 +90,7 @@ def _run_ocr(raw: bytes) -> tuple[str, float]:
         raise HTTPException(
             status_code=413,
             detail=(
-                f"Image is {width}x{height} ({width * height} px); "
-                f"limit is {MAX_IMAGE_PIXELS} px"
+                f"Image is {width}x{height} ({width * height} px); limit is {MAX_IMAGE_PIXELS} px"
             ),
         )
     image = image.convert("RGB")

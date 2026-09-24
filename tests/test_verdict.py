@@ -2100,9 +2100,7 @@ class TestMaxPriorityWinsSQL:
             assert f"'{v}'" in _UPSERT_SQL, f"verdict {v!r} missing from _UPSERT_SQL"
         assert "EXCLUDED.verdict" in _UPSERT_SQL
         assert "doc_registry.verdict" in _UPSERT_SQL
-        returning_line = [
-            line for line in _UPSERT_SQL.splitlines() if "RETURNING" in line.upper()
-        ]
+        returning_line = [line for line in _UPSERT_SQL.splitlines() if "RETURNING" in line.upper()]
         assert returning_line, "_UPSERT_SQL has no RETURNING clause"
         assert "verdict" in returning_line[0].lower()
 

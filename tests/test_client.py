@@ -212,9 +212,7 @@ def test_configure_litellm_openai_and_azure(monkeypatch):
 def test_validate_llm_config_fails_fast_on_missing_fields(monkeypatch):
     """LLM-01-C5: an empty API key or base URL fails fast, while a
     well-formed compatible config validates without raising."""
-    monkeypatch.setattr(
-        "pageindex_mcp.client.llm.settings", _fake_settings(openai_api_key="")
-    )
+    monkeypatch.setattr("pageindex_mcp.client.llm.settings", _fake_settings(openai_api_key=""))
     with pytest.raises(ValueError, match="OPENAI_API_KEY"):
         validate_llm_config()
 
@@ -488,6 +486,7 @@ class TestImageConstantsWiring:
 # ===========================================================================
 # RAG contract, deduplication, and pagination  (helpers.rag / tools.documents)
 # ===========================================================================
+
 
 async def test_rag_01_c3_no_documents_raises_tool_error():
     """RAG-01-C3: find_relevant_documents() with zero indexed docs raises a
@@ -803,6 +802,7 @@ def test_query_path_not_found_never_lists_minio():
 # Erasure cascade: validate_erasure_manifest + delete_doc logging
 # ===========================================================================
 
+
 class TestValidateErasureManifest:
     """Contract tests for validate_erasure_manifest()."""
 
@@ -984,6 +984,7 @@ class TestDeleteDocLogMessages:
 # helpers.heuristic_registry  (RFC-041 D5 — Property 5)
 # ===========================================================================
 
+
 class TestHeuristicRegistryCore:
     """register / get / fire / is_expired / list_expired and their metrics."""
 
@@ -1148,7 +1149,5 @@ def test_filtered_stderr_keeps_structured_records_drops_raw_tracebacks():
     assert sink.getvalue().strip() == record
 
     noise_sink = io.StringIO()
-    _FilteredStderr(noise_sink).write(
-        "Task exception was never retrieved\n  File 'x.py', line 1\n"
-    )
+    _FilteredStderr(noise_sink).write("Task exception was never retrieved\n  File 'x.py', line 1\n")
     assert noise_sink.getvalue() == ""

@@ -224,9 +224,14 @@ _GATES_POINTS: tuple[DecisionPoint, ...] = (
         function="_gate_suspect_density",
         choices=("fires", "clear", "not_evaluated_no_page_count"),
         attrs=(
-            "page_count", "chars_per_page", "chars_per_page_corrected",
-            "corrected_delta", "verdict_would_change",
-            "floor_used", "floor_arabic", "is_arabic",
+            "page_count",
+            "chars_per_page",
+            "chars_per_page_corrected",
+            "corrected_delta",
+            "verdict_would_change",
+            "floor_used",
+            "floor_arabic",
+            "is_arabic",
         ),
     ),
     _p(
@@ -702,8 +707,15 @@ _INDEXER_POINTS: tuple[DecisionPoint, ...] = (
             "clean_not_pre_garbled",
             "probe_error",
         ),
-        attrs=("page0_text_chars", "page_count", "d3a_sparse_page_char_floor", "error_type",
-               "text_layer_chars", "alpha_ratio", "junk_ratio"),
+        attrs=(
+            "page0_text_chars",
+            "page_count",
+            "d3a_sparse_page_char_floor",
+            "error_type",
+            "text_layer_chars",
+            "alpha_ratio",
+            "junk_ratio",
+        ),
         note=(
             "The bare `except Exception: pass` at 547-548 currently erases a "
             "probe crash; `probe_error` records it. Pure addition -- do not "
@@ -1089,8 +1101,7 @@ _INDEXER_POINTS: tuple[DecisionPoint, ...] = (
         ),
         always_emits=False,
         note=(
-            "RFC-048 Amendment: parallel VLM+Surya after"
-            " validate_tree condemns a standalone image."
+            "RFC-048 Amendment: parallel VLM+Surya after validate_tree condemns a standalone image."
         ),
     ),
 )

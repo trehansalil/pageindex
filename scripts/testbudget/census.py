@@ -40,39 +40,55 @@ def archaeology(files: list) -> dict:
     out = {"merge_base": base, "per_commit": [], "then": None, "now": None}
     if not base:
         return out
+
     def defs_at(rev: str) -> int:
         blob = _tb.git("grep", "-h", "-c", "-E", r"^\s*(async )?def test_", rev, "--", "tests/")
         return sum(int(x) for x in blob.split() if x.isdigit())
+
     out["then"] = defs_at(base)
     out["now"] = sum(f.defs for f in files)
     log = _tb.git("log", "--format=%h|%ad|%s", "--date=short", "%s..HEAD" % base, "--", "tests/")
     for line in log.splitlines():
         h = line.split("|", 1)[0]
         stat = _tb.git("show", "--numstat", "--format=", h, "--", "tests/")
-        added = sum(int(l.split("\t")[0]) for l in stat.splitlines()
-                    if l.split("\t")[0].isdigit())
-        removed = sum(int(l.split("\t")[1]) for l in stat.splitlines()
-                      if len(l.split("\t")) > 1 and l.split("\t")[1].isdigit())
-        out["per_commit"].append({"commit": line, "lines_added": added,
-                                  "lines_removed": removed, "net": added - removed})
+        added = sum(int(l.split("\t")[0]) for l in stat.splitlines() if l.split("\t")[0].isdigit())
+        removed = sum(
+            int(l.split("\t")[1])
+            for l in stat.splitlines()
+            if len(l.split("\t")) > 1 and l.split("\t")[1].isdigit()
+        )
+        out["per_commit"].append(
+            {"commit": line, "lines_added": added, "lines_removed": removed, "net": added - removed}
+        )
     out["per_commit"].sort(key=lambda c: -c["net"])
     return out
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--tests-dir", default=None, help="default: <repo>/tests")
-    ap.add_argument("--no-collect", action="store_true",
-                    help="skip pytest --collect-only; use AST def counts")
-    ap.add_argument("--coverage-xml", default=None,
-                    help="record total line coverage from an existing coverage.xml")
-    ap.add_argument("--runtime", type=float, default=None,
-                    help="wall-clock seconds of the last full capped run, for the record")
-    ap.add_argument("--peak-rss-mb", type=float, default=None,
-                    help="peak RSS MB of that run, for the record")
-    ap.add_argument("--archaeology", action="store_true",
-                    help="also diff test growth against the merge-base")
+    ap.add_argument(
+        "--no-collect", action="store_true", help="skip pytest --collect-only; use AST def counts"
+    )
+    ap.add_argument(
+        "--coverage-xml",
+        default=None,
+        help="record total line coverage from an existing coverage.xml",
+    )
+    ap.add_argument(
+        "--runtime",
+        type=float,
+        default=None,
+        help="wall-clock seconds of the last full capped run, for the record",
+    )
+    ap.add_argument(
+        "--peak-rss-mb", type=float, default=None, help="peak RSS MB of that run, for the record"
+    )
+    ap.add_argument(
+        "--archaeology", action="store_true", help="also diff test growth against the merge-base"
+    )
     ap.add_argument("--label", default="census", help="baseline label (default: census)")
     ap.add_argument("--top", type=int, default=15, help="rows to print (default 15)")
     args = ap.parse_args()
@@ -99,46 +115,82 @@ def main() -> int:
     density = round(tot_asserts / tot_defs, 2) if tot_defs else 0.0
 
     rows = sorted(facts, key=lambda f: -f.count)
-    tbl = [[f.path.replace("tests/", ""), f.count, f.defs, f.params,
-            f.param_rows, f.asserts, f.assert_density, f.skips] for f in rows]
+    tbl = [
+        [
+            f.path.replace("tests/", ""),
+            f.count,
+            f.defs,
+            f.params,
+            f.param_rows,
+            f.asserts,
+            f.assert_density,
+            f.skips,
+        ]
+        for f in rows
+    ]
 
-    print("== TEST BUDGET CENSUS  %s  (%s)" % (time.strftime("%Y-%m-%dT%H:%M:%S"),
-                                               _tb.git("rev-parse", "--short", "HEAD") or "no-git"))
-    print("files=%d  collected=%d  def_test=%d  parametrize_decorators=%d  param_rows=%d"
-          % (len(paths), tot_collected, tot_defs, sum(f.params for f in facts),
-             sum(f.param_rows for f in facts)))
-    print("asserts=%d  assert_density=%.2f/def (unit gate floor 2.0)  hard_skips=%d"
-          % (tot_asserts, density, sum(f.skips for f in facts)))
-    print("src_files=%d  test/src file ratio=%.3f (test-ratio-guard ceiling 0.65)"
-          % (len(srcs), ratio))
+    print(
+        "== TEST BUDGET CENSUS  %s  (%s)"
+        % (time.strftime("%Y-%m-%dT%H:%M:%S"), _tb.git("rev-parse", "--short", "HEAD") or "no-git")
+    )
+    print(
+        "files=%d  collected=%d  def_test=%d  parametrize_decorators=%d  param_rows=%d"
+        % (
+            len(paths),
+            tot_collected,
+            tot_defs,
+            sum(f.params for f in facts),
+            sum(f.param_rows for f in facts),
+        )
+    )
+    print(
+        "asserts=%d  assert_density=%.2f/def (unit gate floor 2.0)  hard_skips=%d"
+        % (tot_asserts, density, sum(f.skips for f in facts))
+    )
+    print(
+        "src_files=%d  test/src file ratio=%.3f (test-ratio-guard ceiling 0.65)"
+        % (len(srcs), ratio)
+    )
     if args.coverage_xml:
         cov = coverage_pct(Path(args.coverage_xml))
         print("coverage=%.2f%%  (from %s)" % (cov, args.coverage_xml))
     else:
         cov = None
-        print("coverage=UNRECORDED  -- rerun with --coverage-xml coverage.xml "
-              "after one capped `make test` or the suite has no comparable baseline")
+        print(
+            "coverage=UNRECORDED  -- rerun with --coverage-xml coverage.xml "
+            "after one capped `make test` or the suite has no comparable baseline"
+        )
     if args.runtime:
         print("runtime=%.0fs  peak_rss=%s" % (args.runtime, args.peak_rss_mb or "n/a"))
     if broken:
-        print("PARSE ERRORS in %d file(s): %s"
-              % (len(broken), ", ".join(f.path for f in broken[:5])))
+        print(
+            "PARSE ERRORS in %d file(s): %s" % (len(broken), ", ".join(f.path for f in broken[:5]))
+        )
     print()
-    print(_tb.table(tbl, ["FILE", "COLL", "DEFS", "PARAM", "ROWS", "ASRT", "A/DEF", "SKIP"],
-                    limit=args.top))
+    print(
+        _tb.table(
+            tbl, ["FILE", "COLL", "DEFS", "PARAM", "ROWS", "ASRT", "A/DEF", "SKIP"], limit=args.top
+        )
+    )
     print()
 
     payload = {
         "timestamp": time.time(),
         "commit": _tb.git("rev-parse", "HEAD"),
         "branch": _tb.git("rev-parse", "--abbrev-ref", "HEAD"),
-        "files": len(paths), "collected": tot_collected, "defs": tot_defs,
-        "asserts": tot_asserts, "assert_density": density,
+        "files": len(paths),
+        "collected": tot_collected,
+        "defs": tot_defs,
+        "asserts": tot_asserts,
+        "assert_density": density,
         "param_decorators": sum(f.params for f in facts),
         "param_rows": sum(f.param_rows for f in facts),
         "hard_skips": sum(f.skips for f in facts),
-        "src_files": len(srcs), "test_src_ratio": ratio,
-        "coverage_pct": cov, "runtime_s": args.runtime, "peak_rss_mb": args.peak_rss_mb,
+        "src_files": len(srcs),
+        "test_src_ratio": ratio,
+        "coverage_pct": cov,
+        "runtime_s": args.runtime,
+        "peak_rss_mb": args.peak_rss_mb,
         "collected_is_estimate": args.no_collect or all(f.collected < 0 for f in facts),
         "per_file": [f.__dict__ | {"assert_density": f.assert_density} for f in facts],
     }
@@ -148,10 +200,14 @@ def main() -> int:
         if arch["merge_base"]:
             then, now = arch["then"] or 0, arch["now"]
             pct = ("%+.0f%%" % ((now - then) / then * 100)) if then else "n/a"
-            print("-- GIT ARCHAEOLOGY vs merge-base %s: def_test %d -> %d (%s)"
-                  % (arch["merge_base"][:9], then, now, pct))
-            top = [[c["commit"][:72], c["lines_added"], c["lines_removed"], c["net"]]
-                   for c in arch["per_commit"][:8]]
+            print(
+                "-- GIT ARCHAEOLOGY vs merge-base %s: def_test %d -> %d (%s)"
+                % (arch["merge_base"][:9], then, now, pct)
+            )
+            top = [
+                [c["commit"][:72], c["lines_added"], c["lines_removed"], c["net"]]
+                for c in arch["per_commit"][:8]
+            ]
             if top:
                 print(_tb.table(top, ["COMMIT (tests/ only)", "+", "-", "NET"]))
             print()

@@ -128,8 +128,8 @@ def _keep_best_wins(
         if script_context is not None
         else ScriptContext(
             dominant_script=expected_script,
-                            # pre-NFKC: post-normalize but safe — returns False on destroyed PF
-                had_presentation_forms=_infer_presentation_forms(_pre_text),
+            # pre-NFKC: post-normalize but safe — returns False on destroyed PF
+            had_presentation_forms=_infer_presentation_forms(_pre_text),
             source="ocr_retry_keep_best",
         )
     )
@@ -469,9 +469,7 @@ class RecoveryMixin:
                     reason="image extension uses local tesseract",
                     attrs={"use_remote": False, "ext": ext},
                 )
-                state.md_content = await asyncio.to_thread(
-                    image_to_markdown, file_path, langs
-                )
+                state.md_content = await asyncio.to_thread(image_to_markdown, file_path, langs)
                 state.pic_results = []
             elif state.use_remote:
                 decision(
@@ -544,7 +542,7 @@ class RecoveryMixin:
                 if script_context is not None
                 else ScriptContext(
                     dominant_script=expected_script,
-                                        # pre-NFKC: post-normalize but safe
+                    # pre-NFKC: post-normalize but safe
                     had_presentation_forms=_infer_presentation_forms(_md_text),
                     source="pre_rebuild_md_quality",  # pre-NFKC
                 )

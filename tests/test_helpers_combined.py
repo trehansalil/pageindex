@@ -346,11 +346,19 @@ def test_sparse_mojibake_wired_into_both_garble_gates_additively():
     garble paths, while clean text stays not-garbled (bulk checks unweakened)."""
     clean = "This is a perfectly normal paragraph about insurance terms."
     cases = [
-        ("mojibake/bulk", _flatten_tree_text([{"node_id": "1", "title": "", "text": _MOJIBAKE}]),
-         BULK_PROFILE, True),
+        (
+            "mojibake/bulk",
+            _flatten_tree_text([{"node_id": "1", "title": "", "text": _MOJIBAKE}]),
+            BULK_PROFILE,
+            True,
+        ),
         ("mojibake/flat", _MOJIBAKE, FLAT_MARKDOWN_PROFILE, True),
-        ("clean/bulk", _flatten_tree_text([{"node_id": "1", "title": "S", "text": clean}]),
-         BULK_PROFILE, False),
+        (
+            "clean/bulk",
+            _flatten_tree_text([{"node_id": "1", "title": "S", "text": clean}]),
+            BULK_PROFILE,
+            False,
+        ),
         ("clean/flat", clean, FLAT_MARKDOWN_PROFILE, False),
     ]
 
@@ -925,9 +933,7 @@ def test_preamble_synthesis_is_purely_additive():
     )
     assert no_preamble["structure"] == [original_node]
 
-    md_text_no_heading = (
-        f"{_LONG_PREAMBLE}\n\nMore plain prose with no markdown heading at all.\n"
-    )
+    md_text_no_heading = f"{_LONG_PREAMBLE}\n\nMore plain prose with no markdown heading at all.\n"
     flat_node = {"title": "flat", "text": md_text_no_heading, "nodes": []}
     no_heading = _synthesize_preamble_node(md_text_no_heading, _tree([flat_node]))
     assert no_heading["structure"] == [flat_node]

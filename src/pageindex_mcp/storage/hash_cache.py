@@ -129,9 +129,7 @@ def _purge_legacy_hash_entry(filename: str) -> None:
         r = get_cache_redis()
         acquired = _acquire_legacy_lock(r, lock_token)
     except Exception:
-        logger.debug(
-            "Legacy hash-cache purge: lock unavailable for %s", filename, exc_info=True
-        )
+        logger.debug("Legacy hash-cache purge: lock unavailable for %s", filename, exc_info=True)
         return
     if not acquired:
         # Never rewrite the blob unserialised: a lost update here is exactly

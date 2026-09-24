@@ -1313,9 +1313,7 @@ class TestWriteBarrierExhaustionPropagates:
 
     def test_save_doc_meta_does_not_raise_on_barrier_exhaustion(self, mock_minio, monkeypatch):
         barrier = MagicMock(side_effect=PersistenceNotVisibleError("processed/doc.meta.json"))
-        monkeypatch.setattr(
-            "pageindex_mcp.storage.minio_ops._confirm_write_visible", barrier
-        )
+        monkeypatch.setattr("pageindex_mcp.storage.minio_ops._confirm_write_visible", barrier)
         save_doc_meta(
             "doc123",
             {

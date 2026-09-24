@@ -157,6 +157,7 @@ def filler_text(n_chars: int, seed: int) -> str:
     # after a strip(), so a trailing space would silently shorten the fixture.
     return out[:-1] + "s" if out.endswith(" ") else out
 
+
 @pytest.fixture
 def fake_cache_redis(fake_redis_sync):
     """Patch the cache module's sync Redis client with the fake.

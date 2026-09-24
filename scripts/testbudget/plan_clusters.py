@@ -49,14 +49,19 @@ def affinity_groups(paths: list) -> list:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--target", type=int, help="global collected-test target")
     g.add_argument("--target-pct", type=float, help="cut this %% of the current count")
     ap.add_argument("--agents", type=int, default=5, help="number of clusters (default 5)")
-    ap.add_argument("--exclude", nargs="*", default=[],
-                    help="test files no agent may touch (e2e, staging, golden)")
+    ap.add_argument(
+        "--exclude",
+        nargs="*",
+        default=[],
+        help="test files no agent may touch (e2e, staging, golden)",
+    )
     ap.add_argument("--baseline", default=None, help="census JSON (default: census-latest.json)")
     ap.add_argument("--tests-dir", default=None)
     args = ap.parse_args()
@@ -64,8 +69,11 @@ def main() -> int:
     if args.agents < 1:
         _tb.die("--agents must be >= 1")
 
-    paths = [p for p in _tb.test_files(Path(args.tests_dir) if args.tests_dir else None)
-             if p.name not in args.exclude]
+    paths = [
+        p
+        for p in _tb.test_files(Path(args.tests_dir) if args.tests_dir else None)
+        if p.name not in args.exclude
+    ]
     if not paths:
         _tb.die("every test file was excluded")
 
@@ -73,8 +81,10 @@ def main() -> int:
     counts = {}
     try:
         base = _tb.load_baseline(path=args.baseline)
-        counts = {f["path"]: (f["collected"] if f["collected"] >= 0 else f["defs"])
-                  for f in base["per_file"]}
+        counts = {
+            f["path"]: (f["collected"] if f["collected"] >= 0 else f["defs"])
+            for f in base["per_file"]
+        }
         src = "baseline %s" % base.get("commit", "")[:9]
     except SystemExit:
         src = "AST (no baseline)"
@@ -87,11 +97,16 @@ def main() -> int:
     head = {}
     for p in paths:
         r = sc.scan_file(p)
-        head[r["file"]] = (sum(x["saving"] for x in r["params"])
-                           + sum(x["saving"] for x in r["tauts"]) + len(r["skips"]))
+        head[r["file"]] = (
+            sum(x["saving"] for x in r["params"])
+            + sum(x["saving"] for x in r["tauts"])
+            + len(r["skips"])
+        )
 
     total = sum(counts[str(p.relative_to(_tb.REPO_ROOT))] for p in paths)
-    target = args.target if args.target is not None else int(round(total * (1 - args.target_pct / 100)))
+    target = (
+        args.target if args.target is not None else int(round(total * (1 - args.target_pct / 100)))
+    )
     if target >= total:
         _tb.die("target %d is not below the current count %d" % (target, total))
     cut = total - target
@@ -99,7 +114,8 @@ def main() -> int:
     groups = affinity_groups(paths)
     sized = sorted(
         ((g, sum(counts[str(p.relative_to(_tb.REPO_ROOT))] for p in g)) for g in groups),
-        key=lambda t: -t[1])
+        key=lambda t: -t[1],
+    )
 
     # Longest-processing-time bin packing: balanced, disjoint, deterministic.
     clusters = [{"files": [], "now": 0} for _ in range(args.agents)]
@@ -122,20 +138,36 @@ def main() -> int:
             infeasible += 1
         name = "C%d-%s" % (i, c["files"][0].stem.replace("test_", ""))
         rows.append([name, len(rels), c["now"], c_target, c_cut, c_head, ok])
-        blocks.append({"cluster": name, "files": rels, "now": c["now"],
-                       "target": c_target, "cut": c_cut, "candidate_headroom": c_head,
-                       "feasible_from_candidates": c_head >= c_cut})
+        blocks.append(
+            {
+                "cluster": name,
+                "files": rels,
+                "now": c["now"],
+                "target": c_target,
+                "cut": c_cut,
+                "candidate_headroom": c_head,
+                "feasible_from_candidates": c_head >= c_cut,
+            }
+        )
 
     print("== CLUSTER PLAN  counts from %s" % src)
-    print("files=%d  now=%d  target=%d  cut=%d (%.0f%%)  agents=%d  excluded=%s"
-          % (len(paths), total, target, cut, cut / total * 100, args.agents,
-             ",".join(args.exclude) or "none"))
+    print(
+        "files=%d  now=%d  target=%d  cut=%d (%.0f%%)  agents=%d  excluded=%s"
+        % (
+            len(paths),
+            total,
+            target,
+            cut,
+            cut / total * 100,
+            args.agents,
+            ",".join(args.exclude) or "none",
+        )
+    )
     print()
     print(_tb.table(rows, ["CLUSTER", "FILES", "NOW", "TARGET", "CUT", "HEADROOM", "FEASIBLE"]))
     print()
     if infeasible:
-        print("%d cluster(s) cannot reach their target from scan candidates alone."
-              % infeasible)
+        print("%d cluster(s) cannot reach their target from scan candidates alone." % infeasible)
         print("That is a DECISION, not a bug: accept the shortfall, re-scope the")
         print("target, or move a file between clusters. An agent must never close")
         print("the gap by deleting the last test covering a production branch.")
@@ -143,13 +175,27 @@ def main() -> int:
         print("Every cluster's target is inside its candidate headroom.")
     print()
     for r in rows:
-        print("  %-22s %s" % (r[0], " ".join(
-            f.replace("tests/", "") for f in
-            next(b["files"] for b in blocks if b["cluster"] == r[0]))))
+        print(
+            "  %-22s %s"
+            % (
+                r[0],
+                " ".join(
+                    f.replace("tests/", "")
+                    for f in next(b["files"] for b in blocks if b["cluster"] == r[0])
+                ),
+            )
+        )
     print()
-    detail = _tb.write_detail("cluster-plan.json",
-                              {"total": total, "target": target, "cut": cut,
-                               "excluded": args.exclude, "clusters": blocks})
+    detail = _tb.write_detail(
+        "cluster-plan.json",
+        {
+            "total": total,
+            "target": target,
+            "cut": cut,
+            "excluded": args.exclude,
+            "clusters": blocks,
+        },
+    )
     print("dispatch blocks: %s" % detail)
     return 0
 

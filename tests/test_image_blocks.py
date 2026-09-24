@@ -654,8 +654,14 @@ def _standalone_env(mp, *, md="<!-- image -->", ocr_text=None, splice_enabled=Tr
         "route_and_extract_flat",
         MagicMock(return_value=("flat_prose", [{"role": "prose", "text": "x"}])),
     )
-    for name in ("save_flat_doc", "save_doc", "save_raw", "save_doc_meta",
-                 "FLAT_DOCS_TOTAL", "LOW_QUALITY_TREES"):
+    for name in (
+        "save_flat_doc",
+        "save_doc",
+        "save_raw",
+        "save_doc_meta",
+        "FLAT_DOCS_TOTAL",
+        "LOW_QUALITY_TREES",
+    ):
         mp.setattr(_idx, name, MagicMock())
     mp.setattr(_img, "LOW_QUALITY_TREES", MagicMock())
     mp.setattr(_idx, "image_to_markdown", lambda path, langs: md)
@@ -757,9 +763,7 @@ class TestStandaloneImageBranch:
             img = tmp_path / f"{label}.jpg"
             img.write_bytes(_STANDALONE_JPEG)
             with pytest.MonkeyPatch.context() as mp:
-                captured = _standalone_env(
-                    mp, ocr_text=_STANDALONE_OCR, splice_enabled=enabled
-                )
+                captured = _standalone_env(mp, ocr_text=_STANDALONE_OCR, splice_enabled=enabled)
                 c = _capturing_client(mp, captured)
                 await c.index(str(img))
 

@@ -877,7 +877,7 @@ def write_human_report(summary: dict, all_results: list[dict], out_path: Path) -
         f"Max pages/doc: {summary.get('max_pages', 'unlimited')} (0 = 9999 cap, not literally unlimited)",
         "",
         "> **This report measures character yield, not accuracy.**",
-        "> No ground-truth transcription exists for this corpus. \"Winner\" means",
+        '> No ground-truth transcription exists for this corpus. "Winner" means',
         "> the engine that produced more characters, which is a necessary but not",
         "> sufficient signal for quality. A high character count from garbled output",
         "> is noise, not accuracy. Interpret with that caveat.",

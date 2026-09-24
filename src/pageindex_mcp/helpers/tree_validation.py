@@ -169,11 +169,13 @@ def _flatten_tree_text(
 
     def _walk(ns: list) -> None:
         for n in ns:
-            parts.extend(_node_text_parts(
-                n,
-                include_ocr_text=include_ocr_text,
-                include_summary=include_summary,
-            ))
+            parts.extend(
+                _node_text_parts(
+                    n,
+                    include_ocr_text=include_ocr_text,
+                    include_summary=include_summary,
+                )
+            )
             _walk(n.get("nodes") or [])
 
     _walk(nodes)
@@ -313,7 +315,9 @@ class TreeSignals:
         _, _, max_leaf_ratio = _tree_max_leaf_ratio(structure)
         flat_text = _flatten_tree_text(structure)
         flat_text_corrected = _flatten_tree_text(
-            structure, include_ocr_text=True, include_summary=False,
+            structure,
+            include_ocr_text=True,
+            include_summary=False,
         )
 
         if isinstance(expected_script, ScriptContext):
@@ -525,9 +529,7 @@ def validate_tree(
                 dominant_script=_eff_script,
                 # pre-NFKC: post-normalize but safe — returns False on destroyed PF
                 had_presentation_forms=(
-                    _infer_presentation_forms(sig.flat_text)
-                    if sig.flat_text
-                    else False
+                    _infer_presentation_forms(sig.flat_text) if sig.flat_text else False
                 ),
                 source="validate_tree",
             )

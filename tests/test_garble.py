@@ -417,18 +417,26 @@ class TestPresentationForms:
         otherwise-clean text; False (and the default) never does."""
         ctx = ScriptContext(dominant_script="Arab", had_presentation_forms=True, source="test")
         rows = [
-            ("clean text " * 50, ctx.dominant_script, {"had_presentation_forms": True}, True,
-             "via_script_context_true"),
-            ("clean text " * 50, "Arab", {"had_presentation_forms": False}, False,
-             "explicit_false"),
+            (
+                "clean text " * 50,
+                ctx.dominant_script,
+                {"had_presentation_forms": True},
+                True,
+                "via_script_context_true",
+            ),
+            (
+                "clean text " * 50,
+                "Arab",
+                {"had_presentation_forms": False},
+                False,
+                "explicit_false",
+            ),
             ("any", None, {"had_presentation_forms": True}, True, "short_text_true"),
             ("any", None, {}, False, "default_absent"),
         ]
         failures = []
         for text, script, kwargs, want, label in rows:
-            fired = "presentation_forms" in _garble_prongs(
-                text, expected_script=script, **kwargs
-            )
+            fired = "presentation_forms" in _garble_prongs(text, expected_script=script, **kwargs)
             if fired is not want:
                 failures.append(f"{label}: presentation_forms fired={fired}, expected {want}")
         assert not failures, "\n".join(failures)
@@ -971,14 +979,19 @@ class TestGarbleCheckNodesTableBlockDetection:
         """row_records, headers and rows all carry text that must be
         garble-checked per node.  Each row keeps the tree shape its original
         test used, so the clean-sibling / clean-root context is preserved."""
+
         def _clean(title, body):
             return {"title": title, "text": body, "nodes": []}
 
         rows = [
             (
                 [
-                    {"title": "Coverage Table", "text": "", "nodes": [],
-                     "row_records": [self._GARBLED_DIGITS]},
+                    {
+                        "title": "Coverage Table",
+                        "text": "",
+                        "nodes": [],
+                        "row_records": [self._GARBLED_DIGITS],
+                    },
                     _clean("Clean Section", "This is clean German insurance prose. " * 20),
                 ],
                 "",
@@ -987,8 +1000,13 @@ class TestGarbleCheckNodesTableBlockDetection:
             ),
             (
                 [
-                    {"title": "Data Table", "text": "", "nodes": [],
-                     "headers": [self._GARBLED_PUA], "rows": []},
+                    {
+                        "title": "Data Table",
+                        "text": "",
+                        "nodes": [],
+                        "headers": [self._GARBLED_PUA],
+                        "rows": [],
+                    },
                 ],
                 "clean root text " * 20,
                 None,
@@ -996,8 +1014,7 @@ class TestGarbleCheckNodesTableBlockDetection:
             ),
             (
                 [
-                    {"title": "Table", "text": "", "nodes": [],
-                     "rows": [[self._GARBLED_DIGITS]]},
+                    {"title": "Table", "text": "", "nodes": [], "rows": [[self._GARBLED_DIGITS]]},
                     _clean("Clean", "Proper insurance text about coverage. " * 20),
                 ],
                 "",
@@ -1060,7 +1077,10 @@ class TestConcatenatedFallback:
                 ],
             }
         ]
-        assert _nodes_garbled_count(tree, script="Latn", config=GarbleConfig(garble_digit_floor=200)) > 0
+        assert (
+            _nodes_garbled_count(tree, script="Latn", config=GarbleConfig(garble_digit_floor=200))
+            > 0
+        )
 
     def test_fallback_verdict_equals_detect_garble_on_concatenation(self):
         """Both a below-floor document and a null-byte document must produce
@@ -1074,9 +1094,7 @@ class TestConcatenatedFallback:
         ]
         failures = []
         for texts, label in cases:
-            nodes = [
-                {"title": str(i), "text": t, "nodes": []} for i, t in enumerate(texts)
-            ]
+            nodes = [{"title": str(i), "text": t, "nodes": []} for i, t in enumerate(texts)]
             count = _nodes_garbled_count(nodes, script="Latn", config=config)
             concat = "\n".join(t for t in texts if t.strip())
             direct = detect_garble(
@@ -1239,7 +1257,9 @@ class TestFlatBlocksRatioThreshold:
                 failures.append(f"{label}: {len(events)} verdict events, expected 1")
                 continue
             if events[0]["choice"] != expected_choice:
-                failures.append(f"{label}: choice={events[0]['choice']!r}, expected {expected_choice!r}")
+                failures.append(
+                    f"{label}: choice={events[0]['choice']!r}, expected {expected_choice!r}"
+                )
             attrs = events[0]["attrs"]
             missing = {
                 "char_ratio",
@@ -1593,9 +1613,7 @@ class TestF1CoverageExemption:
             (False, "", "", "exempt_off_no_text_layer"),
         ]
         for exempt, page_text, clip_text, label in cases:
-            monkeypatch.setattr(
-                converters.pictures, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", exempt
-            )
+            monkeypatch.setattr(converters.pictures, "_COVERAGE_EXEMPT_NO_TEXT_LAYER", exempt)
             if not exempt:
                 monkeypatch.setattr(
                     converters.pictures,
@@ -1686,7 +1704,6 @@ class TestF5SkipReason:
         assert pics[2].get("skipped_reason") == "unknown"
 
 
-
 # ===========================================================================
 # F3 -- OCR language detection from the filename
 # ===========================================================================
@@ -1710,7 +1727,9 @@ class TestOcrLangOverride:
             langs = detect_ocr_langs(sample)
             missing = must_contain - set(langs)
             if missing:
-                failures.append(f"{label}: detect_ocr_langs -> {langs!r}, missing {sorted(missing)}")
+                failures.append(
+                    f"{label}: detect_ocr_langs -> {langs!r}, missing {sorted(missing)}"
+                )
             if not langs:
                 failures.append(f"{label}: returned an empty language list")
         assert not failures, "\n".join(failures)
@@ -1835,11 +1854,17 @@ class TestArbitrate:
             (
                 [
                     Candidate(
-                        label="tess", text="b" * 100, char_count=100, garbled=False,
+                        label="tess",
+                        text="b" * 100,
+                        char_count=100,
+                        garbled=False,
                         engine="tesseract",
                     ),
                     Candidate(
-                        label="surya", text="a" * 100, char_count=100, garbled=False,
+                        label="surya",
+                        text="a" * 100,
+                        char_count=100,
+                        garbled=False,
                         engine="surya",
                     ),
                 ],
@@ -1906,10 +1931,18 @@ class TestPreRebuildMdQuality:
     @staticmethod
     def _state() -> ExtractionState:
         return ExtractionState(
-            result={}, ok=False, reason="", gate_result=None,
-            first_defect=TreeDefect.NODE_COUNT_LOW, route=Route.REJECT,
-            md_content=None, tmp_md_path=None, pic_results=[], used_converter=None,
-            total_chars=0, extraction_stages_captured=[],
+            result={},
+            ok=False,
+            reason="",
+            gate_result=None,
+            first_defect=TreeDefect.NODE_COUNT_LOW,
+            route=Route.REJECT,
+            md_content=None,
+            tmp_md_path=None,
+            pic_results=[],
+            used_converter=None,
+            total_chars=0,
+            extraction_stages_captured=[],
         )
 
     def test_defaults_set_and_apply(self):
@@ -1944,12 +1977,16 @@ class TestCleanMdOverridesCharRegression:
         untested.  It now asserts the verdict."""
         from pageindex_mcp.client.recovery import _keep_best_wins
 
-        pre_result = {"structure": [
-            {"title": "x", "text": "garbled " * 15000, "children": []},
-        ]}
-        post_result = {"structure": [
-            {"title": "y", "text": "clean " * 10000, "children": []},
-        ]}
+        pre_result = {
+            "structure": [
+                {"title": "x", "text": "garbled " * 15000, "children": []},
+            ]
+        }
+        post_result = {
+            "structure": [
+                {"title": "y", "text": "clean " * 10000, "children": []},
+            ]
+        }
         sc = ScriptContext(dominant_script="ar", had_presentation_forms=False, source="test")
         result = _keep_best_wins(
             pre_result=pre_result,
@@ -1962,19 +1999,22 @@ class TestCleanMdOverridesCharRegression:
             post_md_garbled=False,
         )
         assert result is True, (
-            "clean post markdown must override the char-count revert when the "
-            "pre-result is garbled"
+            "clean post markdown must override the char-count revert when the pre-result is garbled"
         )
 
     def test_without_post_md_garbled_reverts_normally(self):
         from pageindex_mcp.client.recovery import _keep_best_wins
 
-        pre_result = {"structure": [
-            {"title": "x", "text": "hello world " * 1000, "children": []},
-        ]}
-        post_result = {"structure": [
-            {"title": "y", "text": "hello " * 500, "children": []},
-        ]}
+        pre_result = {
+            "structure": [
+                {"title": "x", "text": "hello world " * 1000, "children": []},
+            ]
+        }
+        post_result = {
+            "structure": [
+                {"title": "y", "text": "hello " * 500, "children": []},
+            ]
+        }
         result = _keep_best_wins(
             pre_result=pre_result,
             pre_total_chars=12000,
@@ -2016,9 +2056,7 @@ def _density_signals(flat_text_len: int) -> TreeSignals:
 def _script_ctx(script: str | None) -> ScriptContext | None:
     if script is None:
         return None
-    return ScriptContext(
-        dominant_script=script, had_presentation_forms=False, source="test"
-    )
+    return ScriptContext(dominant_script=script, had_presentation_forms=False, source="test")
 
 
 class TestArabicDensityFloor:
@@ -2067,9 +2105,7 @@ class TestArabicDensityFloor:
                 if event == "suspect_density_gate":
                     logged_attrs.update(attrs)
 
-            monkeypatch.setattr(
-                "pageindex_mcp.helpers.gates.decision", _capture_decision
-            )
+            monkeypatch.setattr("pageindex_mcp.helpers.gates.decision", _capture_decision)
             _gate_suspect_density(
                 _density_signals(10_000),
                 structure=[],

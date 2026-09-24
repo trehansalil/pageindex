@@ -80,14 +80,18 @@ def contract_ids() -> list:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--target", type=int, default=None, help="collected-test target to assert")
     ap.add_argument("--baseline", default=None, help="baseline census JSON to diff against")
     ap.add_argument("--coverage-xml", default=None, help="post-cut coverage.xml")
     ap.add_argument("--no-collect", action="store_true", help="AST counts only")
-    ap.add_argument("--run-gates", action="store_true",
-                    help="also exec the static gate scripts (never the pytest gate)")
+    ap.add_argument(
+        "--run-gates",
+        action="store_true",
+        help="also exec the static gate scripts (never the pytest gate)",
+    )
     args = ap.parse_args()
 
     base = _tb.load_baseline(path=args.baseline)
@@ -110,10 +114,15 @@ def main() -> int:
     was = base["collected"]
     delta = now_n - was
     if args.target is not None:
-        check("count", now_n <= args.target,
-              "collected %d vs target %d (was %d, %+d)" % (now_n, args.target, was, delta))
+        check(
+            "count",
+            now_n <= args.target,
+            "collected %d vs target %d (was %d, %+d)" % (now_n, args.target, was, delta),
+        )
     else:
-        check("count", True, "collected %d (was %d, %+d) -- no --target given" % (now_n, was, delta))
+        check(
+            "count", True, "collected %d (was %d, %+d) -- no --target given" % (now_n, was, delta)
+        )
 
     # 2 coverage
     if args.coverage_xml:
@@ -121,20 +130,33 @@ def main() -> int:
         cov = round(float(root.attrib.get("line-rate", "0")) * 100, 2)
         bcov = base.get("coverage_pct")
         if bcov is None:
-            check("coverage", False, "now %.2f%% but the baseline recorded none -- "
-                  "'coverage held' is unprovable" % cov, warn_only=True)
+            check(
+                "coverage",
+                False,
+                "now %.2f%% but the baseline recorded none -- 'coverage held' is unprovable" % cov,
+                warn_only=True,
+            )
         else:
-            check("coverage", cov >= bcov - 0.5,
-                  "%.2f%% vs baseline %.2f%% (%+.2f)" % (cov, bcov, cov - bcov))
+            check(
+                "coverage",
+                cov >= bcov - 0.5,
+                "%.2f%% vs baseline %.2f%% (%+.2f)" % (cov, bcov, cov - bcov),
+            )
     else:
         check("coverage", False, "no --coverage-xml given -- coverage UNVERIFIED", warn_only=True)
 
     # 3 density  4 ratio
-    check("density", density >= DENSITY_FLOOR,
-          "%.2f asserts/def (unit gate floor %.1f, was %.2f)"
-          % (density, DENSITY_FLOOR, base.get("assert_density", 0)))
-    check("ratio", ratio <= RATIO_CEILING,
-          "%.3f test/src files (ceiling %.2f; %d/%d)" % (ratio, RATIO_CEILING, len(paths), len(srcs)))
+    check(
+        "density",
+        density >= DENSITY_FLOOR,
+        "%.2f asserts/def (unit gate floor %.1f, was %.2f)"
+        % (density, DENSITY_FLOOR, base.get("assert_density", 0)),
+    )
+    check(
+        "ratio",
+        ratio <= RATIO_CEILING,
+        "%.3f test/src files (ceiling %.2f; %d/%d)" % (ratio, RATIO_CEILING, len(paths), len(srcs)),
+    )
 
     # 5 index
     idx = read_index()
@@ -145,17 +167,28 @@ def main() -> int:
         on_disk = {p.name for p in paths}
         missing = sorted(listed - on_disk)
         orphan = sorted(on_disk - listed)
-        unmapped = sorted(str(s.relative_to(_tb.SRC_DIR / "pageindex_mcp"))
-                          for s in srcs if str(s.relative_to(_tb.SRC_DIR / "pageindex_mcp")) not in idx)
+        unmapped = sorted(
+            str(s.relative_to(_tb.SRC_DIR / "pageindex_mcp"))
+            for s in srcs
+            if str(s.relative_to(_tb.SRC_DIR / "pageindex_mcp")) not in idx
+        )
         problems = []
         if missing:
-            problems.append("%d mapping(s) point at deleted files: %s" % (len(missing), ", ".join(missing[:4])))
+            problems.append(
+                "%d mapping(s) point at deleted files: %s" % (len(missing), ", ".join(missing[:4]))
+            )
         if orphan:
             problems.append("%d unmapped test file(s): %s" % (len(orphan), ", ".join(orphan[:4])))
         if unmapped:
-            problems.append("%d src file(s) with no entry: %s" % (len(unmapped), ", ".join(unmapped[:4])))
-        check("index", not problems, "; ".join(problems) or
-              "%d src entries, %d test files, no orphans" % (len(idx), len(listed)))
+            problems.append(
+                "%d src file(s) with no entry: %s" % (len(unmapped), ", ".join(unmapped[:4]))
+            )
+        check(
+            "index",
+            not problems,
+            "; ".join(problems)
+            or "%d src entries, %d test files, no orphans" % (len(idx), len(listed)),
+        )
 
     # 6 contracts -- .py only. A stale .pyc under tests/__pycache__ will happily
     #    satisfy a naive `grep -r`, masking a contract test that was deleted.
@@ -165,20 +198,37 @@ def main() -> int:
     else:
         blob = "\n".join(p.read_text(errors="replace") for p in _tb.TESTS_DIR.rglob("*.py"))
         missing = [cid for _y, cid in ids if cid not in blob]
-        check("contracts", not missing,
-              "%d/%d IDs findable in tests/**.py%s"
-              % (len(ids) - len(missing), len(ids),
-                 "; MISSING: " + ", ".join(missing[:6]) if missing else ""))
+        check(
+            "contracts",
+            not missing,
+            "%d/%d IDs findable in tests/**.py%s"
+            % (
+                len(ids) - len(missing),
+                len(ids),
+                "; MISSING: " + ", ".join(missing[:6]) if missing else "",
+            ),
+        )
 
     # 7 layers
-    bad = [m for m in LAYER_MODULES
-           if (_tb.SRC_DIR / "pageindex_mcp" / ("%s.py" % m)).exists()
-           or (_tb.SRC_DIR / "pageindex_mcp" / m).is_dir()]
-    bad = [m for m in bad
-           if not (_tb.TESTS_DIR / ("test_%s.py" % m)).exists()
-           and not (_tb.TESTS_DIR / ("test_%s_contract.py" % m)).exists()]
-    check("layers", not bad, "missing per-module file for: %s" % ", ".join(bad) if bad
-          else "every gated layer has test_<module>.py or _contract.py")
+    bad = [
+        m
+        for m in LAYER_MODULES
+        if (_tb.SRC_DIR / "pageindex_mcp" / ("%s.py" % m)).exists()
+        or (_tb.SRC_DIR / "pageindex_mcp" / m).is_dir()
+    ]
+    bad = [
+        m
+        for m in bad
+        if not (_tb.TESTS_DIR / ("test_%s.py" % m)).exists()
+        and not (_tb.TESTS_DIR / ("test_%s_contract.py" % m)).exists()
+    ]
+    check(
+        "layers",
+        not bad,
+        "missing per-module file for: %s" % ", ".join(bad)
+        if bad
+        else "every gated layer has test_<module>.py or _contract.py",
+    )
 
     # 8 ratchet -- the committed collected-count budget (scripts/gates/test_budget.sh)
     ratchet = _tb.REPO_ROOT / "tests" / "TEST_BUDGET.baseline"
@@ -195,9 +245,12 @@ def main() -> int:
             check("ratchet", False, "TEST_BUDGET.baseline holds no integer")
         else:
             b, allowance = int(num), 15
-            check("ratchet", abs(now_n - b) <= allowance,
-                  "collected %d vs ratchet %d (allowance +/-%d) -- lower it in the "
-                  "SAME commit as the cut" % (now_n, b, allowance))
+            check(
+                "ratchet",
+                abs(now_n - b) <= allowance,
+                "collected %d vs ratchet %d (allowance +/-%d) -- lower it in the "
+                "SAME commit as the cut" % (now_n, b, allowance),
+            )
 
     print("== VERIFY  baseline %s (%s)" % (base.get("commit", "?")[:9], base.get("branch", "?")))
     print(_tb.table([[s, n, m] for s, n, m in RESULTS], ["", "CHECK", "DETAIL"]))
@@ -210,9 +263,14 @@ def main() -> int:
         for g in ("contracts.sh", "test-index-guard.sh --full", "test-ratio-guard.sh"):
             cmd = [str(_tb.REPO_ROOT / "scripts" / "gates" / g.split()[0])] + g.split()[1:]
             try:
-                r = subprocess.run(cmd, cwd=str(_tb.REPO_ROOT), capture_output=True,
-                                   text=True, timeout=600)
-                tail = [l for l in r.stdout.splitlines() if l.startswith(("PASS gate", "FAIL gate", "SKIP gate"))]
+                r = subprocess.run(
+                    cmd, cwd=str(_tb.REPO_ROOT), capture_output=True, text=True, timeout=600
+                )
+                tail = [
+                    l
+                    for l in r.stdout.splitlines()
+                    if l.startswith(("PASS gate", "FAIL gate", "SKIP gate"))
+                ]
                 print("  %-28s %s" % (g, tail[-1] if tail else "rc=%d" % r.returncode))
                 if r.returncode != 0:
                     fails.append(("FAIL", "gate:" + g, "rc=%d" % r.returncode))
@@ -220,11 +278,17 @@ def main() -> int:
                 print("  %-28s could not run: %s" % (g, exc))
         print()
 
-    print("VERDICT: %s  (%d fail, %d warn, %d pass)"
-          % ("FAIL" if fails else "PASS", len(fails), len(warns),
-             len(RESULTS) - len(fails) - len(warns)))
+    print(
+        "VERDICT: %s  (%d fail, %d warn, %d pass)"
+        % (
+            "FAIL" if fails else "PASS",
+            len(fails),
+            len(warns),
+            len(RESULTS) - len(fails) - len(warns),
+        )
+    )
     print("Still owed, and NOT checked here: one capped foreground suite run --")
-    print("  make test TEST_MEM_MAX=900M PYTEST_ARGS=\"-q\"")
+    print('  make test TEST_MEM_MAX=900M PYTEST_ARGS="-q"')
     return 1 if fails else 0
 
 

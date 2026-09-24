@@ -48,9 +48,7 @@ def _load(path: pathlib.Path, name: str):
 
 
 gate = _load(GATE_SCRIPT, "source_invariants_gate")
-rfc_lifecycle_lint = _load(
-    PROJECT_ROOT / "scripts" / "rfc_lifecycle_lint.py", "rfc_lifecycle_lint"
-)
+rfc_lifecycle_lint = _load(PROJECT_ROOT / "scripts" / "rfc_lifecycle_lint.py", "rfc_lifecycle_lint")
 facade_measure = _load(
     PROJECT_ROOT / "scripts" / "facade_surface_measure.py", "facade_surface_measure"
 )
@@ -599,11 +597,14 @@ def test_rfc_lifecycle_lint_sees_the_real_repo_state(tmp_path):
     closed_gate = '- [x] <a id="91-scoped-reingest-and-remeasure"></a>'
     text = rfc033.read_text(encoding="utf-8")
     assert closed_gate in text, "fixture drifted: RFC-033 gate 9.1 is no longer a closed gate"
-    rfc033.write_text(text.replace(closed_gate, closed_gate.replace("[x]", "[ ]")), encoding="utf-8")
+    rfc033.write_text(
+        text.replace(closed_gate, closed_gate.replace("[x]", "[ ]")), encoding="utf-8"
+    )
 
     violations = rfc_lifecycle_lint.lint(PROJECT_ROOT / "agents" / "rfcs", tasks, zone_file)
     reopened = [
-        v for v in violations
+        v
+        for v in violations
         if v.rule == "skipped-gate" and v.severity == "blocking" and "9.1" in str(v)
     ]
     assert reopened, f"lint missed the reopened real gate 9.1; got {violations}"

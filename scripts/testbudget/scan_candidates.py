@@ -32,7 +32,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _tb  # noqa: E402
 
-RFC_FILE_RE = re.compile(r"^test_(rfc\d+|wave\d*|zone\d*|hr\d+|d\d+)\b|_(rfc\d+|wave\d+|zone\d+)\b", re.I)
+RFC_FILE_RE = re.compile(
+    r"^test_(rfc\d+|wave\d*|zone\d*|hr\d+|d\d+)\b|_(rfc\d+|wave\d+|zone\d+)\b", re.I
+)
 RFC_BODY_RE = re.compile(r"\bRFC-?\d{2,3}\b")
 
 
@@ -53,6 +55,7 @@ LOCAL_MODULES = local_modules()
 
 
 # -- helpers ------------------------------------------------------------------
+
 
 def root_name(node) -> str:
     while isinstance(node, (ast.Attribute, ast.Subscript)):
@@ -91,7 +94,9 @@ def assert_helpers(tree) -> set:
     """
     out = set()
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("test_"):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith(
+            "test_"
+        ):
             for sub in ast.walk(node):
                 if isinstance(sub, ast.Assert) or (
                     isinstance(sub, ast.Raise) and "Assertion" in ast.dump(sub)
@@ -146,13 +151,15 @@ def recomputed_expected(func) -> bool:
             continue
         left, right = t.left, t.comparators[0]
         if ast.dump(left) == ast.dump(right):
-            return True                              # assert x == x
+            return True  # assert x == x
+
         def call_of(side):
             if isinstance(side, ast.Call):
                 return side
             if isinstance(side, ast.Name):
                 return assigned.get(side.id)
             return None
+
         lc, rc = call_of(left), call_of(right)
         if lc is None or rc is None:
             continue
@@ -164,8 +171,9 @@ def recomputed_expected(func) -> bool:
         # mean the test recomputed its own expectation.
         if not lc.args and not lc.keywords:
             continue
-        if ast.dump(ast.Tuple(elts=lc.args, ctx=ast.Load())) == \
-           ast.dump(ast.Tuple(elts=rc.args, ctx=ast.Load())):
+        if ast.dump(ast.Tuple(elts=lc.args, ctx=ast.Load())) == ast.dump(
+            ast.Tuple(elts=rc.args, ctx=ast.Load())
+        ):
             return True
     return False
 
@@ -176,7 +184,7 @@ def isinstance_only(func) -> bool:
         return False
     for n in ast.walk(func):
         if isinstance(n, ast.Call) and _tb.assert_like_call(n):
-            return False      # a mock assertion carries the real check
+            return False  # a mock assertion carries the real check
     for a in ass:
         t = a.test
         if isinstance(t, ast.UnaryOp):
@@ -202,10 +210,10 @@ def no_production_call(func, prod: set) -> bool:
         return False
     a = func.args
     if a.args or a.posonlyargs or a.kwonlyargs or a.vararg or a.kwarg:
-        return False                                  # takes fixtures -- can't tell
+        return False  # takes fixtures -- can't tell
     for n in ast.walk(func):
         if isinstance(n, (ast.Import, ast.ImportFrom)):
-            return False                              # imports its subject locally
+            return False  # imports its subject locally
         if isinstance(n, ast.Call) and call_root(n) in prod:
             return False
         if isinstance(n, ast.Name) and n.id in prod:
@@ -224,14 +232,21 @@ SHAPES = [
 
 # -- scans --------------------------------------------------------------------
 
+
 def scan_file(path: Path, prod_only: bool = True) -> dict:
     rel = str(path.relative_to(_tb.REPO_ROOT))
     text = path.read_text(errors="replace")
     try:
         tree = ast.parse(text)
     except SyntaxError as exc:
-        return {"file": rel, "error": str(exc), "params": [], "tauts": [],
-                "skips": [], "collected": 0}
+        return {
+            "file": rel,
+            "error": str(exc),
+            "params": [],
+            "tauts": [],
+            "skips": [],
+            "collected": 0,
+        }
     prod = prod_imports(tree)
     helpers = assert_helpers(tree)
     params, tauts, skips = [], [], []
@@ -252,10 +267,18 @@ def scan_file(path: Path, prod_only: bool = True) -> dict:
                 skips.append({"file": rel, "test": qual, "marker": dn, "line": func.lineno})
         na = len(asserts_of(func))
         if ptables and rows > 1:
-            params.append({"file": rel, "test": qual, "line": func.lineno,
-                           "rows": rows, "tables": ptables, "asserts": na,
-                           "rows_per_assert": round(rows / na, 2) if na else rows,
-                           "saving": rows - 1})
+            params.append(
+                {
+                    "file": rel,
+                    "test": qual,
+                    "line": func.lineno,
+                    "rows": rows,
+                    "tables": ptables,
+                    "asserts": na,
+                    "rows_per_assert": round(rows / na, 2) if na else rows,
+                    "saving": rows - 1,
+                }
+            )
         shapes = []
         if isinstance_only(func):
             shapes.append("B1-isinstance-only")
@@ -268,10 +291,24 @@ def scan_file(path: Path, prod_only: bool = True) -> dict:
         if no_production_call(func, prod):
             shapes.append("B5-no-prod-call")
         if shapes:
-            tauts.append({"file": rel, "test": qual, "line": func.lineno,
-                          "shapes": shapes, "rows": rows, "saving": rows})
-    return {"file": rel, "params": params, "tauts": tauts, "skips": skips,
-            "collected": n, "prod_imports": sorted(prod)}
+            tauts.append(
+                {
+                    "file": rel,
+                    "test": qual,
+                    "line": func.lineno,
+                    "shapes": shapes,
+                    "rows": rows,
+                    "saving": rows,
+                }
+            )
+    return {
+        "file": rel,
+        "params": params,
+        "tauts": tauts,
+        "skips": skips,
+        "collected": n,
+        "prod_imports": sorted(prod),
+    }
 
 
 def rfc_wave_files(paths: list, per_file: dict) -> list:
@@ -298,16 +335,23 @@ def rfc_wave_files(paths: list, per_file: dict) -> list:
                 break
         if not (by_name or home):
             continue
-        out.append({"file": rel, "signal": "name" if by_name else "stem-extends",
-                    "rfc_ids": rfc_ids[:4], "collected": per_file.get(rel, 0),
-                    "suspected_home": home})
+        out.append(
+            {
+                "file": rel,
+                "signal": "name" if by_name else "stem-extends",
+                "rfc_ids": rfc_ids[:4],
+                "collected": per_file.get(rel, 0),
+                "suspected_home": home,
+            }
+        )
     out.sort(key=lambda r: -r["collected"])
     return out
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--files", nargs="*", default=None, help="limit to these test files")
     ap.add_argument("--scan", default="A,B,C,D", help="subset of A,B,C,D (default all)")
     ap.add_argument("--top", type=int, default=12, help="rows per table (default 12)")
@@ -340,17 +384,25 @@ def main() -> int:
     save_a = sum(x["saving"] for x in params)
     save_b = sum(x["saving"] for x in tauts)
     save_c = len(skips)
-    print("A parametrize collapse : %4d tests reclaimable across %d tables"
-          % (save_a, len(params)))
-    print("B tautologies          : %4d tests in %d shapes (READ BEFORE DELETING)"
-          % (save_b, len({s for x in tauts for s in x["shapes"]})))
+    print("A parametrize collapse : %4d tests reclaimable across %d tables" % (save_a, len(params)))
+    print(
+        "B tautologies          : %4d tests in %d shapes (READ BEFORE DELETING)"
+        % (save_b, len({s for x in tauts for s in x["shapes"]}))
+    )
     print("C dead collection      : %4d permanently skipped/xfail" % save_c)
     print()
 
     if "A" in scans and params:
-        rows = [[x["file"].replace("tests/", "") + "::" + x["test"][:38],
-                 x["rows"], x["asserts"], x["rows_per_assert"], x["saving"]]
-                for x in params]
+        rows = [
+            [
+                x["file"].replace("tests/", "") + "::" + x["test"][:38],
+                x["rows"],
+                x["asserts"],
+                x["rows_per_assert"],
+                x["saving"],
+            ]
+            for x in params
+        ]
         print("-- A. PARAMETRIZE TABLES (rank: saving, then rows-per-assert)")
         print(_tb.table(rows, ["TEST", "ROWS", "ASRT", "R/A", "SAVE"], limit=args.top))
         print()
@@ -366,16 +418,19 @@ def main() -> int:
         byfile = {}
         for x in tauts:
             byfile[x["file"]] = byfile.get(x["file"], 0) + 1
-        frows = sorted(([f.replace("tests/", ""), n] for f, n in byfile.items()),
-                       key=lambda r: -r[1])
+        frows = sorted(
+            ([f.replace("tests/", ""), n] for f, n in byfile.items()), key=lambda r: -r[1]
+        )
         if frows:
             print()
             print(_tb.table(frows, ["FILE", "HITS"], limit=args.top))
         print()
 
     if "C" in scans and skips:
-        rows = [[x["file"].replace("tests/", "") + "::" + x["test"][:38], x["marker"],
-                 x["line"]] for x in skips]
+        rows = [
+            [x["file"].replace("tests/", "") + "::" + x["test"][:38], x["marker"], x["line"]]
+            for x in skips
+        ]
         print("-- C. PERMANENTLY SKIPPED / XFAIL (dead code with a collection cost)")
         print(_tb.table(rows, ["TEST", "MARKER", "LINE"], limit=args.top))
         print()
@@ -385,21 +440,29 @@ def main() -> int:
         rfc = rfc_wave_files(paths, per_file_n)
         print("-- D. SUSPECTED RFC-WAVE FILES (fold into the topical home -- human read)")
         if rfc:
-            rows = [[x["file"].replace("tests/", ""), x["collected"],
-                     x["signal"], x["suspected_home"] or "?"]
-                    for x in rfc]
+            rows = [
+                [
+                    x["file"].replace("tests/", ""),
+                    x["collected"],
+                    x["signal"],
+                    x["suspected_home"] or "?",
+                ]
+                for x in rfc
+            ]
             print(_tb.table(rows, ["FILE", "COLL", "SIGNAL", "SUSPECTED HOME"], limit=args.top))
         else:
             print("  none -- no test file is named for an RFC/wave/zone")
         print()
 
-    print("ESTIMATED CEILING: %d tests removable without touching coverage-bearing "
-          "asserts\n  (A %d + B %d + C %d; D adds %d more if the folds check out)"
-          % (save_a + save_b + save_c, save_a, save_b, save_c,
-             sum(x["collected"] for x in rfc)))
-    detail = _tb.write_detail("scan-candidates.json",
-                              {"params": params, "tauts": tauts, "skips": skips,
-                               "rfc_wave": rfc, "errors": errors})
+    print(
+        "ESTIMATED CEILING: %d tests removable without touching coverage-bearing "
+        "asserts\n  (A %d + B %d + C %d; D adds %d more if the folds check out)"
+        % (save_a + save_b + save_c, save_a, save_b, save_c, sum(x["collected"] for x in rfc))
+    )
+    detail = _tb.write_detail(
+        "scan-candidates.json",
+        {"params": params, "tauts": tauts, "skips": skips, "rfc_wave": rfc, "errors": errors},
+    )
     print("detail: %s" % detail)
     return 1 if errors else 0
 

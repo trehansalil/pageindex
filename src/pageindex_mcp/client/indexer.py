@@ -459,7 +459,9 @@ async def _surya_density_recovery(
             resp.raise_for_status()
     except Exception:
         logger.warning(
-            "Surya density recovery failed for %s", filename, exc_info=True,
+            "Surya density recovery failed for %s",
+            filename,
+            exc_info=True,
         )
         return None
 
@@ -503,9 +505,7 @@ def _surya_beats_tesseract(
     Surya wins when it is clean and says more, or when it is the only clean
     candidate. Garbled Surya never wins, however many characters it emits.
     """
-    return (not surya_garbled and surya_chars > tess_chars) or (
-        tess_garbled and not surya_garbled
-    )
+    return (not surya_garbled and surya_chars > tess_chars) or (tess_garbled and not surya_garbled)
 
 
 async def _surya_image_ocr(
@@ -528,7 +528,9 @@ async def _surya_image_ocr(
             resp.raise_for_status()
     except Exception:
         logger.warning(
-            "Surya image OCR failed for %s", filename, exc_info=True,
+            "Surya image OCR failed for %s",
+            filename,
+            exc_info=True,
         )
         return None
 
@@ -668,9 +670,8 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             # When preclassify already detected a garbled text layer, consume
             # that signal directly instead of re-probing with fitz.  The D3a
             # fitz block below still runs for landscape_pages / page_count.
-            if (
-                pipeline_config.preclassify_enabled
-                and (pre_classification or {}).get("garbled_text_layer")
+            if pipeline_config.preclassify_enabled and (pre_classification or {}).get(
+                "garbled_text_layer"
             ):
                 state.pre_garbled = True
                 decision(
@@ -724,8 +725,8 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                                 if script_context is not None
                                 else ScriptContext(
                                     dominant_script=expected_script,
-                                                            # pre-NFKC: raw PDF text
-                        had_presentation_forms=_infer_presentation_forms(raw_text),
+                                    # pre-NFKC: raw PDF text
+                                    had_presentation_forms=_infer_presentation_forms(raw_text),
                                     source="pre_garble_probe",
                                 )
                             )
@@ -1315,9 +1316,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             # Compare content-derived langs against filename-derived; if they
             # differ, re-OCR once with corrected langs and arbitrate.
             content_langs = (
-                detect_ocr_langs(standalone_ocr_text)
-                if standalone_ocr_text
-                else img_langs
+                detect_ocr_langs(standalone_ocr_text) if standalone_ocr_text else img_langs
             )
             if sorted(content_langs) != sorted(img_langs):
                 _corrective_degraded = False
@@ -1336,18 +1335,30 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         corrective_ocr_text = await asyncio.to_thread(
                             _tesseract_ocr_image, file_path, corrective_langs
                         )
-                    original_garbled = bool(detect_garble(
-                        standalone_ocr_text,
-                        script_context=script_context,
-                        config=_garble_config,
-                        blob_kind=BlobKind.TREE_TEXT,
-                    )) if standalone_ocr_text else True
-                    corrective_garbled = bool(detect_garble(
-                        corrective_ocr_text,
-                        script_context=script_context,
-                        config=_garble_config,
-                        blob_kind=BlobKind.TREE_TEXT,
-                    )) if corrective_ocr_text else True
+                    original_garbled = (
+                        bool(
+                            detect_garble(
+                                standalone_ocr_text,
+                                script_context=script_context,
+                                config=_garble_config,
+                                blob_kind=BlobKind.TREE_TEXT,
+                            )
+                        )
+                        if standalone_ocr_text
+                        else True
+                    )
+                    corrective_garbled = (
+                        bool(
+                            detect_garble(
+                                corrective_ocr_text,
+                                script_context=script_context,
+                                config=_garble_config,
+                                blob_kind=BlobKind.TREE_TEXT,
+                            )
+                        )
+                        if corrective_ocr_text
+                        else True
+                    )
                     candidates = [
                         Candidate(
                             label="filename_derived",
@@ -1418,12 +1429,18 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             state.md_content = md_content
 
             # RFC-048: quality-gated Surya fallback for standalone images.
-            _tess_garbled = bool(detect_garble(
-                standalone_ocr_text,
-                script_context=script_context,
-                config=_garble_config,
-                blob_kind=BlobKind.TREE_TEXT,
-            )) if standalone_ocr_text else True
+            _tess_garbled = (
+                bool(
+                    detect_garble(
+                        standalone_ocr_text,
+                        script_context=script_context,
+                        config=_garble_config,
+                        blob_kind=BlobKind.TREE_TEXT,
+                    )
+                )
+                if standalone_ocr_text
+                else True
+            )
             _tess_chars = len("".join(standalone_ocr_text.split())) if standalone_ocr_text else 0
             _quality_gate_fails = _image_ocr_quality_gate_fails(_tess_chars, _tess_garbled)
 
@@ -1435,12 +1452,14 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     timeout_s=settings.surya_fallback_timeout_s,
                 )
                 if _surya_result and _surya_result.total_text.strip():
-                    _surya_garbled = bool(detect_garble(
-                        _surya_result.total_text,
-                        script_context=script_context,
-                        config=_garble_config,
-                        blob_kind=BlobKind.TREE_TEXT,
-                    ))
+                    _surya_garbled = bool(
+                        detect_garble(
+                            _surya_result.total_text,
+                            script_context=script_context,
+                            config=_garble_config,
+                            blob_kind=BlobKind.TREE_TEXT,
+                        )
+                    )
                     if _surya_beats_tesseract(
                         _tess_chars, _tess_garbled, _surya_result.total_chars, _surya_garbled
                     ):
@@ -1578,7 +1597,9 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         # RFC-048 Amendment: post-validate_tree parallel VLM+Surya fallback
         # for standalone images where the tree is condemned.
         _POST_VT_TRIGGERS = {
-            TreeDefect.GARBLING, TreeDefect.NODE_GARBLING, TreeDefect.DEPTH_LOW,
+            TreeDefect.GARBLING,
+            TreeDefect.NODE_GARBLING,
+            TreeDefect.DEPTH_LOW,
         }
         _surya_already_ran = state.ocr_engine == str(OcrEngine.SURYA)
         if (
@@ -1594,7 +1615,8 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             )
             logger.info(
                 "Post-validate_tree image fallback triggered for %s: defects=%s",
-                filename, _trigger_defects,
+                filename,
+                _trigger_defects,
             )
 
             async def _try_surya() -> tuple[str | None, int, bool, float]:
@@ -1609,12 +1631,14 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         timeout_s=settings.surya_fallback_timeout_s,
                     )
                     if _sr and _sr.total_text.strip():
-                        _sg = bool(detect_garble(
-                            _sr.total_text,
-                            script_context=script_context,
-                            config=_garble_config,
-                            blob_kind=BlobKind.TREE_TEXT,
-                        ))
+                        _sg = bool(
+                            detect_garble(
+                                _sr.total_text,
+                                script_context=script_context,
+                                config=_garble_config,
+                                blob_kind=BlobKind.TREE_TEXT,
+                            )
+                        )
                         return (_sr.total_text, _sr.total_chars, _sg, _sr.confidence)
                 except Exception:
                     logger.warning("Post-VT Surya fallback failed for %s", filename, exc_info=True)
@@ -1626,23 +1650,27 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     return (None, 0, True)
                 try:
                     from ..converters import vlm_extract_markdown
+
                     _vlm_md = await vlm_extract_markdown(file_path, settings.vlm_model)
                     if _vlm_md and _vlm_md.strip():
                         _vlm_chars = len("".join(_vlm_md.split()))
-                        _vlm_garbled = bool(detect_garble(
-                            _vlm_md,
-                            script_context=script_context,
-                            config=_garble_config,
-                            blob_kind=BlobKind.TREE_TEXT,
-                        ))
+                        _vlm_garbled = bool(
+                            detect_garble(
+                                _vlm_md,
+                                script_context=script_context,
+                                config=_garble_config,
+                                blob_kind=BlobKind.TREE_TEXT,
+                            )
+                        )
                         return (_vlm_md, _vlm_chars, _vlm_garbled)
                 except Exception:
                     logger.warning("Post-VT VLM fallback failed for %s", filename, exc_info=True)
                 return (None, 0, True)
 
-            (_surya_text, _surya_ch, _surya_gb, _surya_conf), (_vlm_md, _vlm_ch, _vlm_gb) = (
-                await asyncio.gather(_try_surya(), _try_vlm())
-            )
+            (
+                (_surya_text, _surya_ch, _surya_gb, _surya_conf),
+                (_vlm_md, _vlm_ch, _vlm_gb),
+            ) = await asyncio.gather(_try_surya(), _try_vlm())
 
             _winner = "none"
             _best_text: str | None = None
@@ -1683,9 +1711,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     state.md_content = _best_text
                     state.ocr_engine = "vlm"
                 else:
-                    md_content = re.sub(
-                        r"(<!-- image -->)\s*(?=<!-- image -->)", "", _best_text
-                    )
+                    md_content = re.sub(r"(<!-- image -->)\s*(?=<!-- image -->)", "", _best_text)
                     state.md_content = md_content
                     state.ocr_engine = "surya"
                     state.pic_results = [
@@ -1698,13 +1724,16 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     ]
 
                 await self._reconvert_and_revalidate(
-                    state, state.md_content,
+                    state,
+                    state.md_content,
                     expected_script=expected_script,
                     script_context=script_context,
                 )
                 logger.info(
                     "Post-VT fallback %s recovered %s: ok=%s, chars=%d",
-                    _winner, filename, state.ok,
+                    _winner,
+                    filename,
+                    state.ok,
                     _surya_ch if _winner == "surya" else _vlm_ch,
                 )
 
@@ -1830,9 +1859,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         _vlm_blocks,
                         script_context=_vlm_ctx,
                         config=(
-                            _image_garble_cfg
-                            if _image_garble_cfg is not None
-                            else _garble_config
+                            _image_garble_cfg if _image_garble_cfg is not None else _garble_config
                         ),
                     ):
                         flat_md = vlm_md
@@ -1900,7 +1927,9 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 save_quarantine(sha256, state.result, [filename])
             except Exception:
                 logger.warning(
-                    "quarantine write failed for %s", filename, exc_info=True,
+                    "quarantine write failed for %s",
+                    filename,
+                    exc_info=True,
                 )
             return None
 
@@ -1913,8 +1942,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         )
 
         _enriched_image_blocks = [
-            b for b in blocks
-            if b.get("role") == "image" and b.get("ocr_text")
+            b for b in blocks if b.get("role") == "image" and b.get("ocr_text")
         ]
         if _enriched_image_blocks:
             _pe_script_ctx = (
@@ -2006,9 +2034,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             f_verdict, f_verdict_reason = _vr.verdict, _vr.reason
 
             # ── RFC-047 D8: Surya OCR fallback for Arabic density failures ──
-            _is_arabic_dominant = (
-                _flat_script.dominant_script == "Arab" if _flat_script else False
-            )
+            _is_arabic_dominant = _flat_script.dominant_script == "Arab" if _flat_script else False
             _surya_attempted = False
             if (
                 f_verdict == "FAIL"
@@ -2054,7 +2080,9 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     _flat_sig = TreeSignals.from_tree(
                         flat_structure,
                         expected_script=_flat_script,
-                        garble_threshold=VerdictThresholds.from_config(pipeline_config).garble_threshold,
+                        garble_threshold=VerdictThresholds.from_config(
+                            pipeline_config
+                        ).garble_threshold,
                     )
                     _vr = compute_verdict(
                         flat_structure,
@@ -2478,9 +2506,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         # Latin filenames get correct expected_script from the start — before
         # this, raw_text was unavailable until the fitz probe inside
         # _convert_to_tree, so filename-only inference was all we had.
-        _pre_text_sample = (
-            (pre_classification or {}).get("text_sample", "") or ""
-        )
+        _pre_text_sample = (pre_classification or {}).get("text_sample", "") or ""
         script_context = ScriptContext.from_document(filename, raw_text=_pre_text_sample)
         expected_script = script_context.dominant_script
 
@@ -2645,8 +2671,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 if (
                     not state.ok
                     and state.route == Route.TREE
-                    and state.first_defect
-                    in {TreeDefect.GARBLING, TreeDefect.NODE_GARBLING}
+                    and state.first_defect in {TreeDefect.GARBLING, TreeDefect.NODE_GARBLING}
                 ):
                     _vt_raw = (
                         state.gate_result

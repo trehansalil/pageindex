@@ -113,10 +113,38 @@ _SHORT_CLEAN_TEXT = "Section 3.2 applies to all policyholders under this contrac
 assert len(_SHORT_CLEAN_TEXT) < 200
 
 _WORDS = [
-    "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
-    "india", "juliet", "kilo", "lima", "mike", "november", "oscar", "papa",
-    "quebec", "romeo", "sierra", "tango", "uniform", "victor", "whiskey",
-    "xray", "yankee", "zulu", "apple", "banana", "cherry", "date", "fig", "grape",
+    "alpha",
+    "bravo",
+    "charlie",
+    "delta",
+    "echo",
+    "foxtrot",
+    "golf",
+    "hotel",
+    "india",
+    "juliet",
+    "kilo",
+    "lima",
+    "mike",
+    "november",
+    "oscar",
+    "papa",
+    "quebec",
+    "romeo",
+    "sierra",
+    "tango",
+    "uniform",
+    "victor",
+    "whiskey",
+    "xray",
+    "yankee",
+    "zulu",
+    "apple",
+    "banana",
+    "cherry",
+    "date",
+    "fig",
+    "grape",
 ]
 
 
@@ -689,7 +717,18 @@ def test_xlsx_to_markdown_arabic_table_and_empty_workbook(tmp_path):
     md = xlsx_to_markdown(str(path))
     missing = [
         tok
-        for tok in ("## إحصاءات", "النشاط", "2019", "2020", "الزراعة", "100", "الصناعة", "220", "|", "---")
+        for tok in (
+            "## إحصاءات",
+            "النشاط",
+            "2019",
+            "2020",
+            "الزراعة",
+            "100",
+            "الصناعة",
+            "220",
+            "|",
+            "---",
+        )
         if tok not in md
     ]
     assert not missing, f"missing from xlsx markdown: {missing}"
@@ -1005,7 +1044,9 @@ class TestConverterChainEntryMetadata:
             if not isinstance(name, str) or not callable(fn) or not isinstance(supports_ocr, bool):
                 failures.append(f"{entry.name}: bad (str, callable, bool) shape")
             if not isinstance(entry.is_agpl, bool):
-                failures.append(f"{entry.name}: is_agpl is {type(entry.is_agpl).__name__}, not bool")
+                failures.append(
+                    f"{entry.name}: is_agpl is {type(entry.is_agpl).__name__}, not bool"
+                )
 
         by_name = {e.name: e for e in chain}
         assert "docling" in by_name, f"docling missing from chain {list(by_name)}"
@@ -1019,7 +1060,9 @@ class TestConverterChainEntryMetadata:
         if by_name["pymupdf4llm"].supports_ocr is not False:
             failures.append("pymupdf4llm must have supports_ocr=False")
         if (chain[0].name, chain[0].supports_ocr) != ("docling", True):
-            failures.append(f"chain[0] is {chain[0].name}/{chain[0].supports_ocr}, want docling/True")
+            failures.append(
+                f"chain[0] is {chain[0].name}/{chain[0].supports_ocr}, want docling/True"
+            )
         assert not failures, "\n".join(failures)
 
     def test_pymupdf_primary_ordering_and_agpl_fallback_gate(self, monkeypatch):
@@ -1574,7 +1617,10 @@ def test_image_markers_exempt_from_garble_but_real_repetition_is_not():
     mojibake, and a scanned PDF's markdown is 100% single-token repetition
     pre-D3); genuine repeated non-comment tokens above the 30% threshold
     still are."""
-    assert check_garble("\n\n".join([_IMAGE_MARKER] * 45), expected_script=None, profile=BULK_PROFILE) is False
+    assert (
+        check_garble("\n\n".join([_IMAGE_MARKER] * 45), expected_script=None, profile=BULK_PROFILE)
+        is False
+    )
     assert check_garble(_GARBLED_TEXT, expected_script=None, profile=BULK_PROFILE) is True
 
 
@@ -1629,9 +1675,7 @@ class TestTesseractOcrFailureContract:
         failures = []
         for exc, reason in cases:
             with (
-                patch(
-                    "pageindex_mcp.converters.pictures.subprocess.run", side_effect=exc
-                ),
+                patch("pageindex_mcp.converters.pictures.subprocess.run", side_effect=exc),
                 patch("pageindex_mcp.converters.pictures.TESSERACT_OCR_FAILURE_TOTAL") as metric,
             ):
                 result = _tesseract_ocr_image("/fake.png", ["eng"])
@@ -1902,7 +1946,10 @@ class TestRecoverPictureTextClipCapture:
         unrelated_md = _normalize_for_containment(
             "This markdown body talks about something else entirely."
         )
-        assert _clip_text_contained("Completely unrelated chart label content here", unrelated_md) is False
+        assert (
+            _clip_text_contained("Completely unrelated chart label content here", unrelated_md)
+            is False
+        )
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -1952,7 +1999,9 @@ class TestHeadingOnlyFallbackTrigger:
         well over 50 chars/heading of prose must NOT fire it -- pdfium is not
         even invoked and the markdown comes back unchanged."""
         md = "\n\n".join(f"# Heading {i}\n\nshort" for i in range(6))
-        assert len(md.replace(converters._IMAGE_MARKER, "")) >= converters._DOC_TEXT_FALLBACK_MIN_CHARS
+        assert (
+            len(md.replace(converters._IMAGE_MARKER, "")) >= converters._DOC_TEXT_FALLBACK_MIN_CHARS
+        )
 
         recovered = "Recovered whole-document prose that clears the garble floor easily."
         monkeypatch.setitem(sys.modules, "pypdfium2", _fake_pdfium_module([recovered]))
@@ -2052,7 +2101,9 @@ def test_pass_max_leaf_ratio_threshold_is_env_tunable_with_widened_default(monke
         reset_pipeline_config()
         got = classify_verdict(_tree_with_ratio(ratio), "hierarchical", None)
         if tuple(got) != want:
-            failures.append(f"PASS_MAX_LEAF_RATIO={env}, ratio={ratio}: got {tuple(got)}, want {want}")
+            failures.append(
+                f"PASS_MAX_LEAF_RATIO={env}, ratio={ratio}: got {tuple(got)}, want {want}"
+            )
     assert not failures, "\n".join(failures)
 
 
@@ -2123,7 +2174,9 @@ async def test_vlm_tesseract_fallback_reason_override(monkeypatch):
     monkeypatch.setattr(converters_mod, "tesseract_ocr_pdf_pages", ocr)
 
     ocr.return_value = _CLEAN_TEXT
-    assert await images_mod._attempt_tesseract_raster_recovery("/f.pdf", None, "f.pdf") == _CLEAN_TEXT
+    assert (
+        await images_mod._attempt_tesseract_raster_recovery("/f.pdf", None, "f.pdf") == _CLEAN_TEXT
+    )
     ocr.return_value = _GARBLED_TEXT
     assert await images_mod._attempt_tesseract_raster_recovery("/f.pdf", None, "f.pdf") is None
 
@@ -2368,7 +2421,9 @@ def test_evaluate_gates_hard_fail_verdict_and_cofiring_tiebreak():
     """A non-hard-fail defect (and TreeDefect.OK) yields no hard_fail_verdict;
     when two hard-fail defects co-fire the reason is the one with the worst
     ``_GATE_PRIORITY``."""
-    outcome = evaluate_gates(_well_formed(), _make_gate_result(TreeDefect.NODE_COUNT_LOW), None, _th())
+    outcome = evaluate_gates(
+        _well_formed(), _make_gate_result(TreeDefect.NODE_COUNT_LOW), None, _th()
+    )
     assert outcome.hard_fail_verdict is None
 
     outcome = evaluate_gates(_well_formed(), _make_gate_result(TreeDefect.OK), None, _th())
@@ -2534,8 +2589,12 @@ class TestSplitOversizedLeafNodes:
             if _OVERSIZED_ORDINAL_RE.search(marker) is None:
                 failures.append(f"_OVERSIZED_ORDINAL_RE does not match {marker!r}")
         ordinal_cases = [
-            ("Part IV", (4,)), ("Part V", (5,)), ("Part VI", (6,)),
-            ("Annex A", (1,)), ("Annex B", (2,)), ("Annex C", (3,)),
+            ("Part IV", (4,)),
+            ("Part V", (5,)),
+            ("Part VI", (6,)),
+            ("Annex A", (1,)),
+            ("Annex B", (2,)),
+            ("Annex C", (3,)),
         ]
         for text, want in ordinal_cases:
             got = _ordinal_value(_OVERSIZED_ORDINAL_RE.search(text))
@@ -2547,7 +2606,9 @@ class TestSplitOversizedLeafNodes:
             tree = [{"node_id": "n1", "title": "root", "text": text, "nodes": []}]
             split_oversized_leaf_nodes(tree, max_chars=50000, min_segments=3)
             if len(tree[0]["nodes"]) != 3:
-                failures.append(f"{prefix}: split produced {len(tree[0]['nodes'])} children, want 3")
+                failures.append(
+                    f"{prefix}: split produced {len(tree[0]['nodes'])} children, want 3"
+                )
             elif not tree[0]["nodes"][0]["text"].startswith(f"{prefix} 1"):
                 failures.append(f"{prefix}: first child does not start at '{prefix} 1'")
         assert not failures, "\n".join(failures)
@@ -2768,9 +2829,7 @@ async def test_cli_registry_fields_surfaced_iff_client_stashed_them(tmp_pdf: Pat
         exit_code = await main()
 
     assert exit_code == 0
-    payload = json.loads(
-        [ln for ln in fake_stdout.getvalue().splitlines() if ln.strip()][-1]
-    )
+    payload = json.loads([ln for ln in fake_stdout.getvalue().splitlines() if ln.strip()][-1])
     assert payload["ok"] is True
     rf = payload.get("registry_fields")
     assert rf is not None, "registry_fields must be surfaced when the client stashed them"
@@ -2786,9 +2845,7 @@ async def test_cli_registry_fields_surfaced_iff_client_stashed_them(tmp_pdf: Pat
     ):
         exit_code = await main()
     assert exit_code == 0
-    payload = json.loads(
-        [ln for ln in fake_stdout.getvalue().splitlines() if ln.strip()][-1]
-    )
+    payload = json.loads([ln for ln in fake_stdout.getvalue().splitlines() if ln.strip()][-1])
     assert payload["ok"] is True
     assert "registry_fields" not in payload
 
@@ -2883,9 +2940,7 @@ def test_script_context_pf_is_threaded_to_every_garble_call_site(monkeypatch):
                 flat_structure, expected_script=ctx
             ),
             "validate_tree": lambda: validate_tree(flat_structure, expected_script=ctx),
-            "compute_verdict": lambda: compute_verdict(
-                nested_structure, "", expected_script=ctx
-            ),
+            "compute_verdict": lambda: compute_verdict(nested_structure, "", expected_script=ctx),
         }
         for name, call in sites.items():
             seen.clear()
@@ -2901,7 +2956,9 @@ def test_script_context_pf_is_threaded_to_every_garble_call_site(monkeypatch):
         dominant_script="Latn", had_presentation_forms=False, source="test_latin"
     )
     seen.clear()
-    validate_tree([{"heading": "test", "content": _LATIN_TEXT, "children": []}], expected_script=latin_ctx)
+    validate_tree(
+        [{"heading": "test", "content": _LATIN_TEXT, "children": []}], expected_script=latin_ctx
+    )
     assert seen and all(v is False for v in seen)
 
 
@@ -2912,7 +2969,10 @@ def test_script_context_from_document_pf_detection_and_enrichment():
     disturbing the other fields."""
     from pageindex_mcp.script import ScriptContext
 
-    assert ScriptContext.from_document("arabic.pdf", raw_text=_ARABIC_PF_TEXT).had_presentation_forms is True
+    assert (
+        ScriptContext.from_document("arabic.pdf", raw_text=_ARABIC_PF_TEXT).had_presentation_forms
+        is True
+    )
 
     ctx = ScriptContext.from_document("arabic.pdf", raw_text=_ARABIC_PF_NFKC)
     assert ctx.had_presentation_forms is False

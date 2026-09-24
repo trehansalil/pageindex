@@ -766,7 +766,10 @@ def compute_verdict(
     else:
         _bare_script = expected_script
     outcome = evaluate_gates(
-        structure, validate_result, expected_script, th,
+        structure,
+        validate_result,
+        expected_script,
+        th,
         flat_signals=flat_signals,
     )
     if outcome.hard_fail_verdict is not None:

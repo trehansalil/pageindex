@@ -60,9 +60,7 @@ def upload_staging(job_id: str, filename: str, data: bytes) -> str:
                         key,
                     )
             except Exception:
-                logger.warning(
-                    "Failed to clean up unqueued staging object: %s", key, exc_info=True
-                )
+                logger.warning("Failed to clean up unqueued staging object: %s", key, exc_info=True)
             raise
         logger.debug("Staged upload: %s (%d bytes)", key, len(data))
         return key

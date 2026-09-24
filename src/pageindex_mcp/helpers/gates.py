@@ -344,9 +344,7 @@ def _gate_suspect_density(
         return (False, "")
     chars_per_page = len(sig.flat_text) / page_count
     chars_per_page_corrected = len(sig.flat_text_corrected) / page_count
-    _is_arabic = (
-        expected_script.dominant_script == "Arab" if expected_script else False
-    )
+    _is_arabic = expected_script.dominant_script == "Arab" if expected_script else False
     _floor = (
         _RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC
         if _is_arabic

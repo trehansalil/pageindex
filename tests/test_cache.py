@@ -143,9 +143,7 @@ def test_cache_01_c3_hit_returns_cached_tree_without_load_and_without_ttl_reset(
     assert fake_cache_redis.ttl("pageindex:doc:hit01") <= 60
 
 
-def test_cache_01_c2_save_doc_and_delete_doc_invalidate_the_cache_key(
-    fake_cache_redis, mock_minio
-):
+def test_cache_01_c2_save_doc_and_delete_doc_invalidate_the_cache_key(fake_cache_redis, mock_minio):
     """CACHE-01-C2: storage.save_doc and storage.delete_doc both delete the
     Redis key pageindex:doc:<doc_id>, and the next get_doc therefore misses and
     re-populates the cache from storage."""

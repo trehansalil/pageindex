@@ -131,9 +131,7 @@ def _wire_tree_garble_probe(
         conv_mock = MagicMock(side_effect=_converter)
     else:
         conv_mock = MagicMock(return_value=conv_md)
-    monkeypatch.setattr(
-        _idx, "pdf_markdown_converters", lambda: [("docling", conv_mock, True)]
-    )
+    monkeypatch.setattr(_idx, "pdf_markdown_converters", lambda: [("docling", conv_mock, True)])
 
     mock_page = MagicMock()
     mock_page.get_text.return_value = _NUMERIC_JUNK
@@ -188,7 +186,8 @@ def _wire_flat_garble_probe(monkeypatch):
     monkeypatch.setattr(_idx, "list_processed_docs", lambda: [])
     monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
     monkeypatch.setattr(
-        _idx, "validate_tree",
+        _idx,
+        "validate_tree",
         lambda structure, **kw: TreeGateResult(
             ok=False, defect=TreeDefect.NODE_COUNT_LOW, detail="n=2"
         ),
@@ -251,9 +250,7 @@ def _assert_quarantined(mocks, *, sha256, source_path):
 async def test_ocr_01_c3_garbling_survives_retry_rejects(monkeypatch, pdf_probe):
     """OCR-01-C3 + OCR-01-C4: garbling persists after force_full_page_ocr retry.
     Expected: LowQualityTreeError('garbling'), nothing persisted, quarantine written."""
-    mocks = _wire_tree_garble_probe(
-        monkeypatch, validate_return=(False, "garbling")
-    )
+    mocks = _wire_tree_garble_probe(monkeypatch, validate_return=(False, "garbling"))
     c = _make_client(monkeypatch)
 
     with pytest.raises(LowQualityTreeError) as exc:
@@ -313,9 +310,7 @@ async def test_ocr_01_c3_retry_exception_rejects(monkeypatch, pdf_probe):
 async def test_flat_03_c2_tree_garbling_rejects(monkeypatch, pdf_probe):
     """OCR-01-C4: tree route, validate_tree -> (False, 'garbling').
     Expected: LowQualityTreeError('garbling'), quarantine written."""
-    mocks = _wire_tree_garble_probe(
-        monkeypatch, validate_return=(False, "garbling")
-    )
+    mocks = _wire_tree_garble_probe(monkeypatch, validate_return=(False, "garbling"))
     c = _make_client(monkeypatch)
 
     with pytest.raises(LowQualityTreeError) as exc:
@@ -368,9 +363,7 @@ async def test_route_guard_flat_routed_garbling_not_rejected(monkeypatch, pdf_pr
     This probe must be GREEN before and after Task 7.3."""
     mocks = _wire_tree_garble_probe(
         monkeypatch,
-        validate_return=TreeGateResult(
-            ok=False, defect=TreeDefect.NODE_COUNT_LOW, detail="n=2"
-        ),
+        validate_return=TreeGateResult(ok=False, defect=TreeDefect.NODE_COUNT_LOW, detail="n=2"),
     )
     _garbled = GarbleReport(is_garbled=True, fired_prongs=frozenset({"test"}))
     monkeypatch.setattr(_idx, "_garble_check_flat_blocks", lambda blocks, **kw: _garbled)
@@ -537,7 +530,8 @@ class TestClearQuarantine:
         mc = _FakeMinio()
         _patch_minio(monkeypatch, mc)
         monkeypatch.setattr(
-            mc, "remove_object",
+            mc,
+            "remove_object",
             lambda *a: (_ for _ in ()).throw(RuntimeError("boom")),
         )
         clear_quarantine("crash01")  # must not raise

@@ -149,7 +149,7 @@ async def _attempt_tesseract_raster_recovery(
             if script_context is not None
             else ScriptContext(
                 dominant_script=expected_script,
-                                # pre-NFKC: raw Tesseract OCR
+                # pre-NFKC: raw Tesseract OCR
                 had_presentation_forms=_infer_presentation_forms(ocr_text),
                 source="tesseract_raster_recovery",
             )

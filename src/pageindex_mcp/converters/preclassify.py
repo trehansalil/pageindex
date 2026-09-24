@@ -122,8 +122,14 @@ def _classify_langs_from_filename(filename: str) -> list[str]:
         langs.append("ar")
     name = filename.lower()
     german_kw = [
-        "haftpflicht", "versicherung", "tarif", "leistung",
-        "unfall", "reitlehrer", "bedingungen", "ghv",
+        "haftpflicht",
+        "versicherung",
+        "tarif",
+        "leistung",
+        "unfall",
+        "reitlehrer",
+        "bedingungen",
+        "ghv",
     ]
     if any(kw in name for kw in german_kw):
         langs.append("de")
@@ -368,6 +374,7 @@ def preclassify_document(
     very first OCR decision.
     """
     import os
+
     t0 = time.monotonic()
 
     ext = os.path.splitext(filename)[1].lower()
@@ -414,6 +421,7 @@ def preclassify_document(
     if run_inspector:
         try:
             from .docling_conv import _run_pdf_inspector
+
             inspector_result = _run_pdf_inspector(filepath)
             if inspector_result is not None:
                 pdf_type = inspector_result.get("pdf_type")
@@ -422,9 +430,10 @@ def preclassify_document(
                 has_encoding_issues = inspector_result.get("has_encoding_issues", False)
         except Exception:
             logger.debug(
-            "preclassify_document: pdf_inspector failed for %s",
-            filepath, exc_info=True,
-        )
+                "preclassify_document: pdf_inspector failed for %s",
+                filepath,
+                exc_info=True,
+            )
 
     # 2. text-layer language detection (reuses existing function)
     text_layer_result = detect_lang_from_text_layer(filepath)
@@ -436,6 +445,7 @@ def preclassify_document(
     page_count = 0
     try:
         import pypdfium2 as pdfium
+
         pdoc = pdfium.PdfDocument(filepath)
         try:
             page_count = len(pdoc)

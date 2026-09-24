@@ -121,7 +121,9 @@ class TestFlatDocViewRowRecords:
             if result is None:
                 failures.append(f"{label}: flat_doc_view returned None")
             elif result["row_records"] != pre_agg:
-                failures.append(f"{label}: row_records={result['row_records']!r}, expected {pre_agg!r}")
+                failures.append(
+                    f"{label}: row_records={result['row_records']!r}, expected {pre_agg!r}"
+                )
         _report(failures, "pre-aggregated row_records")
 
     def test_fallback_derives_from_table_blocks(self):
@@ -140,7 +142,9 @@ class TestFlatDocViewRowRecords:
             if result is None:
                 failures.append(f"{label}: flat_doc_view returned None")
             elif result["row_records"] != expected:
-                failures.append(f"{label}: row_records={result['row_records']!r}, expected {expected!r}")
+                failures.append(
+                    f"{label}: row_records={result['row_records']!r}, expected {expected!r}"
+                )
         _report(failures, "row_records fallback derivation")
 
     def test_both_paths_produce_identical_output(self):
@@ -178,7 +182,10 @@ class TestFlatDocViewBoundary:
         # A tree document (no content_class) is not a flat doc.
         assert (
             flat_doc_view(
-                {"doc_name": "tree.pdf", "structure": [{"node_id": "n1", "title": "A", "text": "t"}]}
+                {
+                    "doc_name": "tree.pdf",
+                    "structure": [{"node_id": "n1", "title": "A", "text": "t"}],
+                }
             )
             is None
         )
@@ -300,7 +307,11 @@ class TestFlatSearchText:
 
     def test_every_role_contributes_its_own_field(self):
         cases = [
-            ("image_ocr", [{"role": "image", "ocr_text": "OCR scanned text"}], ["OCR scanned text"]),
+            (
+                "image_ocr",
+                [{"role": "image", "ocr_text": "OCR scanned text"}],
+                ["OCR scanned text"],
+            ),
             (
                 "image_description",
                 [{"role": "image", "description": "Chart showing revenue"}],
@@ -337,7 +348,11 @@ class TestFlatSearchText:
 
     def test_text_key_ignored_for_table_and_image_plus_edge_cases(self):
         table = _flat_search_text(
-            {"blocks": [{"role": "table", "text": "should NOT appear", "row_records": ["actual | data"]}]}
+            {
+                "blocks": [
+                    {"role": "table", "text": "should NOT appear", "row_records": ["actual | data"]}
+                ]
+            }
         )
         assert "actual | data" in table
         assert "should NOT appear" not in table
@@ -663,7 +678,11 @@ class TestBlockTextPurposes:
             ),
             ("text_fallback", {"role": "table", "text": "fallback text"}, ["fallback text"]),
             ("tree_node_row_records", {"title": "T", "row_records": ["r1", "r2"]}, ["r1", "r2"]),
-            ("tree_node_headers_only", {"title": "T", "headers": ["Col1", "Col2"]}, ["Col1 | Col2"]),
+            (
+                "tree_node_headers_only",
+                {"title": "T", "headers": ["Col1", "Col2"]},
+                ["Col1 | Col2"],
+            ),
         ]
         failures = []
         for label, block, expected_substrings in cases:

@@ -49,6 +49,7 @@ def die(msg: str, code: int = 2):
 
 # -- Test-file discovery ------------------------------------------------------
 
+
 def test_files(tests_dir=None) -> list:
     d = tests_dir or TESTS_DIR
     if not d.exists():
@@ -61,25 +62,25 @@ def src_files(src_dir=None) -> list:
     if not d.exists():
         return []
     return sorted(
-        p for p in d.rglob("*.py")
-        if p.name != "__init__.py" and "__pycache__" not in p.parts
+        p for p in d.rglob("*.py") if p.name != "__init__.py" and "__pycache__" not in p.parts
     )
 
 
 # -- AST facts about one test file --------------------------------------------
 
+
 @dataclass
 class FileFacts:
     path: str
-    defs: int = 0              # `def test_*` count (what the unit gate greps)
-    params: int = 0            # @pytest.mark.parametrize decorators
-    param_rows: int = 0        # total rows across all parametrize tables
-    asserts: int = 0           # assert statements
-    raises: int = 0            # pytest.raises / mock assert_* calls
-    skips: int = 0             # unconditional skip / xfail markers
+    defs: int = 0  # `def test_*` count (what the unit gate greps)
+    params: int = 0  # @pytest.mark.parametrize decorators
+    param_rows: int = 0  # total rows across all parametrize tables
+    asserts: int = 0  # assert statements
+    raises: int = 0  # pytest.raises / mock assert_* calls
+    skips: int = 0  # unconditional skip / xfail markers
     classes: int = 0
     lines: int = 0
-    collected: int = -1        # filled by pytest --collect-only; -1 = unknown
+    collected: int = -1  # filled by pytest --collect-only; -1 = unknown
     parse_error: str = ""
 
     @property
@@ -114,8 +115,9 @@ def parametrize_rows(dec) -> int:
 
 
 def is_test_func(node) -> bool:
-    return (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name.startswith("test_"))
+    return isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith(
+        "test_"
+    )
 
 
 def iter_test_funcs(tree):
@@ -145,9 +147,13 @@ def unconditional_skip(dec) -> bool:
 
 def assert_like_call(call) -> bool:
     cname = decorator_name(call)
-    return (cname.endswith("raises") or ".assert_" in cname
-            or cname.startswith("assert_") or cname.endswith("assert_called")
-            or cname.endswith("fail"))
+    return (
+        cname.endswith("raises")
+        or ".assert_" in cname
+        or cname.startswith("assert_")
+        or cname.endswith("assert_called")
+        or cname.endswith("fail")
+    )
 
 
 def file_facts(path: Path) -> FileFacts:
@@ -179,6 +185,7 @@ def file_facts(path: Path) -> FileFacts:
 
 # -- Collection (cheap, safe -- never runs a test body) -----------------------
 
+
 def collect_counts(paths: list, timeout: int = 600) -> dict:
     """Per-file collected-test counts via `pytest --collect-only -q`.
 
@@ -189,11 +196,14 @@ def collect_counts(paths: list, timeout: int = 600) -> dict:
     cmd = ["uv", "run", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider"]
     cmd += [str(p) for p in paths]
     try:
-        out = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True,
-                             text=True, timeout=timeout)
+        out = subprocess.run(
+            cmd, cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=timeout
+        )
     except Exception as exc:
-        print("  (collect skipped: %s) -- falling back to AST def counts"
-              % exc.__class__.__name__, file=sys.stderr)
+        print(
+            "  (collect skipped: %s) -- falling back to AST def counts" % exc.__class__.__name__,
+            file=sys.stderr,
+        )
         return {}
     counts = {}
     for line in out.stdout.splitlines():
@@ -205,12 +215,15 @@ def collect_counts(paths: list, timeout: int = 600) -> dict:
             continue
         counts[fname] = counts.get(fname, 0) + 1
     if not counts and out.returncode != 0:
-        print("  (collect failed rc=%s) -- falling back to AST def counts"
-              % out.returncode, file=sys.stderr)
+        print(
+            "  (collect failed rc=%s) -- falling back to AST def counts" % out.returncode,
+            file=sys.stderr,
+        )
     return counts
 
 
 # -- Baseline I/O -------------------------------------------------------------
+
 
 def save_baseline(payload: dict, label: str = "census") -> Path:
     BASELINE_DIR.mkdir(parents=True, exist_ok=True)
@@ -230,6 +243,7 @@ def load_baseline(label: str = "census", path=None) -> dict:
 
 
 # -- Small formatting helpers -------------------------------------------------
+
 
 def table(rows: list, headers: list, limit=None) -> str:
     shown = rows if limit is None else rows[:limit]
@@ -252,7 +266,8 @@ def table(rows: list, headers: list, limit=None) -> str:
 
 def git(*args: str) -> str:
     try:
-        return subprocess.run(["git"] + list(args), cwd=str(REPO_ROOT),
-                              capture_output=True, text=True, timeout=120).stdout.strip()
+        return subprocess.run(
+            ["git"] + list(args), cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=120
+        ).stdout.strip()
     except Exception:
         return ""

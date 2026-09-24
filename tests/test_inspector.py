@@ -211,7 +211,7 @@ class TestHandshakeClassificationContract:
         )
 
         read_keys = set(re.findall(r'pdf_class\.get\(\s*"([^"]+)"', consumer_src))
-        assert read_keys, "no pdf_class.get(\"...\") reads found in subprocess_mgr"
+        assert read_keys, 'no pdf_class.get("...") reads found in subprocess_mgr'
 
         pdf_path = tmp_path / "scan.pdf"
         pdf_path.write_bytes(b"%PDF-1.4 fake")
@@ -791,9 +791,7 @@ class TestFallbackTriggerSkip:
         doc.iterate_items.return_value = [(item, 0)]
         return doc
 
-    def test_a_page_is_flagged_only_when_landscape_sparse_and_carrying_a_picture(
-        self, monkeypatch
-    ):
+    def test_a_page_is_flagged_only_when_landscape_sparse_and_carrying_a_picture(self, monkeypatch):
         """RFC-036 D0c: all three conditions must hold simultaneously.
 
         Dropping the picture-region requirement is what made dense numeric-table

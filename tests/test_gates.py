@@ -1535,9 +1535,7 @@ class TestOcrDeferralQF1:
         # (iv) metric labelled by the re-validated outcome
         mocks["OCR_ESCALATION_TOTAL"].labels.assert_called_once_with(result="recovered")
 
-    async def test_escalation_langs_are_filename_first_then_content(
-        self, monkeypatch, pdf_file
-    ):
+    async def test_escalation_langs_are_filename_first_then_content(self, monkeypatch, pdf_file):
         """OCR-01-C2: escalation_langs = detect_ocr_langs(filename) first, then
         detect_ocr_langs(md_content) unioned in (dedup, order-preserving), and
         ensure_tessdata provisions that set before the OCR retry runs."""
@@ -1575,13 +1573,9 @@ class TestOcrDeferralQF1:
         # union is de-duplicated and order-preserving: filename lang leads
         assert ("tessdata", ["deu", "ara"]) in events
         # ensure_tessdata runs BEFORE the OCR retry
-        assert events.index(("tessdata", ["deu", "ara"])) < events.index(
-            ("ocr", ["deu", "ara"])
-        )
+        assert events.index(("tessdata", ["deu", "ara"])) < events.index(("ocr", ["deu", "ara"]))
 
-    async def test_garbling_surviving_the_retry_escalates_only_once(
-        self, monkeypatch, pdf_file
-    ):
+    async def test_garbling_surviving_the_retry_escalates_only_once(self, monkeypatch, pdf_file):
         """OCR-01-C1 (boundary): the force_full_page_ocr retry fires at most
         ONCE per index() call — a tree that is still garbled after it is not
         re-escalated by any later recovery, and the outcome is counted as

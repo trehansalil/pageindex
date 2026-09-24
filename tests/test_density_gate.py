@@ -107,9 +107,7 @@ class TestDensityGate:
     def test_density_gate_threshold_table(self):
         """Gate 9 firing decision across the node-count bypass, the standard
         150 chars/node threshold, and the depth>=4 relaxation to 50."""
-        ctx = ScriptContext(
-            dominant_script=None, had_presentation_forms=False, source="test"
-        )
+        ctx = ScriptContext(dominant_script=None, had_presentation_forms=False, source="test")
         cases = [
             # name, node_count, depth, chars, expect_fired, detail_substring
             ("100 chars/node shallow", 200, 2, 200 * 100, True, "threshold=150.0"),
@@ -295,9 +293,7 @@ class TestSplitterGenericTiers:
         out_of_order = f"Preamble.\n5. {body}\n2. {body}\n8. {body}\n1. {body}"
         node = _make_leaf(out_of_order)
         assert (
-            _split_on_generic_numbered_lines(
-                node, out_of_order, max_chars=100000, min_segments=3
-            )
+            _split_on_generic_numbered_lines(node, out_of_order, max_chars=100000, min_segments=3)
             is False
         ), "Out-of-order numbers should be rejected by LIS guard"
         assert node["nodes"] == []
@@ -612,8 +608,7 @@ class TestLateSuccessReapRecovery:
             # a job hash written without it never expires, and one written
             # with a short one disappears while a poller is still asking.
             assert mock_redis._cas_ttls.get("done") == [str(JOB_TTL)], (
-                "DONE must be stamped with JOB_TTL; "
-                f"got {mock_redis._cas_ttls.get('done')!r}"
+                f"DONE must be stamped with JOB_TTL; got {mock_redis._cas_ttls.get('done')!r}"
             )
 
 

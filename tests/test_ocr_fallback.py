@@ -525,10 +525,7 @@ class TestSuryaImageFallbackWiring:
 # ===========================================================================
 
 _SURYA_APP_PATH = (
-    pathlib.Path(__file__).resolve().parent.parent
-    / "services"
-    / "surya-ocr-service"
-    / "app.py"
+    pathlib.Path(__file__).resolve().parent.parent / "services" / "surya-ocr-service" / "app.py"
 )
 
 
@@ -648,12 +645,22 @@ def surya_pdf_response() -> dict[str, Any]:
     return {
         "pages": [
             {
-                "page_index": 0, "text": "صفحة أولى " * 200, "regions": [],
-                "avg_confidence": 0.96, "char_count": 2000, "elapsed_s": 1.5, "lang": "auto",
+                "page_index": 0,
+                "text": "صفحة أولى " * 200,
+                "regions": [],
+                "avg_confidence": 0.96,
+                "char_count": 2000,
+                "elapsed_s": 1.5,
+                "lang": "auto",
             },
             {
-                "page_index": 1, "text": "صفحة ثانية " * 200, "regions": [],
-                "avg_confidence": 0.94, "char_count": 2200, "elapsed_s": 1.3, "lang": "auto",
+                "page_index": 1,
+                "text": "صفحة ثانية " * 200,
+                "regions": [],
+                "avg_confidence": 0.94,
+                "char_count": 2200,
+                "elapsed_s": 1.3,
+                "lang": "auto",
             },
         ],
         "total_text": ("صفحة أولى " * 200) + "\n\n---\n\n" + ("صفحة ثانية " * 200),

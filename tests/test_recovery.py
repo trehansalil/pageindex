@@ -1247,9 +1247,7 @@ class TestD3ForceRouteOverride:
             ),
             (
                 "vlm_tesseract_raster",
-                lambda: _make_state(
-                    ok=False, route=Route.REJECT, first_defect=TreeDefect.GARBLING
-                ),
+                lambda: _make_state(ok=False, route=Route.REJECT, first_defect=TreeDefect.GARBLING),
                 lambda: TreeGateResult(ok=False, defect=TreeDefect.GARBLING, detail="garbling"),
                 {
                     "recovery_method": "vlm_tesseract_raster",
@@ -1470,9 +1468,7 @@ class TestOcrDecisionCarriesEngine:
                 failures.append(f"{kwargs}: expected mode {expected_mode}, got {decision.mode}")
             if decision.engine is not OcrEngine.TESSERACT:
                 failures.append(f"{kwargs}: no engine attribution ({decision.engine})")
-        assert not failures, (
-            "decide_ocr_strategy attribution failures:\n  " + "\n  ".join(failures)
-        )
+        assert not failures, "decide_ocr_strategy attribution failures:\n  " + "\n  ".join(failures)
 
     def test_forwarded_params_reach_the_decision(self):
         """Zone-3: garble_status / document_type / ocr_langs are accepted AND
@@ -1554,9 +1550,7 @@ class TestConverterNameIsSourcedNotRestated:
         assert 'used_converter = "docling"' not in src, (
             "recovery.py must source the converter name, not restate it (R2.4)"
         )
-        assert "state.ocr_engine" in src, (
-            "the OCR retry path must record state.ocr_engine (R2.3)"
-        )
+        assert "state.ocr_engine" in src, "the OCR retry path must record state.ocr_engine (R2.3)"
 
 
 class TestGarbleProngsSurviveToTheSidecar:
@@ -1697,9 +1691,7 @@ class TestImageRecoveryEligibility:
             "_execute_ocr_retry lacks image_to_markdown dispatch — "
             "image inputs will hit the PDF-only converter path"
         )
-        assert "image_tesseract" in src, (
-            "_execute_ocr_retry lacks image_tesseract decision choice"
-        )
+        assert "image_tesseract" in src, "_execute_ocr_retry lacks image_tesseract decision choice"
 
 
 class TestCorrectiveRetry:
