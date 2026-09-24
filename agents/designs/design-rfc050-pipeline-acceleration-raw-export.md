@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Design Document: Pipeline Acceleration & Raw Output Persistence -->
+<!-- Folder: Designs -->
+
 ---
 id: "design-rfc050-pipeline-acceleration-raw-export"
 title: "Design: Pipeline Acceleration & Raw Output Persistence"

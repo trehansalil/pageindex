@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Implementation Plan: Pipeline Acceleration & Raw Output Persistence -->
+<!-- Folder: Tasks -->
+
 ---
 id: "tasks-rfc050-pipeline-acceleration-raw-export"
 title: "Tasks: Pipeline Acceleration & Raw Output Persistence"

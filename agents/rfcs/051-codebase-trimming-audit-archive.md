@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: RFC-051: Codebase Trimming Audit Archive -->
+<!-- Folder: RFCs -->
+
 ---
 id: "RFC-051"
 title: "Codebase Trimming & Audit Archive"

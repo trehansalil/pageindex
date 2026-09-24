@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Design Document: Codebase Trimming & Audit Archive -->
+<!-- Folder: Designs -->
+
 ---
 id: "design-rfc051-codebase-trimming-audit-archive"
 title: "Design: Codebase Trimming & Audit Archive"

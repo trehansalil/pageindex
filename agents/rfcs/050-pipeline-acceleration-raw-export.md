@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: RFC-050: Pipeline Acceleration Raw Export -->
+<!-- Folder: RFCs -->
+
 ---
 id: "RFC-050"
 title: "Pipeline Acceleration & Raw Output Persistence"

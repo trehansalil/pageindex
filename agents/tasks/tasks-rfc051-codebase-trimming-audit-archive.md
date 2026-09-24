@@ -1,3 +1,7 @@
+<!-- Space: CITRA -->
+<!-- Title: Implementation Plan: Codebase Trimming & Audit Archive -->
+<!-- Folder: Tasks -->
+
 ---
 id: "tasks-rfc051-codebase-trimming-audit-archive"
 title: "Tasks: Codebase Trimming & Audit Archive"
