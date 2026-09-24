@@ -36,7 +36,7 @@ from bidi.algorithm import get_display
 
 from pageindex_mcp import converters, helpers
 from pageindex_mcp import converters as converters_mod
-from pageindex_mcp.config import OCR_ESCALATION_GARBLE, pipeline_config, reset_pipeline_config
+from pageindex_mcp.config import pipeline_config, reset_pipeline_config
 from pageindex_mcp.converters import (
     _AR_PART_RE,
     _bbox_to_fitz_rect,
@@ -837,7 +837,12 @@ async def test_image_dispatch_is_local_tesseract_only_with_no_llm_or_vlm_egress(
         patch.object(
             indexer_mod,
             "settings",
-            dataclasses.replace(indexer_mod.settings, surya_fallback_enabled=False),
+            # Pin the RFC-004 defaults: config load_dotenv()s a host .env that
+            # may set VLM_FALLBACK=true, which would route the RFC-048
+            # post-validate fallback to the VLM and break this test's hermeticity.
+            dataclasses.replace(
+                indexer_mod.settings, surya_fallback_enabled=False, vlm_fallback=False
+            ),
         ),
     ):
         await client._convert_to_tree(
@@ -2101,20 +2106,26 @@ def test_synthetic_structure_preferred_over_rejected_tree():
     assert flat_char_count == sum(len(b["text"]) for b in text_blocks)
 
 
-def _vlm_tesseract_fallback(ocr_text: str, *, reason: str = "garbling") -> str:
-    """Reproduces client.py's recovery/reason-override logic exactly."""
-    if ocr_text and not check_garble(ocr_text, expected_script=None, profile=FLAT_MARKDOWN_PROFILE):
-        reason = "node_count<3"
-    return reason
-
-
-def test_vlm_tesseract_fallback_reason_override():
+@pytest.mark.asyncio
+async def test_vlm_tesseract_fallback_reason_override(monkeypatch):
     """Design Property 8 (D7): on VLM exception, Tesseract OCR runs on the
     rasterized page images; clean OCR text overrides the reason to
     'node_count<3' (flat success path), while garbled output must NOT override
-    it -- the document still raises LowQualityTreeError('garbling') per HR5."""
-    assert _vlm_tesseract_fallback(_CLEAN_TEXT) == "node_count<3"
-    assert _vlm_tesseract_fallback(_GARBLED_TEXT) == "garbling"
+    it -- the document still raises LowQualityTreeError('garbling') per HR5.
+
+    Drives the real ``_attempt_tesseract_raster_recovery``: a non-None return
+    is the override signal, None keeps the 'garbling' reason."""
+    from pageindex_mcp.client import images as images_mod
+
+    monkeypatch.setattr(images_mod, "detect_ocr_langs", lambda _f: ["eng"])
+    monkeypatch.setattr(images_mod, "ensure_tessdata", lambda langs: langs)
+    ocr = AsyncMock()
+    monkeypatch.setattr(converters_mod, "tesseract_ocr_pdf_pages", ocr)
+
+    ocr.return_value = _CLEAN_TEXT
+    assert await images_mod._attempt_tesseract_raster_recovery("/f.pdf", None, "f.pdf") == _CLEAN_TEXT
+    ocr.return_value = _GARBLED_TEXT
+    assert await images_mod._attempt_tesseract_raster_recovery("/f.pdf", None, "f.pdf") is None
 
 
 def test_classify_llm_failure_terminal_vs_transient():
@@ -2125,40 +2136,53 @@ def test_classify_llm_failure_terminal_vs_transient():
     assert _classify_llm_failure("429 rate_limit exceeded, throttled") == "llm_failure_transient"
 
 
-def _image_dominant(md_content: str) -> tuple[bool, int, int]:
-    """Reproduces client.py's image-dominance ratio computation exactly."""
-    non_empty_lines = [ln for ln in md_content.splitlines() if ln.strip()]
-    image_lines = sum(1 for ln in non_empty_lines if _MARKER in ln)
-    dominant = bool(non_empty_lines) and (image_lines / len(non_empty_lines)) > 0.50
-    return dominant, image_lines, len(non_empty_lines)
-
-
-def _would_escalate(reason: str, md_content: str, *, ext: str = ".pdf") -> bool:
-    """Reproduces the D11 gate's overall condition (reason in structural
-    failures + image-dominant), gated on the module flags."""
-    if reason not in ("node_count<3", "depth<2"):
-        return False
-    if (
-        ext != ".pdf"
-        or not OCR_ESCALATION_GARBLE
-        or not pipeline_config.image_dominant_ocr_escalation_enabled
-    ):
-        return False
-    dominant, _, _ = _image_dominant(md_content)
-    return dominant
-
-
-def test_structural_failure_ocr_escalation_for_image_dominant_docs():
+@pytest.mark.asyncio
+async def test_structural_failure_ocr_escalation_for_image_dominant_docs(monkeypatch):
     """Design Property 12 (D11): for any validate_tree failure with reason in
     ('node_count<3', 'depth<2') where the image-line ratio (image lines /
     non-empty lines) exceeds 0.50, the system triggers the same OCR escalation
     path as reason == 'garbling'; the ratio is computed against
-    non_empty_lines, not total_lines."""
-    assert _would_escalate("node_count<3", f"{_MARKER}\n{_MARKER}\n{_MARKER}\nsome prose") is True
-    assert (
-        _would_escalate("node_count<3", "\n".join(["real paragraph text here"] * 8 + [_MARKER]))
-        is False
+    non_empty_lines, not total_lines.  Drives the real
+    ``RecoveryMixin._recover_image_dominant_ocr`` with a spy OCR retry."""
+    from pageindex_mcp.client import recovery as recovery_mod
+    from pageindex_mcp.helpers import TreeDefect, TreeGateResult
+
+    monkeypatch.setattr(
+        recovery_mod,
+        "pipeline_config",
+        dataclasses.replace(pipeline_config, image_dominant_ocr_escalation_enabled=True),
     )
+    monkeypatch.setattr(recovery_mod, "settings", SimpleNamespace(flat_doc_routing=True))
+    retry = AsyncMock(return_value=True)
+    monkeypatch.setattr(recovery_mod.RecoveryMixin, "_execute_ocr_retry", retry)
+
+    def _state(md):
+        return ExtractionState(
+            result={"structure": []},
+            ok=False,
+            reason="node_count<3",
+            gate_result=TreeGateResult(ok=False, defect=TreeDefect.NODE_COUNT_LOW),
+            first_defect=TreeDefect.NODE_COUNT_LOW,
+            route=Route.FLAT,
+            md_content=md,
+            tmp_md_path=None,
+            pic_results=[],
+            used_converter="docling",
+            total_chars=len(md),
+            extraction_stages_captured=[],
+        )
+
+    mixin = recovery_mod.RecoveryMixin()
+    # 3/4 non-empty lines are image markers; blank lines must not dilute it.
+    dominant = _state(f"{_MARKER}\n\n\n{_MARKER}\n\n{_MARKER}\n\nsome prose")
+    await mixin._recover_image_dominant_ocr(dominant, "/f.pdf", "f.pdf", ".pdf", None)
+    assert retry.await_count == 1
+    assert dominant.full_page_already_applied is True
+
+    sparse = _state("\n".join(["real paragraph text here"] * 8 + [_MARKER]))
+    await mixin._recover_image_dominant_ocr(sparse, "/f.pdf", "f.pdf", ".pdf", None)
+    assert retry.await_count == 1, "1/9 image lines must not escalate"
+    assert sparse.full_page_already_applied is False
 
 
 # ═════════════════════════════════════════════════════════════════════════

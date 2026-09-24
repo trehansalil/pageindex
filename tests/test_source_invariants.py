@@ -581,18 +581,32 @@ def test_rfc_lifecycle_lint_rules(rfc_env):
     assert not wrong, wrong
 
 
-def test_rfc_lifecycle_lint_sees_the_real_repo_state():
-    """The lint must load the real ZONE_OWNERSHIP manifest and still report
-    the repo's known blocking violation -- a lint that only ever runs against
-    synthetic fixtures proves nothing about CI."""
+def test_rfc_lifecycle_lint_sees_the_real_repo_state(tmp_path):
+    """The lint must load the real ZONE_OWNERSHIP manifest and real task files
+    and still catch a skipped gate in them -- a lint that only ever runs against
+    synthetic fixtures proves nothing about CI. The repo's own violations get
+    fixed over time, so reopen a real closed gate in a copy of agents/tasks/
+    rather than depending on one happening to exist."""
+    import shutil
+
     zone_file = PROJECT_ROOT / "audit" / "zones" / "ZONE_OWNERSHIP.yaml"
     manifest = rfc_lifecycle_lint.load_zone_ownership(zone_file)
     assert manifest["zones"]["zone_2"]["successor_rfc"] == "RFC-046"
 
-    violations = rfc_lifecycle_lint.lint(
-        PROJECT_ROOT / "agents" / "rfcs", PROJECT_ROOT / "agents" / "tasks", zone_file
-    )
-    assert any(v.rule == "skipped-gate" and v.severity == "blocking" for v in violations)
+    tasks = tmp_path / "tasks"
+    shutil.copytree(PROJECT_ROOT / "agents" / "tasks", tasks)
+    rfc033 = tasks / "tasks-rfc033-run15-reingestion-quality-fixes.md"
+    closed_gate = '- [x] <a id="91-scoped-reingest-and-remeasure"></a>'
+    text = rfc033.read_text(encoding="utf-8")
+    assert closed_gate in text, "fixture drifted: RFC-033 gate 9.1 is no longer a closed gate"
+    rfc033.write_text(text.replace(closed_gate, closed_gate.replace("[x]", "[ ]")), encoding="utf-8")
+
+    violations = rfc_lifecycle_lint.lint(PROJECT_ROOT / "agents" / "rfcs", tasks, zone_file)
+    reopened = [
+        v for v in violations
+        if v.rule == "skipped-gate" and v.severity == "blocking" and "9.1" in str(v)
+    ]
+    assert reopened, f"lint missed the reopened real gate 9.1; got {violations}"
 
 
 def test_facade_disposition_measurement_matches_the_rfc045_pins():
