@@ -1,0 +1,117 @@
+{
+  "scored_zones": [
+    {
+      "zone_name": "Verdict-Gate Threshold / Promotion / Override Cascade",
+      "score": 48.0,
+      "severity": "critical",
+      "bug_count": 8,
+      "proposal_status": "partially_implemented",
+      "rationale": "REGRESSED wave-over-wave (5->8 bugs). RFC-040 D2 reorder landed but proposed _has_image_rescue deletion never executed; new source_selection=True path now bypasses _apply_clamp entirely (3 new bugs). Fifth consecutive RFC (022/024/025/026/033/040) to hit this exact boundary. Hysteresis band still violates CLAUDE.md Hard Rule #5 (zero-content FAIL reclassified MARGINAL). Boosted: repeat-regression zone per mem-search (Chains 12-16, 26-27).",
+      "key_files": [
+        "src/pageindex_mcp/helpers/verdict.py",
+        "src/pageindex_mcp/helpers/types.py",
+        "src/pageindex_mcp/helpers/gates.py",
+        "src/pageindex_mcp/config.py"
+      ]
+    },
+    {
+      "zone_name": "Garble Detection Cross-Cutting Kernel",
+      "score": 42.0,
+      "severity": "critical",
+      "bug_count": 7,
+      "proposal_status": "partially_implemented",
+      "rationale": "REGRESSED (5->7 bugs). Kernel consolidation (tree/flat -> single detect_garble) landed, but NFKC normalization still runs before bidi/presentation-form signal reaches some callers, and new config.garble_short_text_default hard override adds a hidden mode switch. Shared by 13 callers across 9+ subsystems so any narrow fix has wide blast radius. codebase-memory confirms detect_garble at garble.py:515-600 with ScriptContext threading tests (test_presentation_forms_flag_reaches_detect_garble, test_script_context_threaded_to_detect_garble) already exist but gap persists in production callers (pictures.py _text_layer_has_content). Boosted: repeat-regression zone (Chains 2,5,6,7,17,25,29).",
+      "key_files": [
+        "src/pageindex_mcp/helpers/garble.py",
+        "src/pageindex_mcp/converters/pictures.py",
+        "src/pageindex_mcp/helpers/tree_validation.py",
+        "src/pageindex_mcp/client/recovery.py"
+      ]
+    },
+    {
+      "zone_name": "OCR Recovery Cascade and Kill-Switch Conflation",
+      "score": 18.0,
+      "severity": "high",
+      "bug_count": 6,
+      "proposal_status": "not_implemented",
+      "rationale": "REGRESSED (4->6 bugs). Proposed kill-switch split (page-level vs per-picture OCR) and marker-removal-after-coverage-skip fix were NOT implemented; _OCR_ESCALATION remains a single switch conflating both modes and literal <!-- image --> markers still leak into output. New fragility: indexer.py gate-reason routing relies on brittle string matching. mem-search #5687 shows a partial Zone-5 fix (OCR capability flag replacing string-matching) landed 8/21 but the delta (8/28) still reports the routing as string-match-brittle, suggesting incomplete rollout or scope mismatch. Boosted: repeat-regression zone (Chains 7,8,9,10,11,24).",
+      "key_files": [
+        "src/pageindex_mcp/picture_plane.py",
+        "src/pageindex_mcp/converters/pictures.py",
+        "src/pageindex_mcp/client/indexer.py",
+        "src/pageindex_mcp/client/recovery.py"
+      ]
+    },
+    {
+      "zone_name": "Converter Chain Fallback and AGPL Gating",
+      "score": 14.4,
+      "severity": "high",
+      "bug_count": 4,
+      "proposal_status": "no_proposal",
+      "rationale": "REGRESSED (2->4 bugs, severity medium->high escalation). No simplification proposal exists yet for this zone. Structural (non-transient) converter failures still silently walk the chain to AGPL-licensed converters (pymupdf/pymupdf4llm) with only a logger.warning -- directly implicates CLAUDE.md Hard Rule #4 (AGPL is a legal decision to clear, not a settled safe-harbor). Remote Docling microservice has no version/contract enforcement, so local fixes have zero effect on remotely-routed docs. Boosted: repeat-regression zone (Chains 1,3,4,29) and severity just escalated this wave.",
+      "key_files": [
+        "src/pageindex_mcp/client/indexer.py",
+        "src/pageindex_mcp/converters/pipeline.py",
+        "src/pageindex_mcp/converters/normalize.py"
+      ]
+    },
+    {
+      "zone_name": "Dual-Writer Verdict Persistence and Consistency Model Split",
+      "score": 14.4,
+      "severity": "high",
+      "bug_count": 4,
+      "proposal_status": "no_proposal",
+      "rationale": "NEW zone, extracted from Erasure Cascade this wave (not yet scored by prior delta cycle -- delta table lists severity as 'Not yet assigned' at extraction time; current audit assigns High/4 bugs). save_doc_meta deliberately omits the _confirm_write_visible barrier that save_doc/save_flat_doc retain (asymmetric consistency), and reconcile_registry_drift has load-bearing step ordering (drain Redis retry queue before MinIO etag diff) that is not enforced structurally. No simplification proposal yet. Treated as high priority since it directly feeds Zone 7 (erasure) consistency risk per its own extraction rationale.",
+      "key_files": [
+        "src/pageindex_mcp/storage/verdict.py",
+        "src/pageindex_mcp/storage/documents.py",
+        "src/pageindex_mcp/worker/registry_mirror.py",
+        "src/pageindex_mcp/registry_backfill/reconcile.py",
+        "src/pageindex_mcp/registry/queries.py"
+      ]
+    },
+    {
+      "zone_name": "Bidi/RTL Processing Split (Local vs. Remote)",
+      "score": 9.0,
+      "severity": "high",
+      "bug_count": 3,
+      "proposal_status": "not_implemented",
+      "rationale": "STALLED, no change (3 bugs). Proposed NFKC-reorder-ahead-of-bidi-coherence-check and remote-image version-check assertion were not implemented; only a compensating heuristic (assume presentation forms survived when none do) was added as a workaround. RFC-033 bidi heading guard (_heading_is_logical_order) still has zero occurrences in src/ per codebase-memory search -- confirmed never committed to git across multiple audit waves. Null-detector fallacy persists: bidi coherence gate reports '0 violations' because NFKC destroys its only signal.",
+      "key_files": [
+        "src/pageindex_mcp/converters/normalize.py",
+        "src/pageindex_mcp/helpers/gates.py",
+        "src/pageindex_mcp/helpers/garble.py",
+        "src/pageindex_mcp/client/indexer.py"
+      ]
+    },
+    {
+      "zone_name": "Measurement/Audit Tooling Shared Blind Spots",
+      "score": 8.0,
+      "severity": "medium",
+      "bug_count": 4,
+      "proposal_status": "not_implemented",
+      "rationale": "IMPROVED in severity (high->medium) via better characterization, but bug count rose 3->4 and core fixes (table-aware shared char-count signal, fail-loud scoring harness replacing ERROR-default) remain not_implemented. block.get('text','') still returns 0 for role='table' blocks in both verdict-promotion code and corpus-audit diagnostic -- a self-reinforcing blind-spot cycle per memory note fabricated-corpus-report-2026-07-17.md (audit confirms low number, operator trusts audit, no independent ground truth).",
+      "key_files": [
+        "src/pageindex_mcp/client/indexer.py",
+        "src/pageindex_mcp/storage/verdict.py",
+        "src/pageindex_mcp/helpers/verdict.py"
+      ]
+    },
+    {
+      "zone_name": "Erasure Cascade and Storage Consistency Drift",
+      "score": 4.8,
+      "severity": "medium",
+      "bug_count": 2,
+      "proposal_status": "no_proposal",
+      "rationale": "IMPROVED (severity high->medium); bug count flat (2). Scope narrowed after Dual-Writer Verdict Persistence zone was split out this wave to isolate cross-store consistency concerns, leaving this zone to pure cascade/manifest semantics (11-step _ERASURE_MANIFEST, still no mechanical derivation from storage-write functions; DELETE query still lacks a statement timeout per ISS-40). No simplification proposal yet. Lowest priority of the 8 active zones this cycle.",
+      "key_files": [
+        "src/pageindex_mcp/storage/documents.py",
+        "src/pageindex_mcp/registry/queries.py",
+        "src/pageindex_mcp/storage/verdict.py"
+      ]
+    }
+  ],
+  "architecture_summary": "PageIndex MCP is a FastMCP + arq + MinIO + Redis + Postgres tree-reasoning RAG ingestion platform (10,948 graph nodes / 18,883 edges indexed; 1,271 functions, 549 classes, 535 files). The audited pipeline runs: converter chain (pipeline.py/indexer.py, local Docling-CPU + remote Scaleway Docling + AGPL pymupdf4llm fallback) -> normalize.py (NFKC, bidi) -> helpers/garble.py detect_garble kernel (13 callers, 9+ subsystems) -> helpers/gates.py evaluate_gates -> helpers/verdict.py apply_promotions/compute_verdict/classify_verdict -> dual persistence writers (storage/documents.py save_doc with _confirm_write_visible barrier; storage/verdict.py save_doc_meta without barrier) -> worker/registry_mirror.py Postgres CAS registry + registry_backfill/reconcile.py drift reconciliation -> storage/documents.py erasure cascade (_ERASURE_MANIFEST, 11 steps). picture_plane.py and converters/pictures.py handle per-picture OCR decisioning (decide_ocr_strategy/decide_ocr_mode) parallel to page-level OCR escalation in client/indexer.py and client/recovery.py. Eight defect zones span this whole chain; four of them (Verdict-Gate, Garble Kernel, OCR Recovery, Converter/AGPL) are chronic repeat-regression sites spanning 20+ chains/RFCs (022,024,025,026,033,040) across the audit history, each narrowing scope only to have a new bypass path reopen it. This wave (POST-FIX-WAVE3) split Dual-Writer Verdict Persistence out of the Erasure zone, and the corpus audit tooling itself was confirmed to share the pipeline's own block.get('text','') table-blindspot bug (self-reinforcing measurement-blindspot cycle).",
+  "past_constraints": "CLAUDE.md Hard Rules directly implicated: HR5 (never silently persist low-quality tree) is violated by the verdict hysteresis band reclassifying zero-content FAIL as MARGINAL; HR4 (AGPL awareness) is violated by structural converter failures silently walking the chain to AGPL pymupdf4llm with only a log warning; HR2 (erasure must cascade across every derived store) is at risk from the asymmetric save_doc vs save_doc_meta consistency-barrier split. mem-search confirms: Docling-CPU is the config-gated converter (pymupdf4llm drops ligatures, RFC-003 Amendment 4); AGPL has three pullers (pymupdf4llm + docling-hierarchical-pdf + pageindex fork itself); a fabricated-corpus-report incident (2026-07-17) already established that audit numbers must be verified against MinIO meta.json, reinforcing this wave's Zone 8 finding that the audit tooling shares the pipeline's own measurement blind spot. Per user feedback constraints: skip PASS docs and focus on regressions (all four top-scored zones here are explicit wave-over-wave regressions); prefer simple fixes; verify source before asserting any [FIX] claim.",
+  "closed_zones_excluded": []
+}

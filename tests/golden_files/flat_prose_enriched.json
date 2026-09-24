@@ -1,0 +1,31 @@
+{
+  "archetype": "flat_prose_enriched",
+  "description": "Flat prose document with image enrichment providing sufficient quality for promotion",
+  "input": {
+    "structure": [
+      {
+        "title": "Document",
+        "text": "",
+        "nodes": [
+          {
+            "title": "Body",
+            "text": "This comprehensive report details the findings from the quarterly analysis conducted across all operational divisions. The methodology applied standard statistical techniques to evaluate performance metrics against established benchmarks. Results indicate significant improvement in key performance indicators relative to the previous reporting period. Additional context and supporting data are provided throughout the following sections of this document.",
+            "nodes": []
+          }
+        ]
+      }
+    ],
+    "content_class": "text",
+    "expected_script": null,
+    "image_enrichment_ratio": 0.75
+  },
+  "expected": {
+    "garble_detected": false,
+    "gate_ok": false,
+    "gate_defect": "node_count<3",
+    "verdict": "FAIL",
+    "verdict_reason_prefix": "max_leaf_ratio",
+    "recovery_eligible": true,
+    "recovery_method": "_recover_low_content_ocr"
+  }
+}

@@ -3,7 +3,7 @@
 #
 # Enforces:
 #   - pip-audit over uv.lock: zero known vulnerabilities, unless whitelisted in
-#     .agents/governance/known-advisories.yaml.
+#     agents/governance/known-advisories.yaml.
 #   - audit_clean: the audit exits clean (no unaudited advisories).
 #
 # Whitelist logic:
@@ -12,14 +12,14 @@
 #   acknowledged; still printed as WARN).
 #
 # Needs infra: no
-# Reads thresholds from .agents/governance/verify-gates.yaml via read-yaml.sh.
+# Reads thresholds from agents/governance/verify-gates.yaml via read-yaml.sh.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LIB_DIR="$REPO_ROOT/scripts/lib"
-GATES_YAML="$REPO_ROOT/.agents/governance/verify-gates.yaml"
-KNOWN_ADV="$REPO_ROOT/.agents/governance/known-advisories.yaml"
+GATES_YAML="$REPO_ROOT/agents/governance/verify-gates.yaml"
+KNOWN_ADV="$REPO_ROOT/agents/governance/known-advisories.yaml"
 
 # shellcheck source=../lib/read-yaml.sh
 source "$LIB_DIR/read-yaml.sh"

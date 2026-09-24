@@ -1,8 +1,8 @@
 """Application configuration: env loading, path setup, settings dataclass."""
 
+import dataclasses
 import os
 from dataclasses import dataclass
-from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -12,11 +12,37 @@ load_dotenv()
 # Pipeline version — bumped in the same commit as any splitter/garble/OCR fix
 # that could change corpus classification (RFC-014 D3).
 # ---------------------------------------------------------------------------
-CURRENT_PIPELINE_VERSION: int = 4
+CURRENT_PIPELINE_VERSION: int = 5
 CATEGORY_BC_PROMOTION_THRESHOLD: float = 0.17
 # RFC-027 D7: page-count threshold above which pdf_to_markdown_docling routes
 # to the chunked-Docling path instead of a single direct conversion call.
 MAX_DOCLING_PAGES: int = int(os.environ.get("MAX_DOCLING_PAGES", "150"))
+
+# Zone-7: BUILD_SHA is the convention services/docling-service's CI/Dockerfile
+# already use; CLIENT_BUILD_SHA was a never-wired legacy name that left this
+# permanently "unknown". Prefer BUILD_SHA, fall back to the legacy name.
+# RFC-042 D4: hoisted from client/indexer.py (hot-path) — this is a startup-only
+# read, config.py is the designated home for it.
+CLIENT_BUILD_SHA: str = os.environ.get("BUILD_SHA") or os.environ.get("CLIENT_BUILD_SHA", "unknown")
+
+# ---------------------------------------------------------------------------
+# Backward-compat module-level aliases for the 6 pipeline-behavior flags that
+# were historically frozen at import time.  Canonical source is now
+# ``pipeline_config`` (defined below); these are reassigned by
+# ``reset_pipeline_config()`` so test fixtures that monkeypatch env vars and
+# then call ``reset_pipeline_config()`` see the new values everywhere.
+#
+# NOTE: These names exist solely so ``from ..config import X`` patterns in
+# downstream modules and tests keep working.  New code should read
+# ``pipeline_config.<attr>`` directly.
+# ---------------------------------------------------------------------------
+# Placeholders — real values assigned after ``pipeline_config`` init below.
+PDF_INSPECTOR_PRECLASSIFY: bool = False
+REMOTE_MD_RENORMALIZE: bool = True
+ALLOW_AGPL_FALLBACK: bool = True
+OCR_ESCALATION_GARBLE: bool = True
+OCR_ESCALATION_PER_PICTURE: bool = True
+IMAGE_DOMINANT_OCR_ESCALATION_ENABLED: bool = True
 
 # ---------------------------------------------------------------------------
 # OPENAI_API_KEY fallback
@@ -47,7 +73,6 @@ class Settings:
     minio_secret_key: str
     minio_bucket: str
     minio_secure: bool
-    doc_store_path: Path
     server_host: str
     server_port: int
     redis_url: str
@@ -129,6 +154,18 @@ class Settings:
     # any URL was returned), so it falls back to storage.DEFAULT_PRESIGN_REGION.
     # Set this only when your MinIO/S3 is configured with a non-default region.
     minio_region: str
+    # Zone-7 (dual-write consistency): when True (default), rows with empty or
+    # None processed_at are protected from stale-row deletion — they may be
+    # partial-write rows whose processed_at was not yet flushed.  Set to False
+    # only to sweep truly stale legacy rows that will never get a timestamp.
+    cleanup_protect_empty_processed_at: bool
+    # RFC-047 D8: Surya OCR fallback for Arabic density failures.
+    surya_fallback_enabled: bool
+    surya_service_url: str
+    surya_fallback_timeout_s: float
+    # Zone-4 Phase 3: registry_verdict_authority removed — Postgres is now the
+    # sole verdict authority.  MinIO sidecar is archival-only (best-effort
+    # backfill).  See _upsert_registry_row in worker/registry_mirror.py.
 
 
 # HR3 ZDR allow-list: endpoints known to offer zero-data-retention / no-training
@@ -144,6 +181,23 @@ _ZDR_ALLOW_PATTERNS: tuple[str, ...] = (
 )
 
 
+class ZDRComplianceError(RuntimeError):
+    """Raised when an egress path is blocked by HR3 ZDR compliance checks.
+
+    Subclasses ``RuntimeError`` for backward compatibility but lets callers
+    distinguish compliance blocks from generic errors (RFC-039 D4).
+    """
+
+
+class RemoteVersionSkewError(RuntimeError):
+    """Raised when the remote Docling ``pipeline_version`` is behind the local one.
+
+    Only raised when ``REMOTE_VERSION_ENFORCE`` is enabled; the default
+    behavior stays warn-only (log + ``DOCLING_VERSION_SKEW`` counter) so
+    existing deployments are unaffected.
+    """
+
+
 def _is_zdr_allowlisted(base_url: str | None) -> bool:
     """Return True if base_url matches any ZDR allow-list pattern."""
     if not base_url:
@@ -152,15 +206,75 @@ def _is_zdr_allowlisted(base_url: str | None) -> bool:
     return any(pattern in url for pattern in _ZDR_ALLOW_PATTERNS)
 
 
+def require_zdr_compliance(base_url: str | None, purpose: str) -> None:
+    """Raise ``ZDRComplianceError`` when *pii_corpus* is True and *base_url* is not ZDR-allowlisted.
+
+    This is the **single enforcement primitive** for CLAUDE.md Hard Rule 3.
+    Every LLM egress site must call this before sending PII-bearing content.
+    Non-PII corpora (``pii_corpus=False``) pass through unconditionally.
+
+    Parameters
+    ----------
+    base_url:
+        The LLM endpoint URL about to be contacted.
+    purpose:
+        Human-readable label for audit logs (e.g. ``'LLM fallback retry'``).
+    """
+    if not settings.pii_corpus:
+        return
+    if not _is_zdr_allowlisted(base_url):
+        raise ZDRComplianceError(
+            f"{purpose}: pii_corpus=True but endpoint {base_url!r} "
+            "is not on the ZDR allow-list (HR3)"
+        )
+
+
+def validate_hr3_compliance(settings_obj: "Settings | None" = None) -> None:
+    """Boot-gate validation for CLAUDE.md Hard Rule 3 (RFC-039 D1).
+
+    Shared by both ``server.py`` (``_lifespan_with_scrape``) and
+    ``worker/lifecycle.py`` startup. When ``pii_corpus`` is True, validates
+    ``openai_base_url``, ``LLM_FALLBACK_BASE_URL`` (if set), and
+    ``docling_service_url`` (if set) against ``_ZDR_ALLOW_PATTERNS``. No-op
+    when ``pii_corpus`` is False.
+
+    Parameters
+    ----------
+    settings_obj:
+        Settings instance to validate against. Defaults to the module-level
+        ``settings`` singleton; callers may pass their own reference (e.g.
+        a caller-local import binding used in tests).
+    """
+    _settings = settings_obj if settings_obj is not None else settings
+    if not _settings.pii_corpus:
+        return
+
+    def _check(base_url: str | None, purpose: str) -> None:
+        if not _is_zdr_allowlisted(base_url):
+            raise ZDRComplianceError(
+                f"{purpose}: pii_corpus=True but endpoint {base_url!r} "
+                "is not on the ZDR allow-list (HR3)"
+            )
+
+    _check(_settings.openai_base_url, "PII_CORPUS=true boot gate: openai_base_url")
+
+    from .client.llm import _LLM_FALLBACK_BASE_URL
+
+    if _LLM_FALLBACK_BASE_URL:
+        _check(_LLM_FALLBACK_BASE_URL, "PII_CORPUS=true boot gate: LLM_FALLBACK_BASE_URL")
+
+    docling_service_url = getattr(_settings, "docling_service_url", None)
+    if docling_service_url:
+        _check(docling_service_url, "PII_CORPUS=true boot gate: docling_service_url")
+
+
 def _load_settings() -> Settings:
-    repo_root = Path(__file__).resolve().parent.parent.parent
     return Settings(
         minio_endpoint=os.environ.get("MINIO_ENDPOINT", "localhost:9000"),
         minio_access_key=os.environ.get("MINIO_ACCESS_KEY", "minioadmin"),
         minio_secret_key=os.environ.get("MINIO_SECRET_KEY", "minioadmin"),
         minio_bucket=os.environ.get("MINIO_BUCKET", "pageindex"),
         minio_secure=os.environ.get("MINIO_SECURE", "false").lower() == "true",
-        doc_store_path=repo_root / "doc_store",
         server_host=os.environ.get("MCP_HOST", "0.0.0.0"),
         server_port=int(os.environ.get("MCP_PORT", "8201")),
         redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
@@ -226,8 +340,437 @@ def _load_settings() -> Settings:
             os.environ.get("MINIO_PRESIGN_PATH_PREFIX", "")
         ),
         minio_region=os.environ.get("MINIO_REGION", ""),
+        cleanup_protect_empty_processed_at=os.environ.get(
+            "CLEANUP_PROTECT_EMPTY_PROCESSED_AT", "true"
+        )
+        .strip()
+        .lower()
+        not in ("0", "false", "no"),
+        surya_fallback_enabled=os.environ.get("SURYA_FALLBACK_ENABLED", "false").strip().lower()
+        in ("1", "true", "yes"),
+        surya_service_url=(os.environ.get("SURYA_SERVICE_URL") or "http://localhost:8207").rstrip("/"),
+        surya_fallback_timeout_s=float(os.environ.get("SURYA_FALLBACK_TIMEOUT_S", "120")),
     )
 
 
 # Module-level singleton — all other modules do `from .config import settings`
 settings: Settings = _load_settings()
+
+
+# Zone-4 Phase 3: registry_verdict_authority validation removed — the flag no
+# longer exists.  Postgres is the sole verdict authority.
+
+
+def _envbool(key: str, default: str) -> bool:
+    return os.environ.get(key, default).strip().lower() in ("1", "true", "yes")
+
+
+# ---------------------------------------------------------------------------
+# Zone-5: PipelineConfig — single frozen snapshot of all pipeline-behavior
+# env vars.  Replaces three competing read sites (effective_config_snapshot
+# per-call reread, VerdictThresholds lazy-cached singleton, module-level
+# frozen constants in helpers.py) with one canonical read at module load.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PipelineConfig:
+    """Frozen snapshot of every pipeline-behavior env var.
+
+    Instantiated once at module load via ``from_env()``.  Infra settings
+    (MinIO/Redis/Postgres) remain in :class:`Settings` — this dataclass
+    covers only flags that alter document processing behavior.
+
+    ``effective_config_snapshot()`` is now ``dataclasses.asdict(pipeline_config)``
+    and the VerdictThresholds lazy cache is replaced by
+    ``VerdictThresholds.from_config(pipeline_config)``.
+    """
+
+    # --- effective_config_snapshot fields (25 behavior flags) ---------------
+    pipeline_version: int
+    pdf_inspector_preclassify: bool
+    preclassify_enabled: bool
+    allow_agpl_fallback: bool
+    remote_md_renormalize: bool
+    ocr_escalation_garble: bool
+    ocr_escalation_low_content: bool
+    ocr_escalation_per_picture: bool
+    pre_garble_force_ocr_enabled: bool
+    d7_garble_recovery_enabled: bool
+    image_standalone_pipeline_enabled: bool
+    image_dominant_ocr_escalation_enabled: bool
+    vlm_tesseract_fallback_enabled: bool
+    garble_latin_gibberish_enabled: bool
+    garble_latin_ratio: float
+    garble_nonsense_ratio: float
+    garble_node_ratio_threshold: float
+    garble_digit_floor: int
+    pass_max_leaf_ratio: float
+    bidi_coherence_enforce: bool
+    small_doc_promotion_enabled: bool
+    leaf_concentration_paragraph_split_enabled: bool
+    leaf_split_ratio: float
+    pdf_converter: str
+    text_layer_garble_check_enabled: bool
+    region_aware_text_check_enabled: bool
+    tree_path_picture_splice_enabled: bool
+    low_content_ocr_char_floor: int
+    rfc029_flat_prefer_multiplier: float
+    rfc029_min_chars_per_node: float
+
+    # --- Converter chain transient-failure retry policy -----------------------
+    converter_transient_retry_count: int
+
+    # --- Zone: converter-chain fallback + AGPL gating -------------------------
+    # ``agpl_structural_fallback_enabled`` gates the STRUCTURAL-failure walk
+    # into an AGPL-licensed converter.  Default True preserves the historical
+    # behavior (structural failures always walked the chain); setting it False
+    # makes HR4 enforcement symmetric with the transient BLOCK_AGPL branch.
+    agpl_structural_fallback_enabled: bool
+    # ``remote_version_enforce`` upgrades the remote Docling pipeline_version
+    # skew check from warn-only to a hard block.  Default False preserves the
+    # historical warn-only behavior.
+    remote_version_enforce: bool
+
+    # --- Verdict downgrade (force_verdict_override wiring) --------------------
+    verdict_downgrade_enabled: bool
+
+    # --- VerdictThresholds fields (from helpers.py VerdictThresholds.from_env) ---
+    garble_window_ratio_threshold: float
+    min_image_promoted_chars: int
+    min_flat_promotion_chars: int
+
+    # --- Module-level frozen constants from helpers.py ----------------------
+    garble_short_text_default: bool
+    garble_flat_markdown_normalize: bool
+    empty_node_fraction_threshold: float
+    rfc029_min_chars_per_node_deep: float
+    rfc029_min_scanned_density_floor: float
+    rfc029_min_scanned_density_floor_arabic: float
+    rfc029_table_segment_char_threshold: int
+    rfc029_table_segment_min_rows: int
+    rfc036_singleton_row_ratio_threshold: float
+    rfc029_table_segment_min_rows_landscape: int
+    rfc036_singleton_ratio_landscape: float
+
+    # Zone-8 content-volume floor: minimum stripped-text length for a
+    # MARGINAL verdict.  Documents below this floor FAIL regardless of
+    # promotion eligibility, enforcing CLAUDE.md Hard Rule #5 (never
+    # silently persist a low-quality tree).
+    min_marginal_chars: int
+
+    # --- Verdict-gate thresholds (Zone "verdict-gate cascade", VG-2/3/4) -----
+    # Previously hardcoded as literals inside VerdictThresholds.from_config and
+    # the promotion helpers.  Sourced from env here so every verdict-gate knob
+    # has exactly one owner and appears in the effective-config snapshot.
+    hard_fail_max_leaf_ratio: float
+    cat_a_max_leaf_ratio: float
+    cat_a_max_ocr_noise: float
+    small_doc_min_chars: int
+    small_doc_max_chars: int
+    small_doc_leaf_ratio_bound_low: float
+    small_doc_leaf_ratio_bound_high: float
+
+    # --- Picture-gate + landscape hot-path config (RFC-042 D4) ---------------
+    picture_page_coverage_threshold: float
+    decorative_icon_min_dim_pt: float
+    image_enrich_concurrency: int
+    coverage_exempt_no_text_layer: bool
+    clip_text_capture_enabled: bool
+    max_fullpage_picture_ocr_regions: int
+    landscape_char_threshold: int
+    max_landscape_pages: int
+    landscape_reextract_deadline_seconds: float
+    page_rotation_detection_enabled: bool
+    strip_skipped_image_markers: bool
+
+    @classmethod
+    def from_env(cls) -> "PipelineConfig":
+        """Read all pipeline-behavior env vars once and return a frozen snapshot."""
+        _gnrt_raw = float(os.environ.get("GARBLE_NODE_RATIO_THRESHOLD", "0.10"))
+        _gnrt = _gnrt_raw if 0 <= _gnrt_raw <= 1 else 0.10
+        return cls(
+            pipeline_version=CURRENT_PIPELINE_VERSION,
+            pdf_inspector_preclassify=os.environ.get("PDF_INSPECTOR_PRECLASSIFY", "0")
+            .strip()
+            .lower()
+            in ("1", "true", "yes"),
+            preclassify_enabled=_envbool("PRECLASSIFY_ENABLED", "0"),
+            allow_agpl_fallback=os.environ.get("ALLOW_AGPL_FALLBACK", "1").strip().lower()
+            in ("1", "true", "yes"),
+            remote_md_renormalize=os.environ.get("REMOTE_MD_RENORMALIZE", "1").strip().lower()
+            in ("1", "true", "yes"),
+            ocr_escalation_garble=os.environ.get("OCR_ESCALATION_GARBLE", "1").strip().lower()
+            in ("1", "true", "yes"),
+            ocr_escalation_low_content=os.environ.get(
+                "OCR_ESCALATION_LOW_CONTENT",
+                os.environ.get("OCR_ESCALATION_GARBLE", "1"),
+            )
+            .strip()
+            .lower()
+            in ("1", "true", "yes"),
+            ocr_escalation_per_picture=os.environ.get("OCR_ESCALATION_PER_PICTURE", "1")
+            .strip()
+            .lower()
+            in ("1", "true", "yes"),
+            pre_garble_force_ocr_enabled=_envbool("PRE_GARBLE_FORCE_OCR_ENABLED", "false"),
+            d7_garble_recovery_enabled=_envbool("D7_GARBLE_RECOVERY_ENABLED", "true"),
+            image_standalone_pipeline_enabled=_envbool("IMAGE_STANDALONE_PIPELINE_ENABLED", "true"),
+            image_dominant_ocr_escalation_enabled=os.environ.get(
+                "IMAGE_DOMINANT_OCR_ESCALATION_ENABLED", "1"
+            )
+            .strip()
+            .lower()
+            in ("1", "true", "yes"),
+            vlm_tesseract_fallback_enabled=_envbool("VLM_TESSERACT_FALLBACK_ENABLED", "true"),
+            garble_latin_gibberish_enabled=_envbool("GARBLE_LATIN_GIBBERISH_ENABLED", "true"),
+            garble_latin_ratio=float(os.environ.get("GARBLE_LATIN_RATIO", "0.4")),
+            garble_nonsense_ratio=float(os.environ.get("GARBLE_NONSENSE_RATIO", "0.7")),
+            garble_node_ratio_threshold=_gnrt,
+            garble_digit_floor=int(os.environ.get("GARBLE_DIGIT_FLOOR", "500")),
+            pass_max_leaf_ratio=float(os.environ.get("PASS_MAX_LEAF_RATIO", "0.30")),
+            bidi_coherence_enforce=_envbool("BIDI_COHERENCE_ENFORCE", "true"),
+            small_doc_promotion_enabled=_envbool("SMALL_DOC_PROMOTION_ENABLED", "true"),
+            leaf_concentration_paragraph_split_enabled=_envbool(
+                "LEAF_CONCENTRATION_PARAGRAPH_SPLIT_ENABLED", "true"
+            ),
+            leaf_split_ratio=float(os.environ.get("LEAF_SPLIT_RATIO", "0.30")),
+            pdf_converter=os.environ.get("PDF_CONVERTER", "docling"),
+            text_layer_garble_check_enabled=_envbool("TEXT_LAYER_GARBLE_CHECK_ENABLED", "true"),
+            region_aware_text_check_enabled=_envbool("REGION_AWARE_TEXT_CHECK_ENABLED", "true"),
+            tree_path_picture_splice_enabled=_envbool("TREE_PATH_PICTURE_SPLICE_ENABLED", "true"),
+            low_content_ocr_char_floor=int(os.environ.get("LOW_CONTENT_OCR_CHAR_FLOOR", "300")),
+            rfc029_flat_prefer_multiplier=float(
+                os.environ.get("RFC029_FLAT_PREFER_MULTIPLIER", "3.0")
+            ),
+            rfc029_min_chars_per_node=float(os.environ.get("RFC029_MIN_CHARS_PER_NODE", "150")),
+            converter_transient_retry_count=int(
+                os.environ.get("CONVERTER_TRANSIENT_RETRY_COUNT", "1")
+            ),
+            agpl_structural_fallback_enabled=_envbool("AGPL_STRUCTURAL_FALLBACK_ENABLED", "true"),
+            remote_version_enforce=_envbool("REMOTE_VERSION_ENFORCE", "false"),
+            verdict_downgrade_enabled=_envbool("VERDICT_DOWNGRADE_ENABLED", "false"),
+            # VerdictThresholds fields
+            garble_window_ratio_threshold=float(
+                os.environ.get("GARBLE_WINDOW_RATIO_THRESHOLD", "0.05")
+            ),
+            min_image_promoted_chars=int(os.environ.get("MIN_IMAGE_PROMOTED_CHARS", "500")),
+            min_flat_promotion_chars=int(os.environ.get("MIN_FLAT_PROMOTION_CHARS", "500")),
+            # Module-level frozen constants from helpers.py
+            garble_short_text_default=_envbool("GARBLE_SHORT_TEXT_DEFAULT", "true"),
+            garble_flat_markdown_normalize=_envbool("GARBLE_FLAT_MARKDOWN_NORMALIZE", "true"),
+            empty_node_fraction_threshold=float(
+                os.environ.get("EMPTY_NODE_FRACTION_THRESHOLD", "0.30")
+            ),
+            rfc029_min_chars_per_node_deep=float(
+                os.environ.get("RFC029_MIN_CHARS_PER_NODE_DEEP", "50")
+            ),
+            rfc029_min_scanned_density_floor=float(
+                os.environ.get("RFC029_MIN_SCANNED_DENSITY_FLOOR", "1200")
+            ),
+            rfc029_min_scanned_density_floor_arabic=float(
+                os.environ.get("RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC", "800")
+            ),
+            rfc029_table_segment_char_threshold=int(
+                os.environ.get("RFC029_TABLE_SEGMENT_CHAR_THRESHOLD", "2000")
+            ),
+            rfc029_table_segment_min_rows=int(os.environ.get("RFC029_TABLE_SEGMENT_MIN_ROWS", "5")),
+            rfc036_singleton_row_ratio_threshold=float(
+                os.environ.get("RFC036_SINGLETON_ROW_RATIO_THRESHOLD", "0.6")
+            ),
+            rfc029_table_segment_min_rows_landscape=int(
+                os.environ.get("RFC029_TABLE_SEGMENT_MIN_ROWS_LANDSCAPE", "10")
+            ),
+            rfc036_singleton_ratio_landscape=float(
+                os.environ.get("RFC036_SINGLETON_RATIO_LANDSCAPE", "0.4")
+            ),
+            min_marginal_chars=int(os.environ.get("MIN_MARGINAL_CHARS", "50")),
+            # Verdict-gate thresholds (VG-2/3/4).  Defaults reproduce the
+            # literals they replaced exactly, so the change is behavior-neutral.
+            hard_fail_max_leaf_ratio=float(os.environ.get("HARD_FAIL_MAX_LEAF_RATIO", "0.75")),
+            cat_a_max_leaf_ratio=float(os.environ.get("CAT_A_MAX_LEAF_RATIO", "0.15")),
+            cat_a_max_ocr_noise=float(os.environ.get("CAT_A_MAX_OCR_NOISE", "0.005")),
+            small_doc_min_chars=int(os.environ.get("SMALL_DOC_MIN_CHARS", "100")),
+            small_doc_max_chars=int(os.environ.get("SMALL_DOC_MAX_CHARS", "15000")),
+            small_doc_leaf_ratio_bound_low=float(
+                os.environ.get("SMALL_DOC_LEAF_RATIO_BOUND_LOW", "0.20")
+            ),
+            small_doc_leaf_ratio_bound_high=float(
+                os.environ.get("SMALL_DOC_LEAF_RATIO_BOUND_HIGH", "0.40")
+            ),
+            # Picture-gate + landscape hot-path config (RFC-042 D4)
+            picture_page_coverage_threshold=float(
+                os.environ.get("PICTURE_PAGE_COVERAGE_THRESHOLD", "0.6")
+            ),
+            decorative_icon_min_dim_pt=float(os.environ.get("DECORATIVE_ICON_MIN_DIM_PT", "20")),
+            image_enrich_concurrency=max(
+                1, int(os.environ.get("IMAGE_ENRICH_CONCURRENCY", "4") or "4")
+            ),
+            coverage_exempt_no_text_layer=_envbool("COVERAGE_EXEMPT_NO_TEXT_LAYER", "true"),
+            clip_text_capture_enabled=_envbool("CLIP_TEXT_CAPTURE_ENABLED", "true"),
+            max_fullpage_picture_ocr_regions=int(
+                os.environ.get("MAX_FULLPAGE_PICTURE_OCR_REGIONS", "50")
+            ),
+            landscape_char_threshold=int(os.environ.get("LANDSCAPE_CHAR_THRESHOLD", "500")),
+            max_landscape_pages=int(os.environ.get("MAX_LANDSCAPE_PAGES", "10")),
+            landscape_reextract_deadline_seconds=float(
+                os.environ.get("LANDSCAPE_REEXTRACT_DEADLINE_SECONDS", "600")
+            ),
+            page_rotation_detection_enabled=_envbool("PAGE_ROTATION_DETECTION_ENABLED", "true"),
+            strip_skipped_image_markers=_envbool("STRIP_SKIPPED_IMAGE_MARKERS", "true"),
+        )
+
+
+# Module-level singleton — frozen at process start.
+pipeline_config: PipelineConfig = PipelineConfig.from_env()
+
+VERDICT_DOWNGRADE_ENABLED: bool = pipeline_config.verdict_downgrade_enabled
+CONVERTER_TRANSIENT_RETRY_COUNT: int = pipeline_config.converter_transient_retry_count
+
+# Populate the backward-compat aliases declared above with live values from
+# pipeline_config (replaces the old frozen os.environ.get reads).
+PDF_INSPECTOR_PRECLASSIFY = pipeline_config.pdf_inspector_preclassify
+PRECLASSIFY_ENABLED: bool = pipeline_config.preclassify_enabled
+ALLOW_AGPL_FALLBACK = pipeline_config.allow_agpl_fallback
+REMOTE_MD_RENORMALIZE = pipeline_config.remote_md_renormalize
+OCR_ESCALATION_GARBLE = pipeline_config.ocr_escalation_garble
+OCR_ESCALATION_LOW_CONTENT = pipeline_config.ocr_escalation_low_content
+OCR_ESCALATION_PER_PICTURE = pipeline_config.ocr_escalation_per_picture
+IMAGE_DOMINANT_OCR_ESCALATION_ENABLED = pipeline_config.image_dominant_ocr_escalation_enabled
+
+# Import-time assertion: pass_max_leaf_ratio must not exceed leaf_split_ratio.
+assert pipeline_config.pass_max_leaf_ratio <= pipeline_config.leaf_split_ratio, (
+    f"PASS_MAX_LEAF_RATIO ({pipeline_config.pass_max_leaf_ratio}) must be "
+    f"<= LEAF_SPLIT_RATIO ({pipeline_config.leaf_split_ratio})"
+)
+
+# Import-time assertion (VG-4): the direct-PASS ceiling must never exceed the
+# unconditional hard-fail ceiling, otherwise the D1 gate in apply_promotions
+# would fire before the structural-PASS path could ever be reached.
+assert pipeline_config.pass_max_leaf_ratio <= pipeline_config.hard_fail_max_leaf_ratio, (
+    f"PASS_MAX_LEAF_RATIO ({pipeline_config.pass_max_leaf_ratio}) must be "
+    f"<= HARD_FAIL_MAX_LEAF_RATIO ({pipeline_config.hard_fail_max_leaf_ratio})"
+)
+
+# Import-time assertion (VG-3): the small-doc lower char bound must not fall
+# below the content-volume floor, or _try_small_doc could promote a document
+# that apply_promotions has already FAILed for insufficient content.
+assert pipeline_config.small_doc_min_chars >= pipeline_config.min_marginal_chars, (
+    f"SMALL_DOC_MIN_CHARS ({pipeline_config.small_doc_min_chars}) must be "
+    f">= MIN_MARGINAL_CHARS ({pipeline_config.min_marginal_chars})"
+)
+
+# Import-time assertion (VG-3): the small-doc window must be non-empty.
+assert pipeline_config.small_doc_min_chars < pipeline_config.small_doc_max_chars, (
+    f"SMALL_DOC_MIN_CHARS ({pipeline_config.small_doc_min_chars}) must be "
+    f"< SMALL_DOC_MAX_CHARS ({pipeline_config.small_doc_max_chars})"
+)
+
+
+def reset_pipeline_config() -> None:
+    """Re-read env vars and rebuild the pipeline_config singleton.
+
+    For test fixtures that manipulate env vars between tests.  Replaces
+    the old ``reset_verdict_thresholds()`` with a single function that
+    resets ALL pipeline-behavior config at once.
+
+    Also rebinds ``pipeline_config`` in every already-imported
+    ``pageindex_mcp.*`` module that holds a reference to the old instance, so
+    ``compute_verdict`` and friends see the fresh config immediately.
+    """
+    global pipeline_config  # noqa: PLW0603
+    global PDF_INSPECTOR_PRECLASSIFY, PRECLASSIFY_ENABLED, ALLOW_AGPL_FALLBACK  # noqa: PLW0603
+    global REMOTE_MD_RENORMALIZE, OCR_ESCALATION_GARBLE  # noqa: PLW0603
+    global OCR_ESCALATION_LOW_CONTENT  # noqa: PLW0603
+    global OCR_ESCALATION_PER_PICTURE, IMAGE_DOMINANT_OCR_ESCALATION_ENABLED  # noqa: PLW0603
+    global VERDICT_DOWNGRADE_ENABLED  # noqa: PLW0603
+
+    pipeline_config = PipelineConfig.from_env()
+
+    # Reassign deprecated backward-compat module-level aliases so that
+    # `from ..config import X` consumers stay in sync with pipeline_config.
+    PDF_INSPECTOR_PRECLASSIFY = pipeline_config.pdf_inspector_preclassify
+    PRECLASSIFY_ENABLED = pipeline_config.preclassify_enabled
+    ALLOW_AGPL_FALLBACK = pipeline_config.allow_agpl_fallback
+    REMOTE_MD_RENORMALIZE = pipeline_config.remote_md_renormalize
+    OCR_ESCALATION_GARBLE = pipeline_config.ocr_escalation_garble
+    OCR_ESCALATION_LOW_CONTENT = pipeline_config.ocr_escalation_low_content
+    OCR_ESCALATION_PER_PICTURE = pipeline_config.ocr_escalation_per_picture
+    IMAGE_DOMINANT_OCR_ESCALATION_ENABLED = pipeline_config.image_dominant_ocr_escalation_enabled
+    VERDICT_DOWNGRADE_ENABLED = pipeline_config.verdict_downgrade_enabled
+    import sys
+
+    # Zone-5 config layering: any module that did ``from ..config import
+    # pipeline_config`` holds a *name binding* to the old frozen instance and
+    # would otherwise go stale after this reset.  Rebinding is done by scanning
+    # every loaded ``pageindex_mcp.*`` module rather than a hardcoded list, so
+    # a new consumer module can never silently miss the resync.
+    for _name, _mod in list(sys.modules.items()):
+        if _mod is None or _name == __name__:
+            continue
+        if _name != "pageindex_mcp" and not _name.startswith("pageindex_mcp."):
+            continue
+        if getattr(_mod, "pipeline_config", None) is not None:
+            setattr(_mod, "pipeline_config", pipeline_config)
+
+
+def effective_config_snapshot() -> dict:
+    """Snapshot the pipeline-behavior flags for sidecar persistence.
+
+    Now a thin wrapper around ``dataclasses.asdict(pipeline_config)``,
+    filtered to the sidecar-schema field set below.  The set is additive:
+    the verdict-gate thresholds (VG-2/3/4) joined it so that a stored
+    verdict can be explained from its own sidecar.
+    """
+    # The sidecar schema (meta.json version 4) expects exactly these keys.
+    # PipelineConfig has additional fields (VerdictThresholds, module-level
+    # constants) that were never part of the sidecar — filter them out.
+    _SIDECAR_FIELDS = frozenset(
+        f.name
+        for f in dataclasses.fields(PipelineConfig)
+        if f.name
+        in {
+            "pipeline_version",
+            "pdf_inspector_preclassify",
+            "preclassify_enabled",
+            "allow_agpl_fallback",
+            "remote_md_renormalize",
+            "ocr_escalation_garble",
+            "ocr_escalation_low_content",
+            "ocr_escalation_per_picture",
+            "pre_garble_force_ocr_enabled",
+            "d7_garble_recovery_enabled",
+            "image_standalone_pipeline_enabled",
+            "image_dominant_ocr_escalation_enabled",
+            "vlm_tesseract_fallback_enabled",
+            "garble_latin_gibberish_enabled",
+            "garble_latin_ratio",
+            "garble_node_ratio_threshold",
+            "garble_digit_floor",
+            "pass_max_leaf_ratio",
+            "bidi_coherence_enforce",
+            "small_doc_promotion_enabled",
+            "leaf_concentration_paragraph_split_enabled",
+            "leaf_split_ratio",
+            "pdf_converter",
+            "text_layer_garble_check_enabled",
+            "region_aware_text_check_enabled",
+            "tree_path_picture_splice_enabled",
+            "low_content_ocr_char_floor",
+            "rfc029_flat_prefer_multiplier",
+            "rfc029_min_chars_per_node",
+            "verdict_downgrade_enabled",
+            # Verdict-gate thresholds (VG-2/3/4) — previously hardcoded
+            # literals, now env-sourced and therefore part of the audit
+            # trail that explains a stored verdict.
+            "hard_fail_max_leaf_ratio",
+            "cat_a_max_leaf_ratio",
+            "cat_a_max_ocr_noise",
+            "small_doc_min_chars",
+            "small_doc_max_chars",
+            "small_doc_leaf_ratio_bound_low",
+            "small_doc_leaf_ratio_bound_high",
+        }
+    )
+    full = dataclasses.asdict(pipeline_config)
+    return {k: v for k, v in full.items() if k in _SIDECAR_FIELDS}

@@ -15,17 +15,47 @@ import json
 import logging
 from datetime import UTC, datetime
 
+from minio.error import S3Error
+
 from pageindex_mcp.config import CURRENT_PIPELINE_VERSION, settings
-from pageindex_mcp.helpers import _tree_max_leaf_ratio, classify_verdict, detect_regression
+from pageindex_mcp.helpers import (
+    _tree_max_leaf_ratio,
+    classify_verdict,
+    validate_tree,
+)
 from pageindex_mcp.registry import (
     close_registry,
     init_registry,
     sweep_candidates,
-    upsert_doc,
 )
-from pageindex_mcp.storage import get_minio, save_doc_meta
+from pageindex_mcp.storage import get_minio
+from pageindex_mcp.worker import _upsert_registry_row
 
 logger = logging.getLogger(__name__)
+
+
+def _load_processed_doc(mc, doc_id: str) -> dict:
+    """Read a document's stored processed JSON, tree or flat (read-only).
+
+    ``save_flat_doc`` writes flat artifacts to ``processed/<doc_id>.flat.json``,
+    so fetching only the tree key raised ``NoSuchKey`` for every flat candidate
+    and recorded it as a sweep error before the ``is_flat`` check could skip it.
+    Both keys are tried, in that order; anything other than ``NoSuchKey``
+    propagates, and a document with neither artifact raises ``FileNotFoundError``.
+    """
+    for key in (f"processed/{doc_id}.json", f"processed/{doc_id}.flat.json"):
+        try:
+            response = mc.get_object(settings.minio_bucket, key)
+        except S3Error as s3e:
+            if s3e.code != "NoSuchKey":
+                raise
+            continue
+        try:
+            return json.loads(response.read())
+        finally:
+            response.close()
+            response.release_conn()
+    raise FileNotFoundError(f"no processed artifact for {doc_id}")
 
 
 async def run_sweep() -> dict:
@@ -57,22 +87,41 @@ async def run_sweep() -> dict:
 
         for doc_id in candidates:
             try:
-                # Read stored processed doc JSON (read-only, no re-conversion)
-                key = f"processed/{doc_id}.json"
-                response = mc.get_object(settings.minio_bucket, key)
-                try:
-                    data = json.loads(response.read())
-                finally:
-                    response.close()
-                    response.release_conn()
+                data = _load_processed_doc(mc, doc_id)
 
-                structure = data.get("structure") or []
                 content_class = data.get("content_class", "")
 
-                verdict, verdict_reason = classify_verdict(structure, content_class, None)
+                # Zone-3 fix: flat docs (RFC-004 Amendment 1) have no
+                # "structure" key — running validate_tree / classify_verdict
+                # on their "blocks" list invents nonsense tree metrics
+                # (Finding 5, audit 2026-07-21).  Skip them here; flat-doc
+                # verdict recomputation lives in preprocess_client.py
+                # --recompute-verdicts where ingest-time inputs are available.
+                is_flat = "structure" not in data and "blocks" in data
+                if is_flat:
+                    skipped += 1
+                    logger.info("Sweep: skipping flat doc %s", doc_id)
+                    continue
+
+                structure = data.get("structure") or []
+
+                # Zone-3: replace lossy _defect_from_reason_str
+                # reconstruction with a direct validate_tree call on the
+                # stored structure — identical to recompute_verdicts
+                # (preprocess_client.py).  Both offline paths now use the
+                # same current gate logic as the single source of truth.
+                vt_result = validate_tree(structure)
+                verdict, verdict_reason = classify_verdict(structure, content_class, vt_result)
                 _, _, mlr = _tree_max_leaf_ratio(structure)
 
-                meta = {
+                verdict_computed_at = datetime.now(UTC).isoformat()
+
+                # RFC-042 D3: route verdict + provenance through the sole
+                # write-through path (_upsert_registry_row) instead of
+                # write_verdict + save_doc_meta + a separate upsert_doc call
+                # -- it CAS-upserts Postgres, then best-effort backfills the
+                # MinIO sidecar with the winning row, keeping both in sync.
+                registry_meta = {
                     "doc_id": doc_id,
                     "doc_name": data.get("doc_name", ""),
                     "source_url": data.get("source_url", ""),
@@ -81,15 +130,38 @@ async def run_sweep() -> dict:
                     "verdict_reason": verdict_reason,
                     "max_leaf_ratio": round(mlr, 4),
                     "pipeline_version": CURRENT_PIPELINE_VERSION,
-                    "verdict_computed_at": datetime.now(UTC).isoformat(),
+                    "verdict_computed_at": verdict_computed_at,
                 }
                 if content_class:
-                    meta["content_class"] = content_class
+                    registry_meta["content_class"] = content_class
 
-                # Write sidecar
-                save_doc_meta(doc_id, meta)
-                # Update registry
-                await upsert_doc(meta)
+                # The recomputed verdict must also travel as verdict_fields:
+                # when Postgres is disabled or the pool is not ready,
+                # _upsert_registry_row mirrors only verdict_fields into the
+                # sidecar and only verdict_fields gets queued for retry.
+                # Passing registry_fields alone silently dropped the verdict
+                # and pipeline version on exactly those degraded paths.
+                verdict_meta = {
+                    "verdict": verdict,
+                    "verdict_reason": verdict_reason,
+                    "max_leaf_ratio": round(mlr, 4),
+                    "pipeline_version": CURRENT_PIPELINE_VERSION,
+                    "verdict_computed_at": verdict_computed_at,
+                }
+                wrote = await _upsert_registry_row(
+                    doc_id,
+                    content_class or None,
+                    verdict_fields=verdict_meta,
+                    registry_fields=registry_meta,
+                )
+                if not wrote:
+                    errors += 1
+                    logger.warning(
+                        "Sweep: registry write degraded for %s -> %s",
+                        doc_id,
+                        verdict,
+                    )
+                    continue
 
                 updated += 1
                 logger.info("Sweep: %s -> %s (%s)", doc_id, verdict, verdict_reason or "clean")
@@ -112,7 +184,9 @@ async def run_sweep() -> dict:
 
 
 def main():
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    from pageindex_mcp.obs import configure as configure_obs
+
+    configure_obs()
     asyncio.run(run_sweep())
 
 

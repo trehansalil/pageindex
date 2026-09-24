@@ -1,0 +1,129 @@
+{
+  "delta": {
+    "zone_deltas": [
+      {
+        "zone_name": "Verdict Computation & Promotion Cascade (was: ExtractionState route/ok multi-writer cascade)",
+        "status": "improved",
+        "severity_before": "critical",
+        "severity_after": "critical",
+        "bug_count_before": 7,
+        "bug_count_after": 6,
+        "key_change": "Multi-writer state divergence (finalize_gate_and_route bypassed at 6 call sites in recovery.py) evolved into a threshold-coupling / promotion-cascade-ordering framing; bug count fell 7->6, but the core precedence-locked six-guard cascade (RFC-040 D2) is still cited as unresolved and is now compounded by config-snapshot vs live-read threshold drift (DEPTH_ADEQUACY_FLOOR/CHAR_FLOOR).",
+        "proposal_status": "partially_implemented"
+      },
+      {
+        "zone_name": "Garble Detection & NFKC Signal Destruction (was: Normalize-before-detect null-detector lattice)",
+        "status": "improved",
+        "severity_before": "critical",
+        "severity_after": "high",
+        "bug_count_before": 6,
+        "bug_count_after": 4,
+        "key_change": "had_presentation_forms is now captured correctly at patched call sites (the pre-NFKC signal-capture proposal was partly carried out), but ScriptContext still permits had_presentation_forms=False with no compile-time enforcement, and the bidi-coherence gate exhibits the identical null-detector pattern (zero violations misread as proof of safety) called out before.",
+        "proposal_status": "partially_implemented"
+      },
+      {
+        "zone_name": "Verdict Persistence Dual-Writer (was: Split verdict authority: five writers over two stores)",
+        "status": "improved",
+        "severity_before": "critical",
+        "severity_after": "high",
+        "bug_count_before": 5,
+        "bug_count_after": 2,
+        "key_change": "Bug count nearly halved and severity downgraded, but the core defect is unfixed: five independent code paths still write verdict across two stores, and registry_backfill/backfill.py:145 still falsely asserts save_doc_meta enforces CAS priority -- the proposed single-CAS-authority collapse (converters_cli child should never write verdict) was not implemented.",
+        "proposal_status": "not_implemented"
+      },
+      {
+        "zone_name": "Config Snapshot vs Live-Read Divergence (was: Config-layer bifurcation: frozen snapshot vs live os.environ)",
+        "status": "improved",
+        "severity_before": "high",
+        "severity_after": "medium",
+        "bug_count_before": 4,
+        "bug_count_after": 2,
+        "key_change": "Bug count dropped 4->2 and severity downgraded, consistent with some os.environ re-reads (tree_split.py/indexer.py) being consolidated onto pipeline_config, but the flagship BIDI_COHERENCE_ENFORCE truthiness-mismatch between config.py's _envbool and gates.py's exact-match check is reported again verbatim, so the proposed CI-guard/consolidation was only partially carried out.",
+        "proposal_status": "partially_implemented"
+      },
+      {
+        "zone_name": "OCR Recovery Cascade & Converter Fallback Chain (was: Ordered-policy converter chain with load-bearing branch order)",
+        "status": "regressed",
+        "severity_before": "high",
+        "severity_after": "critical",
+        "bug_count_before": 4,
+        "bug_count_after": 8,
+        "key_change": "The RETRY handler's bare `continue` (comment claims 'rewind idx' but the for-loop cannot rewind) is the identical unfixed defect from the prior audit -- the proposed while-loop rewrite was not implemented. It has now merged with the Recovery-dispatch tuple-keyed-dedup zone plus a newly-flagged gate-ordering flip (node_count/depth gates now evaluated before the garbling gate, reversed from the prior finding), escalating severity to critical and combined bug count to 8.",
+        "proposal_status": "not_implemented"
+      },
+      {
+        "zone_name": "OCR Recovery Cascade & Converter Fallback Chain (was: Recovery dispatch: tuple-keyed dedup and unguarded raising normalizers)",
+        "status": "regressed",
+        "severity_before": "high",
+        "severity_after": "critical",
+        "bug_count_before": 4,
+        "bug_count_after": 8,
+        "key_change": "This zone (tuple-keyed recovery_fns dedup causing duplicate full-page OCR passes, and an unguarded ensure_tessdata raise at indexer.py:885) was absorbed into the merged OCR Recovery Cascade zone alongside the converter-chain RETRY bug; no evidence in the current audit that the dedup-by-tuple-vs-by-member-name fix was ever applied, and the merge raised overall severity to critical.",
+        "proposal_status": "no_proposal"
+      },
+      {
+        "zone_name": "Content Measurement Blind Spot (Table Block Text Extraction) (was: Divergent parallel garble/text accessors)",
+        "status": "improved",
+        "severity_before": "high",
+        "severity_after": "high",
+        "bug_count_before": 4,
+        "bug_count_after": 3,
+        "key_change": "The garble-accessor-triplication half of this zone (detect_garble vs _garble_check_nodes fallback vs _garble_check_flat_blocks) appears to have folded into the current Garble Detection & NFKC zone's narrative; the surviving zone narrows to the flat.py table/image block text-key accessor duplication (bug count trimmed 4->3), though the underlying no-text-key schema design decision that is the actual trap remains unaddressed.",
+        "proposal_status": "no_proposal"
+      },
+      {
+        "zone_name": "HR2 Erasure Cascade Hidden Ordering Dependencies (was: Order-coupled erasure manifest with implicit inter-step data flow)",
+        "status": "improved",
+        "severity_before": "medium",
+        "severity_after": "medium",
+        "bug_count_before": 2,
+        "bug_count_after": 1,
+        "key_change": "Bug count trimmed from 2 to 1, but both underlying ordering hazards are still described verbatim in the current audit: ctx.doc_name populated only by step 1 (steps 5/7 silently skip if reordered), and ctx.sha256 read from the very processed/<id>.meta.json sidecar that step 3 deletes -- validate_erasure_manifest still checks prefix-completeness only, not data-flow ordering between steps.",
+        "proposal_status": "no_proposal"
+      }
+    ],
+    "new_zones": [],
+    "closed_zones": [],
+    "summary": {
+      "total_current": 7,
+      "total_prior": 8,
+      "improved": 6,
+      "regressed": 2,
+      "stalled": 0,
+      "new_count": 0,
+      "closed_count": 0,
+      "net_bug_delta": -10
+    }
+  },
+  "wiring": {
+    "summary": "WIRING ANALYSIS: PAGEINDEX POST-FIX ZONES\n\nCRITICAL FINDINGS:\n\n**ZONE 1 - OCR Recovery Cascade (UNWIRED - CRITICAL BLOCKER)**\nStatus: HIGH SEVERITY\n- _recover_vlm_fallback: NO production callers found\n- _recover_garble_ocr: NO production callers found\n- _recover_low_content_ocr: NO production callers found\n- _recover_image_dominant_ocr: NO production callers found\n- _execute_ocr_retry: HAS callers (from the 3 _recover_* above, but they're not called)\n- decide_ocr_strategy: HAS production callers (_convert_to_tree, _recover_picture_results)\n\nIssue: The 4 top-level recovery dispatch methods are defined in RecoveryMixin but are NEVER invoked from production code. These are callable methods but orphaned. The only caller paths reach _execute_ocr_retry through the recovery methods, meaning the entire OCR recovery cascade is disabled at runtime.\n\n**ZONE 2 - Verdict Computation & Promotion Cascade (PROPERLY WIRED)**\nStatus: HEALTHY\n- apply_promotions: Production callers ✓ (compute_verdict, _persist_flat_result, _persist_tree_result, classify_verdict)\n- Verdict promotion chain fully connected to indexer and persistence layers\n\n**ZONE 3 - Garble Detection & NFKC Signal (PROPERLY WIRED)**\nStatus: HEALTHY\n- detect_garble: Multiple production callers ✓ (_attempt_tesseract_raster_recovery, _text_layer_has_content, _convert_to_tree, _keep_best_wins, apply_promotions, etc.)\n- Garble detection integrated throughout the extraction pipeline\n\n**ZONE 4 - Content Measurement (Table Block Text) (PROPERLY WIRED)**\nStatus: HEALTHY\n- _flat_block_primary_text: Production callers ✓ (_persist_flat_result, _recover_rtl_flat_compare, _recover_flat_prefer, index)\n- Table content measurement properly connected to flat routing and verdict persistence\n\n**ZONE 5 - Verdict Persistence Dual-Writer (PROPERLY WIRED)**\nStatus: HEALTHY\n- save_doc_meta: Production callers ✓ (write_verdict, save_flat_doc, recompute_verdicts)\n- MinIO sidecar and Postgres registry persistence properly connected\n- upsert_verdict and read_registry_fields exist but are invoked indirectly through save_doc_meta\n\n**ZONE 6 - Config Snapshot vs Live-Read (PROPERLY WIRED)**\nStatus: HEALTHY\n- effective_config_snapshot: Production callers ✓ (index, process_document_job)\n- Config snapshot captured at job start and properly threaded through extraction pipeline\n\n**ZONE 7 - HR2 Erasure Cascade (PROPERLY WIRED)**\nStatus: HEALTHY\n- delete_document (MCP tool): Entry point for document deletion\n- delete_doc flows through registry queries and storage cascade\n- Erasure ordering validated in tests per HR2 spec\n\nOVERALL HEALTH ASSESSMENT:\n- 6 zones properly wired and functional\n- 1 zone (Zone 1) completely disconnected from production execution path\n- The OCR recovery cascade methods exist but are dead code—never dispatched to despite being defined with full eligibility gates\n\nRECOMMENDED ACTION:\nInvestigate who should be calling _recover_garble_ocr, _recover_low_content_ocr, and _recover_image_dominant_ocr methods. These are defined as part of RecoveryMixin but the orchestration layer that dispatches to them appears to be missing or broken.",
+    "wiring_findings": [
+      "OCR Recovery Cascade - CRITICAL: _recover_vlm_fallback, _recover_garble_ocr, _recover_low_content_ocr, _recover_image_dominant_ocr have ZERO production callers. Dead code path - recovery methods never invoked at runtime.",
+      "Verdict Computation - HEALTHY: apply_promotions properly wired to compute_verdict, _persist_flat_result, _persist_tree_result, and classify_verdict",
+      "Garble Detection - HEALTHY: detect_garble has robust production callers across _attempt_tesseract_raster_recovery, _text_layer_has_content, _document_level_text_fallback, _convert_to_tree, and _keep_best_wins",
+      "Content Measurement - HEALTHY: _flat_block_primary_text properly connected to _persist_flat_result and recovery methods",
+      "Verdict Persistence - HEALTHY: save_doc_meta connected to write_verdict, save_flat_doc, recompute_verdicts with dual-writer pattern to MinIO and Postgres",
+      "Config Snapshot - HEALTHY: effective_config_snapshot properly threaded through index and process_document_job",
+      "HR2 Erasure - HEALTHY: delete_document MCP tool properly routes to delete_doc registry query and cascade"
+    ],
+    "past_cycle_outcomes": "Zone 1 OCR recovery methods (_recover_garble_ocr, _recover_low_content_ocr, _recover_image_dominant_ocr, _recover_vlm_fallback) are fully implemented with complex eligibility logic, picture text splicing, OCR language detection, and keep-best heuristics, but the orchestration dispatcher that should invoke these methods from _convert_to_tree or indexer is missing. The _execute_ocr_retry shared implementation is wired correctly and receives calls from the recovery methods, but those recovery methods themselves are orphaned from the call graph. This represents Zone 1's core defect: the recovery cascade was refactored into separate methods but the dispatcher mechanism was not updated to call them."
+  },
+  "mem": {
+    "summary": "## Remediation Cycle History: pageindex Project\n\n### Most Recent Cycle: RFC-041 \"Recurring Defect Consolidation\" (Sep 1, 2026)\n\n**Verdict:** CONDITIONAL_PASS with 4 required follow-ups\n\n- **Test Stability:** 2001-test suite passed identically across 3 consecutive runs (zero flaky tests, ~178s each)\n- **Implementation Status:** Waves 0-1 and most of Wave 2 implemented and test-covered; Waves 3-4 delivered; Wave 5 pending\n- **Critical Gap:** D11 (verdict authority consolidation) NOT implemented — correctly left incomplete pending its hard-gate prerequisite RFC-037 Release B corpus validation (task 3.5a)\n- **Follow-ups Required:** (1) Update task checkboxes to reflect actual state, (2) Run RFC-037 Release B validation or document deferral, (3) Resolve pre-existing RFC-033 gate violation before wiring rfc-lifecycle-lint as merge-blocking, (4) Commit 15 pending files\n\n### Baseline (WAVE4, Pre-Fix Aug 29, 2026)\n\nThe RFC-041 post-verify audit was run against WAVE4 baseline that catalogs:\n- **8 defect zones total, 32 attributed bugs**\n- **Critical zones:** ExtractionState multi-writer cascade (7 bugs), Normalize-before-detect null-detector lattice (6 bugs), Split verdict authority across 5 writers (5 bugs)\n- **High-severity zones:** Config bifurcation, Ordered-policy converter chain, Recovery dispatch dedup, Divergent parallel garble/text accessors (4 bugs each)\n- **Medium-severity zone:** Order-coupled erasure manifest (2 bugs)\n\n### RFC-041 Post-Fix Audit Results (Sep 1, 2026)\n\n**Zone Scorecard:** 5 defect zones mapped post-RFC-041, totaling 26 bugs attributed across:\n1. **OCR Recovery Cascade** (CRITICAL, 8 bugs) — converter RETRY branch `continue` bug still unresolved; gating prevents image-dominant documents reaching OCR via garbling path\n2. **Verdict Computation & Promotion Cascade** (CRITICAL, 6 bugs) — evaluate_gates/apply_promotions/finalize_gate_and_route three-phase pipeline; PASS_HYSTERESIS_BAND widening masks quality regressions\n3. **Garble Detection & NFKC** (HIGH, 4 bugs) — 7 zone-fix wave=2 garble-kernel changes implemented and tagged but scorecard marked regressed (root causes a-d in gates.py/validate_tree unresolved)\n4. **Content Measurement Blind Spot/Table Text Extraction** (HIGH, 3 bugs) — table/image blocks omit \"text\" key per RFC-022 B3; audit tooling shares same blind spot\n5. **Verdict Persistence Dual-Writer** (HIGH, 2 bugs) — consistency_regime stamping is no-op (requires _MERGE_FIELDS extension); CAS guard divergence between MinIO backfill.py and code\n6. **Config Snapshot vs Live-Read Divergence** (MEDIUM, 2 bugs) — 121 env reads across 9 files in parallel with frozen 88+ field PipelineConfig\n7. **HR2 Erasure Cascade Hidden Ordering** (MEDIUM, 1 bug) — ctx.doc_name discovery in step 1, ctx.sha256 in step 2d, deletion step 3; required=False silently degrades purge to no-op\n\n### Zone Regression Patterns\n\n**\"Divergent parallel garble/text accessors\"** (Aug 29 POST-FIX-WAVE4):\n- Status: REGRESSED (HIGH, 4 bugs)\n- Root Cause: No single choke point for \"text of a thing\" — 3 independent garble detection paths, 3 duplicate flat-block text accessors. Zone-9 header-only-table fix applied to only 1 of 3 accessors.\n- Chronic Pattern: \"Fix one instance, miss the other\" defect is structural, not incidental\n\n**Zone-Fix Wave 2 Garble-Kernel** (Aug 29):\n- Status: Code-complete but scorecard REGRESSED (POST-FIX-WAVE3-VERIFY)\n- All 7 WHAT-TO-CHANGE items present and tagged in working tree but gates.py/validate_tree root causes (a-d) unresolved\n\n### Pre-Existing Blockers Preventing Zone-Fix Completion\n\n- RFC-033 gate violation blocks rfc-lifecycle-lint from merge-blocking CI (deferred to 2026-09-15)\n- OCR zone deletion of decide_ocr_mode breaks TestDecideOcrModeForwarding; requires test/import reconciliation first\n- Verdict persistence consistency_regime requires _MERGE_FIELDS extension in storage/verdict.py as hard prerequisite\n- Config divergence: 121 env reads across 9 files diverge 1-2 units from frozen PipelineConfig\n\n### User-Corrected Issues\n\n- **Fabricated Corpus Report (Jul 17, 2026):** DOC_STORE_CORPUS_REPORT.md verdict table was FABRICATED — always verify against MinIO meta.json\n- **Fix-2/Fix-4 Known Gaps:** RTL table stitching unvalidated, TABLE block saturates ~7 rows, .jpg OCR never fires, garble-gate hole on numeric-junk text layers",
+    "past_cycle_outcomes": "RFC-041 CONDITIONAL_PASS (Sep 1, 2026) with test suite stable across 3 runs and Waves 0-4 mostly implemented but D11 correctly gated incomplete; WAVE4 baseline (Aug 29) catalogs 8 zones with 32 bugs pre-RFC-041; Zone-Fix Wave 2 Garble Kernel code-complete but scorecard regressed due to unresolved gates.py/validate_tree root causes; Divergent Parallel Accessors zone REGRESSED (HIGH/4 bugs) with Zone-9 fix incomplete across 3 accessors; Wave 3 zones (OCR Recovery, Dual-Writer Verdict) queued with needs_work blockers documented",
+    "wiring_findings": [
+      "Split verdict authority: finalize_gate_and_route documented as 'single writer' but 6 direct-write sites in recovery.py bypass it (lines 593, 649, 667, 685, 728-729, 758-759)",
+      "Multi-writer ExtractionState cascade creates internally inconsistent states (ok=False, route=FLAT, first_defect=OK simultaneously)",
+      "CAS guard divergence: backfill.py docstring asserts MinIO guard that code does not implement (CLAUDE.md HR2 breach)",
+      "Converter RETRY loop AGPL risk: 'continue' inside for-loop cannot rewind idx, can fall through to AGPL converter (Zone 5/NG5 STILL PRESENT)",
+      "Divergent garble paths: detect_garble skipped by _garble_check_nodes fallback, losing script re-inference and presentation-forms recovery",
+      "Dual-accessor text extraction: Zone-9 header-only-table fix applied to only _flat_block_primary_text, not _flat_search_text",
+      "Audit blind spot persistence: table char-count measurements undercount as zero, sharing same 'no text key' blind spot as code (RFC-022 B3)",
+      "Erasure cascade hidden ordering: doc_name step 1, sha256 step 2d, deletion step 3; required=False silently downgrades purge to no-op",
+      "Verdict persistence consistency_regime stamping is no-op without _MERGE_FIELDS extension in storage/verdict.py",
+      "Config snapshot vs live-read: 121 env reads across 9 files diverge 1-2 units from frozen 88+ field PipelineConfig (DEPTH_ADEQUACY_FLOOR, CHAR_FLOOR)",
+      "Partial RFC implementations: RFC-033 F2, RFC-037 D4/D5, RFC-040 D3/D6 sub-decisions left unremediated across multiple audit waves",
+      "Pre-existing RFC-033 gate violation (tasks 9.2/9.3 checked while 9.1 unchecked) blocks rfc-lifecycle-lint from being wired as merge-blocking CI"
+    ]
+  }
+}

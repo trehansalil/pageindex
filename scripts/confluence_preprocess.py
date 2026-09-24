@@ -4,7 +4,7 @@
 mark (kovetskiy/mark) cannot resolve relative cross-file links when files are
 processed one at a time (see confluence_sync.sh). This script rewrites:
 
-  - Relative links to synced .agents/ and audit/ files → Confluence display URLs
+  - Relative links to synced agents/ and audit/ files → Confluence display URLs
   - Relative links to non-synced files (CLAUDE.md, etc.) → GitHub blob URLs
   - Same-page #anchors → preserved as-is
 
@@ -30,13 +30,17 @@ from pathlib import Path
 from urllib.parse import quote
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-AGENTS_DIR = ROOT_DIR / ".agents"
+AGENTS_DIR = ROOT_DIR / "agents"
 AUDIT_DIR = ROOT_DIR / "audit"
 SPACE = "CITRA"
 
 TITLE_RE = re.compile(r"<!--\s*Title:\s*(.+?)\s*-->", re.IGNORECASE)
 SPACE_RE = re.compile(r"<!--\s*Space:", re.IGNORECASE)
 MD_LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]+)\)")
+# Inside a markdown table the alias separator is escaped as ``\|`` so it is
+# not read as a cell boundary; without the optional backslash those wiki
+# links never matched and stayed raw Obsidian syntax in Confluence.
+WIKILINK_RE = re.compile(r"\[\[([^\]|]+?)(?:\\?\|([^\]]+))?\]\]")
 
 
 def _detect_github_url() -> str:
@@ -157,6 +161,46 @@ def rewrite_links(
     return MD_LINK_RE.sub(_replace, text)
 
 
+_RFC_NUM_RE = re.compile(r"^(\d{3})-")
+
+
+def _build_stem_map(title_map: dict[Path, str]) -> dict[str, str]:
+    """Build {filename_stem: page_title} from the path-keyed title_map.
+
+    Also registers RFC-NNN aliases (e.g. RFC-043) so [[RFC-043]] resolves
+    to the RFC's Confluence page.
+    """
+    stem_map: dict[str, str] = {}
+    for path, title in title_map.items():
+        stem_map[path.stem] = title
+        if path.parent.name == "rfcs":
+            m = _RFC_NUM_RE.match(path.stem)
+            if m:
+                stem_map.setdefault(f"RFC-{m.group(1)}", title)
+    return stem_map
+
+
+def rewrite_wikilinks(
+    text: str,
+    stem_map: dict[str, str],
+    confluence_base: str,
+) -> str:
+    """Rewrite [[target|display]] and [[target]] to Confluence markdown links."""
+
+    def _replace(m: re.Match) -> str:
+        target = m.group(1).strip()
+        display = (m.group(2) or target).strip()
+
+        if target in stem_map:
+            page_title = stem_map[target]
+            url = confluence_display_url(confluence_base, SPACE, page_title)
+            return f"[{display}]({url})"
+
+        return m.group(0)
+
+    return WIKILINK_RE.sub(_replace, text)
+
+
 def main() -> None:
     if len(sys.argv) < 3:
         print(f"Usage: {sys.argv[0]} <tmpdir> <file1> [file2 ...]", file=sys.stderr)
@@ -171,6 +215,7 @@ def main() -> None:
     branch = _get_default_branch()
 
     title_map = build_title_map()
+    stem_map = _build_stem_map(title_map)
 
     for src in files:
         try:
@@ -180,6 +225,7 @@ def main() -> None:
             continue
 
         rewritten = rewrite_links(text, src, title_map, confluence_base, github_url, branch)
+        rewritten = rewrite_wikilinks(rewritten, stem_map, confluence_base)
 
         try:
             rel = src.resolve().relative_to(ROOT_DIR)

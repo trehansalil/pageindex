@@ -1,0 +1,64 @@
+{
+  "waves": [
+    {
+      "wave_number": 1,
+      "zones": [
+        "Verdict-Gate Threshold / Promotion / Override Cascade",
+        "Converter Chain Fallback and AGPL Gating"
+      ],
+      "rationale": "Verdict-Gate defines the foundational contracts (TreeGateResult in helpers/types.py, thresholds in config.py) that the Garble zone's tree_validation.validate_tree() imports directly (confirmed via trace_path: validate_tree -> TreeGateResult). It must land first. Converter Chain (indexer.py/pipeline.py/normalize.py) shares no key files and no symbol dependency with Verdict-Gate (search_graph shows disjoint result sets), so it is safe to run in parallel in the same wave. Placing it here also pre-empts the file-overlap conflict it would otherwise create with OCR Recovery (both touch indexer.py) by separating them into different waves up front.",
+      "shared_files": []
+    },
+    {
+      "wave_number": 2,
+      "zones": [
+        "Garble Detection Cross-Cutting Kernel"
+      ],
+      "rationale": "Consumes the TreeGateResult/threshold contract fixed in Wave 1 (validate_tree in tree_validation.py calls into helpers/types.py and helpers/garble.py's detect_garble/garble_prongs chain, confirmed via trace_path). Runs alone because two of its key files (converters/pictures.py and client/recovery.py) are also PRIMARY files for the OCR Recovery zone (Wave 3) and Wave 1's Converter Chain zone claims indexer.py which recovery.py/pictures.py interact with at runtime -- isolating Garble Detection to its own wave prevents a same-file merge collision with either neighbor.",
+      "shared_files": []
+    },
+    {
+      "wave_number": 3,
+      "zones": [
+        "OCR Recovery Cascade and Kill-Switch Conflation",
+        "Dual-Writer Verdict Persistence and Consistency Model Split"
+      ],
+      "rationale": "OCR Recovery shares converters/pictures.py and client/recovery.py with Garble Detection (Wave 2) -- rule 1 forces a separate wave. It also shares client/indexer.py with the Converter Chain zone (Wave 1) -- already separated. Dual-Writer Verdict Persistence (storage/verdict.py, storage/documents.py, registry_mirror.py, reconcile.py, registry/queries.py) has zero file overlap with any other zone (search_graph/trace_path show storage.verdict.save_doc_meta and storage.documents.save_flat_doc as a disjoint call chain reached only from preprocess_client.py/promotion_sweep.py), but it structurally consumes the verdict fields produced by Wave 1's Verdict-Gate zone and the tree-quality outcome produced by Wave 2's Garble Detection zone (save_doc_meta merges verdict output before persisting), so it cannot run before either. It has no file conflict with OCR Recovery, so it co-runs in Wave 3.",
+      "shared_files": []
+    }
+  ],
+  "dependency_graph": [
+    {
+      "zone": "Verdict-Gate Threshold / Promotion / Override Cascade",
+      "depends_on": [],
+      "reason": "Foundational: defines TreeGateResult (helpers/types.py) and threshold/config surface consumed downstream."
+    },
+    {
+      "zone": "Converter Chain Fallback and AGPL Gating",
+      "depends_on": [],
+      "reason": "No symbol or file overlap found with Verdict-Gate via search_graph; independent conversion-pipeline concern that precedes garble/OCR checks in the runtime pipeline but shares no code with Verdict-Gate."
+    },
+    {
+      "zone": "Garble Detection Cross-Cutting Kernel",
+      "depends_on": [
+        "Verdict-Gate Threshold / Promotion / Override Cascade"
+      ],
+      "reason": "tree_validation.validate_tree() imports and returns helpers/types.TreeGateResult, and applies thresholds owned by the Verdict-Gate zone (trace_path confirmed: validate_tree -> TreeGateResult)."
+    },
+    {
+      "zone": "OCR Recovery Cascade and Kill-Switch Conflation",
+      "depends_on": [
+        "Garble Detection Cross-Cutting Kernel"
+      ],
+      "reason": "File overlap (converters/pictures.py, client/recovery.py) with Garble Detection forces wave separation; runtime dependency also flows from garble detection results into OCR recovery triggering."
+    },
+    {
+      "zone": "Dual-Writer Verdict Persistence and Consistency Model Split",
+      "depends_on": [
+        "Verdict-Gate Threshold / Promotion / Override Cascade",
+        "Garble Detection Cross-Cutting Kernel"
+      ],
+      "reason": "storage/verdict.save_doc_meta / write_verdict merge verdict fields produced by the Verdict-Gate zone and tree-quality outcomes produced by the Garble Detection zone before persisting; no direct file overlap with either zone (confirmed via search_graph/trace_path disjoint file sets)."
+    }
+  ]
+}

@@ -1,0 +1,197 @@
+{
+  "chains": [
+    {
+      "what_was_fixed": "RFC-033 D2 Part A: guard (_heading_is_logical_order) added to prevent unconditional bidi heading reversal in reconstruct_bidi_order.",
+      "module_or_layer": "converters/normalize.py (bidi reconstruction) + remote Docling microservice",
+      "what_it_broke_or_disabled": "The guard was never committed to git (git log -S finds it in no commit) and the remote Scaleway Docling service runs a separately-deployed, stale image of the SAME converter code that predates the guard. Documents routed through the remote path still get headings unconditionally reversed, and no local fix can reach code executing on the far side of the network.",
+      "evidence": "audit/BIDI_ROOT_CAUSE_RFC033.md F1 (§1.1-1.3): git show HEAD shows 0 occurrences of _heading_is_logical_order; live remote capture reproduces reversed headings byte-for-byte; audit/zones/bidi-rtl-processing-split.md chain 3."
+    },
+    {
+      "what_was_fixed": "_check_bidi_coherence gate added/promoted (BIDI_COHERENCE_ENFORCE=true) based on a Task 9.1 measurement of '0 bidi_coherence_violations' across a sample of Arabic documents.",
+      "module_or_layer": "helpers/gates.py bidi coherence detector",
+      "what_it_broke_or_disabled": "The '0 violations' reading is a null-detector fallacy: NFKC normalization destroys the Arabic presentation-form codepoints (U+FB50-FEFF) that are the detector's ONLY failure signal, and independently the run-selector counts only U+0600-06FF (excluding presentation forms) so lines carrying the signal are never even sampled. The measurement was actually a 0% true-positive rate on a corruption-enriched frame, not a low false-positive rate.",
+      "evidence": "audit/BIDI_ROOT_CAUSE_RFC033.md F2 (§2.1-2.2, §5); audit/zones/bidi-rtl-processing-split.md chain 4."
+    },
+    {
+      "what_was_fixed": "RFC-026 D2 added rotation detection to catch RTL text reversals.",
+      "module_or_layer": "client/indexer.py / converters/normalize.py",
+      "what_it_broke_or_disabled": "Rotation detection catches some RTL reversals but is applied asymmetrically across the corpus, leaving a residual population of undetected reversed documents.",
+      "evidence": "audit/zones/bidi-rtl-processing-split.md chain 19."
+    },
+    {
+      "what_was_fixed": "AGPL gating (allow_agpl_fallback) added to keep pymupdf4llm (AGPL-3.0) out of the default converter chain, satisfying CLAUDE.md Hard Rule 4.",
+      "module_or_layer": "converters/pipeline.py pdf_markdown_converters() + client/indexer.py _convert_to_tree chain-walk",
+      "what_it_broke_or_disabled": "The chain-walk in _convert_to_tree is unconditional: when the primary converter raises on ANY failure mode (a transient HTTP 504 timeout treated identically to a genuine parse error), it silently advances to the next chain entry. When that entry is pymupdf4llm, an unplanned outage becomes AGPL-licensed network-served conversion with only a logger.warning, no hard gate distinguishing intentional operator choice from unplanned regression.",
+      "evidence": "audit/zones/converter-chain-fallback-agpl-gating.md; audit/BIDI_ROOT_CAUSE_RFC033.md C-2; audit/ISSUES.md ISS-35; audit/FIXES.md ISS-35."
+    },
+    {
+      "what_was_fixed": "ensure_tessdata hardened to raise TessdataUnavailableError for missing non-Latin traineddata (Zone-3 fix).",
+      "module_or_layer": "converters/ocr_langs.py tessdata language fallback",
+      "what_it_broke_or_disabled": "Latin languages are still silently dropped/substituted (fix only covers non-Latin). When Arabic traineddata is missing, the older fallback to ['deu','eng'] still applies elsewhere, producing Latin mojibake OCR output that passes EVERY garble-detection prong, defeating the exact garble gate the OCR-escalation path exists to satisfy.",
+      "evidence": "audit/zones/garble-detection-cross-cutting-kernel.md; audit/ISSUES.md ISS-34; audit/CROSS_CUTTING_ISSUE_EXPLORATION_2026-07-27.md Issue 3."
+    },
+    {
+      "what_was_fixed": "detect_garble's token_repetition prong fixed to exclude non-alphanumeric tokens after false-positives on tables with pipe/currency symbols.",
+      "module_or_layer": "helpers/garble.py garble_prongs",
+      "what_it_broke_or_disabled": "The fix addressed the table false-positive but did not address blind spots it shares with other prongs: numeric-junk text and Latin-script mojibake from Arabic OCR still pass undetected. detect_garble is a single shared kernel (11 callers) so a narrow fix left the wider blast radius (three subsystems: tree-quality gating, OCR-skip, OCR-retry keep-best) unaddressed.",
+      "evidence": "audit/zones/garble-detection-cross-cutting-kernel.md chain 15; audit/ISSUES.md ISS-36 / audit/FIXES.md ISS-36 (duplicate 500-char digit-ratio floor, chain 8)."
+    },
+    {
+      "what_was_fixed": "GATE_TABLE orders garbling detection first (severity=0) ahead of node_count_low (severity=1) so garbling should take priority as the reported reason.",
+      "module_or_layer": "helpers/tree_validation.py validate_tree + helpers/gates.py GATE_TABLE",
+      "what_it_broke_or_disabled": "For a minimal-tree garbled document, signal computation still surfaces reason='node_count_low' instead of 'garbling'. OCR escalation fires ONLY when reason is in {'garbling','node_garbling'}, so recovery never triggers for that document -- detection fired internally but the remediation hook was never reached.",
+      "evidence": "audit/zones/garble-detection-cross-cutting-kernel.md chain 18; audit/zones/ocr-recovery-cascade.md chain 20."
+    },
+    {
+      "what_was_fixed": "D1 page-coverage filter (P0b, RFC-018) added to skip per-picture OCR when a region exceeds 60% of page area, plus a text-layer probe skipping OCR when clean vector text already exists.",
+      "module_or_layer": "converters/pictures.py per-picture OCR / picture_plane.py",
+      "what_it_broke_or_disabled": "The coverage filter suppresses wasted/garbling OCR but never closes the marker-removal loop: a deliberately-skipped region is indistinguishable from a genuine OCR-found-nothing failure, so the literal '<!-- image -->' marker survives into output as visible noise. A second-order fix (skipped_reason tagging) was required to close this gap.",
+      "evidence": "audit/CROSS_CUTTING_ISSUE_EXPLORATION_2026-07-27.md Issue 4; audit/zones/ocr-recovery-cascade.md chain 1."
+    },
+    {
+      "what_was_fixed": "Per-picture OCR + VLM description pipeline added (feat/image-block-picture-ocr branch) to capture chart/infographic content as first-class retrievable artifacts, distinct from page-level OCR escalation.",
+      "module_or_layer": "converters/pictures.py + client/indexer.py OCR escalation ladder",
+      "what_it_broke_or_disabled": "The new pipeline conflates with page-level OCR escalation: it fires unconditionally including during force_full_page_ocr calls, and text that was previously classified 'prose' (counted for content_class) got structurally relocated into image blocks' 'ocr_text' field, which content_class does NOT count -- degrading retrieval granularity for scanned/image-dominant PDFs.",
+      "evidence": "audit/OCR_IMAGE_BLOCK_CONFLATION_INVESTIGATION_2026-07-27.md §1-3, Affected Document Classes table."
+    },
+    {
+      "what_was_fixed": "_OCR_ESCALATION kill-switch introduced to allow disabling problematic OCR retry behavior.",
+      "module_or_layer": "converters/pipeline.py + client/indexer.py (duplicated flag)",
+      "what_it_broke_or_disabled": "The single kill-switch gates BOTH page-level OCR escalation AND per-picture crop OCR unconditionally. Toggling it to address one runaway behavior inadvertently disables the other, with no way to address either independently.",
+      "evidence": "audit/OCR_IMAGE_BLOCK_CONFLATION_INVESTIGATION_2026-07-27.md §5; audit/zones/ocr-recovery-cascade.md chain 2."
+    },
+    {
+      "what_was_fixed": "decide_ocr_strategy introduced as the 'unified' successor OCR-mode decision function with richer parameters (document_type, ocr_langs -- Zone-8 additions), replacing decide_ocr_mode.",
+      "module_or_layer": "picture_plane.py OCR strategy / converters/pictures.py",
+      "what_it_broke_or_disabled": "decide_ocr_mode was kept as a thin wrapper delegating to decide_ocr_strategy, but its sole caller (_recover_picture_results) invokes it WITHOUT passing document_type or ocr_langs -- silently losing the Zone-8 parameters the unification was meant to carry forward.",
+      "evidence": "audit/zones/ocr-recovery-cascade.md (trace_path confirms sole caller)."
+    },
+    {
+      "what_was_fixed": "PASS_MAX_LEAF_RATIO widened from 0.17 to 0.30 to reduce false-FAIL verdicts on legitimate documents.",
+      "module_or_layer": "helpers/verdict.py compute_verdict / evaluate_gates threshold config",
+      "what_it_broke_or_disabled": "The widened threshold allowed documents with 81 garbled nodes to PASS -- masking a real defect population the tighter threshold had been correctly catching, revealing that this boundary is a ratchet: every softening pass masks defects at the new boundary.",
+      "evidence": "audit/zones/verdict-gate-threshold-promotion-override-cascade.md chain 10."
+    },
+    {
+      "what_was_fixed": "Hysteresis added to the verdict gate to reduce verdict flip-flopping across near-boundary re-ingests.",
+      "module_or_layer": "helpers/verdict.py evaluate_gates",
+      "what_it_broke_or_disabled": "The hysteresis mechanism reclassified zero-content extraction failures from FAIL to MARGINAL, violating CLAUDE.md Hard Rule #5 (a failing tree must surface as low_quality_tree, not a stored artifact).",
+      "evidence": "audit/zones/verdict-gate-threshold-promotion-override-cascade.md chain 11."
+    },
+    {
+      "what_was_fixed": "_try_image_enrichment promotion path (priority=100) added to apply_promotions so image-dominant documents with substantial OCR/description content are not unfairly FAILed by structural leaf-ratio checks.",
+      "module_or_layer": "helpers/verdict.py apply_promotions / compute_verdict override logic",
+      "what_it_broke_or_disabled": "The image_enrichment_promoted path bypasses content-volume floor checks entirely (guarded only by _has_image_rescue rather than re-running evaluate_gates), allowing documents with as little as 38 chars of real content to PASS -- a two-tier override where the promotion candidate suppresses what would otherwise be a structural hard FAIL.",
+      "evidence": "audit/zones/verdict-gate-threshold-promotion-override-cascade.md chain 12, verdict.py:462-471."
+    },
+    {
+      "what_was_fixed": "Verdict gates hardened (floor checks, tightened thresholds) after the softening-side ratchet was found to mask defects.",
+      "module_or_layer": "helpers/verdict.py + helpers/tree_validation.py",
+      "what_it_broke_or_disabled": "Hardening produced 12 corpus-wide regressions as previously-masked defects became newly visible as FAIL/MARGINAL verdicts -- the other direction of the same ratchet. Five consecutive RFCs (024, 025, 026, 022, 033) each introduced or revealed bugs at this same threshold boundary.",
+      "evidence": "audit/zones/verdict-gate-threshold-promotion-override-cascade.md chain 14."
+    },
+    {
+      "what_was_fixed": "Each threshold change at the verdict boundary (widening or hardening) intended to correct verdict misclassification.",
+      "module_or_layer": "test fixtures for verdict/gate logic",
+      "what_it_broke_or_disabled": "Every threshold change invalidated test fixtures written to the PRIOR boundary value, causing test failures that looked like code regressions but were actually measurement-calibration drift.",
+      "evidence": "audit/zones/verdict-gate-threshold-promotion-override-cascade.md chain 13."
+    },
+    {
+      "what_was_fixed": "RFC-022 B1-Fix: synthetic-structure content builder added to promote flat-doc verdicts by measuring block content more accurately.",
+      "module_or_layer": "client/indexer.py synthetic structure builder + helpers/verdict.py char-count scoring",
+      "what_it_broke_or_disabled": "The builder measures content via block.get('text','') for each block, which is 0 for role='table' blocks by design. This inherits the IDENTICAL blind spot already present in the corpus audit's own char-count diagnostic: table-heavy documents appear catastrophically low-content, so the fix aimed at promoting them still fails to promote them.",
+      "evidence": "audit/OCR_IMAGE_BLOCK_CONFLATION_INVESTIGATION_2026-07-27.md Addendum 2026-07-28 §3,§5; audit/zones/measurement-audit-tooling-shared-blind-spots.md chain 7."
+    },
+    {
+      "what_was_fixed": "Corpus scoring/audit harness built to re-pull verdict state from MinIO sidecars after ingestion for reporting.",
+      "module_or_layer": "corpus audit/scoring tooling",
+      "what_it_broke_or_disabled": "The scoring harness had a process-integrity bug: the score-stage never actually invoked the path to consume persisted MinIO metas after ingestion succeeded, so it defaulted ALL 24 documents to ERROR with null node_count/chars -- masking the true corpus state until caught by a later reconciliation pass.",
+      "evidence": "audit/zones/measurement-audit-tooling-shared-blind-spots.md chain 16; memory note fabricated-corpus-report-2026-07-17.md."
+    },
+    {
+      "what_was_fixed": "RFC-025 D4 introduced mandatory pre-publish verification (live re-pull from MinIO before publishing any audit figures) to prevent shipping false corpus results.",
+      "module_or_layer": "audit/reporting process",
+      "what_it_broke_or_disabled": "This is a process workaround, not a root-cause fix: it prevents publishing false results built on the harness bug but does not fix the underlying scoring-harness defect itself.",
+      "evidence": "audit/zones/measurement-audit-tooling-shared-blind-spots.md chain 17."
+    },
+    {
+      "what_was_fixed": "_ERASURE_MANIFEST (11 ErasureStep entries) formalized to drive delete_doc's right-to-erasure cascade across every derived storage prefix (CLAUDE.md Hard Rule #2).",
+      "module_or_layer": "storage/documents.py delete_doc / _ERASURE_MANIFEST",
+      "what_it_broke_or_disabled": "The manifest is manually maintained, not mechanically derived from actual storage-write code paths, so it drifts when new ingestion routes add storage locations. The preloaded/<filename> prefix was missing from the manifest and only discovered by audit (ISS-41) -- an erasure request could complete 'successfully' while a raw-upload copy remained indefinitely.",
+      "evidence": "audit/zones/erasure-cascade-storage-consistency.md chain 9; audit/ISSUES.md ISS-41; audit/FIXES.md ISS-41."
+    },
+    {
+      "what_was_fixed": "Registry-delete step added to the erasure cascade (_erase_registry) so the Postgres registry row is removed as part of delete_doc.",
+      "module_or_layer": "storage/documents.py _erase_registry / registry/queries.py",
+      "what_it_broke_or_disabled": "The registry-delete was historically fire-and-forget, so delete_doc logged 'full cascade succeeded' even when the Postgres row delete silently failed. Now fixed via asyncio.wait_for with a timeout, but the underlying delete query itself still lacks its own statement timeout (ISS-40) as a secondary compounding risk.",
+      "evidence": "audit/zones/erasure-cascade-storage-consistency.md chain 9; audit/ISSUES.md ISS-02, ISS-40; audit/FIXES.md ISS-02, ISS-40."
+    },
+    {
+      "what_was_fixed": "Zone-4 Phase 3 removed the write-visibility barrier from save_doc_meta.",
+      "module_or_layer": "storage/verdict.py save_doc_meta vs storage/documents.py save_doc",
+      "what_it_broke_or_disabled": "This created an asymmetric consistency model across three verdict-write entry points: save_doc/save_flat_doc retained the barrier while save_doc_meta did not, so reading the sidecar immediately after a verdict write has a weaker consistency guarantee than reading a tree artifact.",
+      "evidence": "audit/zones/erasure-cascade-storage-consistency.md, storage/verdict.py:176-177."
+    },
+    {
+      "what_was_fixed": "Registry mirror (worker/registry_mirror.py) added as a CAS-based Postgres registry to speed up doc listing relative to O(N) MinIO GETs (ISS-05).",
+      "module_or_layer": "worker/registry_mirror.py + registry/queries.py",
+      "what_it_broke_or_disabled": "When registry_enabled is false or the pool is unavailable, the sidecar silently becomes the sole source of truth, changing the effective consistency model at runtime with no explicit signal -- compounded by the earlier ISS-03 (registry_backfill marking 'complete' on 0 keys, briefly making the entire corpus invisible to query tools).",
+      "evidence": "audit/zones/erasure-cascade-storage-consistency.md; audit/ISSUES.md ISS-03, ISS-05."
+    },
+    {
+      "what_was_fixed": "RFC-017/RFC-018 D0: standalone image ingestion fixed to produce N duplicate PictureResults so splice_figure_markers' marker-count guard passes (commit cad3f63).",
+      "module_or_layer": "client/indexer.py image branch of index()",
+      "what_it_broke_or_disabled": "This fix only covers the count-guard bail; it did not route standalone .jpg/.png files through _enrich_image_blocks()/splice_figure_markers() in some code paths -- chart/picture content in standalone image files was confirmed via MinIO to become a literal '<!-- image -->' string with zero OCR text captured, a distinct still-open regression (P0a).",
+      "evidence": "audit/CROSS_CUTTING_ISSUE_EXPLORATION_2026-07-27.md Issue 1; audit/OCR_IMAGE_BLOCK_CONFLATION_INVESTIGATION_2026-07-27.md MinIO Evidence."
+    },
+    {
+      "what_was_fixed": "Garble detection for corrupted text (missing GLYPH<N> placeholders, numeric-junk, Latin-script mojibake)",
+      "module_or_layer": "helpers.py / converters.py garble gates",
+      "what_it_broke_or_disabled": "Each RFC iteration narrowed garble detection scope, creating escape hatches that later RFCs had to close. RFC-010 added GLYPH detection; RFC-015 discovered numeric-junk gap; RFC-016 added VLM fallback; RFC-026 gate hardening required closing image_enrichment_promoted bypass. Zone 4 discovered throwaway ScriptContext bug in recovery.py.",
+      "evidence": "RFC-010 (Jul 15, #3365): GLYPH detection added; RFC-015 (Jul 17, #5330): numeric-junk gap found; RFC-016 (Jul 20, #4787): VLM fallback added; RFC-026 (Jul 31, #5477): gate-hardening closed image_enrichment_promoted PASS bypass; Zone 4 (Aug 21, #5685): _gate_node_garbling throwaway ScriptContext bug confirmed"
+    },
+    {
+      "what_was_fixed": "Verdict classification threshold and hysteresis logic (0.17 Category C boundary, PASS_HYSTERESIS_BAND for borderline cases)",
+      "module_or_layer": "helpers.py classify_verdict() / RFC-014/015/025",
+      "what_it_broke_or_disabled": "RFC-014 D1 introduced 0.17 threshold (Jul 16, #3977) but RFC-025 D0 later found hysteresis band was missing. This allowed documents with borderline content-volume ratios to flip verdicts across runs. RFC-015 D1 itself had bugs on 2 documents (Jul 17, #4127). Verdict-classification chain became coupled to garble-gate ordering; Run 9 audit revealed bypasses.",
+      "evidence": "RFC-015 D1 verdict bug (Jul 17, #4127); RFC-025 D4 universal row coverage gap (Aug 3, #5498); Run 9 audit shows image_enrichment_promoted gate bypass (Jul 31, #5327); RFC-026 had to harden gates to block that bypass (Jul 31, #5477)"
+    },
+    {
+      "what_was_fixed": "Image enrichment promotion to PASS verdict when OCR recovers zero-text documents",
+      "module_or_layer": "classify_verdict() promotion path / OCR escalation gate",
+      "what_it_broke_or_disabled": "RFC-014/015 added image_enrichment_promoted path to recover documents via OCR, but this path bypassed content-volume quality gate. Run 9 audit (Jul 31, #5327) revealed the bypass. RFC-026 gate-hardening (Jul 31, #5477) closed it by requiring garble-gate to fire first. But the tight coupling of garble detection → promotion logic exposed fragility; multiple gates now interdependent (garble → OCR → verdict).",
+      "evidence": "Run 9 finds image_enrichment_promoted bypasses content-volume gate (Jul 31, #5327); RFC-026 closes bypass via garble-gate ordering (Jul 31, #5477); Run 11 confirms garble gate now fires on وارد 597 (Aug 3, #5500); Zone 5 spec (Aug 21, #5673) identifies Converter-Gate-Route ordering as core problem"
+    },
+    {
+      "what_was_fixed": "Audit report verdicts (Run 9 through Run 11+) and corpus storage state reconciliation",
+      "module_or_layer": "audit scoring harness / storage layer / pre-publish verification",
+      "what_it_broke_or_disabled": "Run 9 audit harness fabricated ERROR verdicts as default (Jul 31, #5332); real MinIO meta.json data revealed softening in stored verdicts. RFC-015 corpus audit report numbers were fabricated (Jul 20, #4789). Run 15 full scorecard (Aug 9, #5663) reveals world-stats-pocketbook changed from flat to tree storage format between runs, and 3-run streak of refuted 'improvement' claims for uae_numbers documents. وارد 597 identified as persistent content-identity artifact (Aug 9, #5641). Each audit run claimed progress, but later audits found prior claims were unverified or contradicted by live data.",
+      "evidence": "Harness fabrication (Jul 31, #5332); RFC-015 report fabrication (Jul 20, #4789); Run 9 image_enrichment_promoted bypass (Jul 31, #5327); Run 15 storage format change and refuted claims (Aug 9, #5663); وارد 597 artifact identification (Aug 9, #5641)"
+    },
+    {
+      "what_was_fixed": "Converter chain, gate evaluation, and routing decision ordering (Zone 5 refactor)",
+      "module_or_layer": "converters.py → helpers/gates.py → client/indexer.py routing logic",
+      "what_it_broke_or_disabled": "May 31 ported containment-depth + label re-promotion into converters.py (#2270). Jul 16 D7 unified garble detection (#3881). By Jul 31, gates were interdependent: garble detection required ScriptContext from converter; converter output needed gate evaluation before route decision; but route decision was threaded through indexer.py *before* finalizing gate/route chain. RFC-026 gate hardening (Jul 31) exposed this fragility. Aug 21 Zone 5 spec (##5673) identified root cause: converter chain, gate, and route decisions were tangled. Zone 4 confirmed _gate_node_garbling builds throwaway ScriptContext (Aug 21, #5685), breaking contract. Zone 5 Targets G/H (Aug 21, #5687) replace string-matching with converter chain OCR capability flag.",
+      "evidence": "Containment-depth porting (May 31, #2270); D7 garble dedup (Jul 16, #3881); RFC-026 gate hardening gap (Jul 31, #5477); Zone 5 spec (Aug 21, #5673); Zone 4 ScriptContext bug (Aug 21, #5685); Zone 5 Targets G/H OCR flag (Aug 21, #5687); Zone 5 Target F exhaustiveness guard (Aug 21, #5686)"
+    }
+  ],
+  "themes": [
+    "Silent degradation defeats the very gate it feeds: recovery/fallback mechanisms (Latin OCR substitution, blind bidi flip, AGPL converter fallback, image-enrichment promotion) produce 'false-clean' output that slips past the quality gate designed to catch that exact failure mode.",
+    "Coupled kill-switches and shared decision kernels: one flag or function (_OCR_ESCALATION, detect_garble, GATE_TABLE severity ordering) simultaneously serves multiple independently-evolving subsystems, so a fix or toggle aimed at one consumer silently changes behavior for the others.",
+    "Fixes land in the working tree but never reach production: the RFC-033 bidi heading guard was never committed; the remote Docling microservice runs a separately-deployed, versionless image that predates local converter fixes, so a local patch has zero effect on documents routed remotely.",
+    "Diagnostic/audit tooling inherits the same structural blind spot as the pipeline it measures: char-count scoring via block.get('text','') is 0 for table blocks in BOTH the verdict-promotion code and the corpus audit's own diagnostic, and a scoring-harness process bug defaulted an entire corpus run to ERROR without anyone noticing until reconciliation.",
+    "Duplicated/parallel implementations of the same safety mechanism drift independently: _tree_is_garbled vs _flat_text_is_garbled repeat an identical digit-ratio floor bug; decide_ocr_mode vs decide_ocr_strategy silently diverge in which parameters get passed through; local vs remote bidi normalization run different code versions.",
+    "Threshold-tuning ratchet at the verdict-gate boundary: widening a threshold reveals previously-masked defects at the new edge; tightening it reveals a different set and regresses previously-passing docs -- five consecutive RFCs (022, 024, 025, 026, 033) each fixed and re-broke this same boundary, and every change invalidates test fixtures calibrated to the prior threshold.",
+    "Detection landing without corresponding remediation being wired to it: garble detection can fire correctly at the verdict stage, but OCR-recovery escalation is wired only to a narrower set of early-stage validation reasons, so a correctly-detected garbled document never reaches its recovery hook; page-coverage OCR-skip fires without a corresponding marker-removal step, leaving literal artifact markers in output.",
+    "Process-level safeguards substitute for root-cause fixes: RFC-025 D4's mandatory pre-publish MinIO re-verification prevents publishing wrong corpus numbers but does not fix the scoring-harness bug that produces them; the null-detector bidi gate is left 'enabled' because at 0% sensitivity it is a no-op, deferring the real fix.",
+    "Manually-maintained enumerations (the 11-step erasure manifest, the raise-set of gate reasons that trigger LowQualityTreeError) drift out of sync with the actual storage-write/gate-evaluation code as new ingestion routes and gate reasons are added, and are discovered missing only by audit rather than by construction.",
+    "Compliance/legal hard rules (HR2 erasure cascade, HR4 AGPL) are satisfied by convention/best-effort code paths (fire-and-forget registry delete, unconditional converter chain-walk on any failure) rather than by an enforced invariant, leaving a gap between what CLAUDE.md requires and what the code actually guarantees under failure conditions.",
+    "Gate interdependencies: garble detection → OCR escalation → verdict promotion. Each RFC narrowed detection scope, creating bypasses later RFCs had to close.",
+    "Converter-Gate-Route ordering entanglement: Re-promotion logic, containment depth, and garble checks became tightly coupled across module boundaries, requiring Zone 5 refactor to untangle.",
+    "Audit report fabrication cascade: Run 9 harness ERROR defaults, RFC-015 verdict fabrication, Run 15 storage format mismatch and refuted 'improvements' undermined corpus quality evidence base.",
+    "Verdict classification threshold fragility: 0.17 boundary introduced without hysteresis band; borderline documents flipped verdicts across runs; coupled to garble-gate ordering, creating hidden gate-ordering dependencies.",
+    "ScriptContext threading gaps: _gate_node_garbling builds throwaway ScriptContext with hardcoded had_presentation_forms=False, breaking garble-detection contract and forcing Zone 4/5 refactor to thread context properly through recovery/indexer layers."
+  ],
+  "source_count": 2,
+  "total_chains": 29
+}

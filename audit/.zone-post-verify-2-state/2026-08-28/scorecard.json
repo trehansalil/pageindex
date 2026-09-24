@@ -1,0 +1,59 @@
+{
+  "zones_closed": [],
+  "zones_remaining": [
+    {
+      "name": "Verdict-Gate Threshold / Promotion / Override Cascade",
+      "severity": "critical",
+      "bug_count": 8,
+      "status": "regressed"
+    },
+    {
+      "name": "Garble Detection Cross-Cutting Kernel",
+      "severity": "critical",
+      "bug_count": 7,
+      "status": "regressed"
+    },
+    {
+      "name": "OCR Recovery Cascade and Kill-Switch Conflation",
+      "severity": "high",
+      "bug_count": 6,
+      "status": "regressed"
+    },
+    {
+      "name": "Converter Chain Fallback and AGPL Gating",
+      "severity": "high",
+      "bug_count": 4,
+      "status": "regressed"
+    },
+    {
+      "name": "Bidi/RTL Processing Split (Local vs. Remote)",
+      "severity": "high",
+      "bug_count": 3,
+      "status": "stalled"
+    },
+    {
+      "name": "Measurement/Audit Tooling Shared Blind Spots",
+      "severity": "medium",
+      "bug_count": 4,
+      "status": "improved"
+    },
+    {
+      "name": "Erasure Cascade and Storage Consistency Drift",
+      "severity": "medium",
+      "bug_count": 2,
+      "status": "improved"
+    }
+  ],
+  "zones_new": [
+    {
+      "name": "Dual-Writer Verdict Persistence and Consistency Model Split",
+      "severity": "medium",
+      "introduced_by": "Narrowing of Erasure Cascade zone scope split out the dual-write/consistency concern into its own zone during re-audit"
+    }
+  ],
+  "net_bug_delta": 14,
+  "wiring_status": "fully_wired",
+  "unwired_symbols": [],
+  "overall_verdict": "regressed",
+  "recommended_next": "The cycle regressed: 4 zones worsened (net +14 bugs), 1 stalled, 0 closed, and 1 new zone emerged. Despite fully-wired production code, the fixes introduced more defects than they resolved. Recommended next steps: (1) HALT further zone fixes and run a full corpus reingestion audit (Run 17) to establish a clean post-regression baseline -- past cycles show fabricated or stale baselines cause cascading mis-diagnosis. (2) Prioritize the two CRITICAL regressed zones first: implement the declarative PROMOTION_TABLE simplification proposal for Verdict-Gate (the only zone with a concrete simplification spec) as a contained, diffable change with corpus-diff validation before merging. (3) For Garble Detection, the NFKC-before-bidi ordering bug is the single highest-leverage fix -- reorder normalization so bidi presentation-form detection runs BEFORE NFKC decomposition; this is a chronic 10+ run issue per past cycle data. (4) Do NOT attempt OCR Recovery or Converter Chain fixes until (2) and (3) are validated -- those zones depend on correct garble detection and verdict gating upstream. (5) The Bidi/RTL stall is blocked on the same NFKC reorder from (3); expect it to partially resolve as a side effect. (6) For the new Dual-Writer zone, add an integration test asserting save_doc_meta and write_verdict produce identical verdict fields for the same document -- the SIDECAR_VERSION mechanism mitigates but does not eliminate the consistency gap."
+}

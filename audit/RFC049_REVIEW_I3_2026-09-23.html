@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RFC-049 Review Iteration 3</title>
+<style>
+:root{--bg:#fff;--fg:#1d1d1f;--muted:#6b6b73;--line:#e3e3e8;--ok:#1a7f37;--warn:#9a6700;--bad:#b42318;--chip:#f3f3f6}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#141417;--fg:#e8e8ec;--muted:#9a9aa4;--line:#2c2c33;--ok:#4ac26b;--warn:#d29922;--bad:#f97066;--chip:#1f1f25}}
+:root[data-theme="dark"]{--bg:#141417;--fg:#e8e8ec;--muted:#9a9aa4;--line:#2c2c33;--ok:#4ac26b;--warn:#d29922;--bad:#f97066;--chip:#1f1f25}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:15px/1.55 -apple-system,system-ui,sans-serif;max-width:960px;margin:0 auto;padding:24px 16px;overflow-wrap:anywhere}
+h1{font-size:1.5rem;margin:0 0 4px}h2{font-size:1.15rem;margin:28px 0 8px;border-bottom:1px solid var(--line);padding-bottom:4px}
+.sub{color:var(--muted);margin-bottom:16px}
+table{width:100%;border-collapse:collapse;font-size:.9rem;margin:8px 0}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600}
+code{background:var(--chip);padding:1px 5px;border-radius:4px;font-size:.85em}
+pre{background:var(--chip);padding:10px;border-radius:6px;overflow-x:auto;font-size:.8rem}
+.ok{color:var(--ok);font-weight:600}.warn{color:var(--warn);font-weight:600}.bad{color:var(--bad);font-weight:600}
+.wrap{overflow-x:auto}
+ul{padding-left:20px}
+</style>
+</head>
+<body>
+<h1>RFC-049 Review Iteration 3</h1>
+<div class="sub">2026-09-23 · branch <code>ICR-97-rfc49-contract-drift-remediation</code> · RFC-049 triad (RFC, design, tasks) · new RFC text marked <code>(Amendment 2026-09-23, iter 3)</code> · design and tasks consolidated to v2 · all three files now <code>accepted</code></div>
+
+<h2>Verdict</h2>
+<p class="ok">The triad is approved for build (<code>accepted</code>). Both blocking findings are fixed, and every other finding is folded in.</p>
+<p>The two blocking findings were:</p>
+<ul>
+<li>an override call that would have raised <code>TypeError</code>;</li>
+<li>five existing erasure tests that the new quarantine step would break.</li>
+</ul>
+<p>The design and tasks are now a single current text each (v2), with the complete prior text preserved byte for byte in Appendix Z. The RFC stays a decision record: it has an expanded Current-state table, and Options A and B were moved verbatim to an appendix. One human gate remains, Task 7.9 (the <code>CLAUDE.md</code> HR2 + HR5 edit). Link check: <strong>0 broken</strong> across 595 links.</p>
+
+<h2>Reviewers and models</h2>
+<div class="wrap"><table>
+<tr><th>Role</th><th>Model</th><th>Focus</th></tr>
+<tr><td>Claim validator</td><td>Opus</td><td>Every <code>file:line</code> and behavioural claim in the iteration-2 triad, checked against the code</td></tr>
+<tr><td>Feasibility reviewer</td><td>Sonnet</td><td>Whether each task can be built as written, and which existing tests it would break</td></tr>
+<tr><td>Lead analyst</td><td>Fable</td><td>Consolidating the findings, reconciling them with the user's decisions, and form (v2)</td></tr>
+</table></div>
+<p>The amending agent re-checked every newly cited anchor with codebase-memory or Serena (see "Newly verified anchors").</p>
+
+<h2>Findings</h2>
+<h3>Blocking</h3>
+<div class="wrap"><table>
+<tr><th>ID</th><th>Finding</th><th>Evidence</th><th>Resolution</th></tr>
+<tr><td class="bad">B1</td><td>The override passed a bare <code>state.gate_result</code> as <code>vt_raw</code></td><td>
+<p><code>ExtractionState.gate_result</code> starts as <code>None</code> (<code>helpers/types.py:219</code>), and the legacy branch resets it to <code>None</code> (<code>:459</code>).</p>
+<p>A <code>None</code> <code>vt_raw</code> takes the legacy path in <code>finalize_gate_and_route</code> (<code>:411</code>) and raises <code>TypeError</code>.</p>
+<p>The existing override sites use a fallback (<code>recovery.py:947</code>, <code>:1125-1126</code>, <code>:1206</code>, <code>:1290</code>).</p></td><td>
+<p>The call is now <code>finalize_gate_and_route(state, state.gate_result if state.gate_result is not None else (state.ok, state.reason), settings.flat_doc_routing, force_route=Route.REJECT)</code>.</p>
+<p>The note that <code>state.reason = str(vt_raw)</code> is harmless, because the REJECT arm reads <code>first_defect.value</code> (<code>indexer.py:2683-2684</code>), is in design AD2 and §9, Task 7.3 and the RFC's Option C. A new test covers the <code>gate_result is None</code> case.</p></td></tr>
+<tr><td class="bad">B2</td><td>Existing tests break when the quarantine step is added</td><td><ul>
+<li><code>tests/test_storage.py:701-759</code>: an exact <code>expected_names</code> set.</li>
+<li><code>:762-794</code>: an exact required-flags dict.</li>
+<li><code>tests/test_integration.py:149-194</code>: <code>len == 11</code>, and <code>partial_purge</code> must stay <code>False</code>.</li>
+<li><code>tests/test_client.py:806-863</code>: <code>TestValidateErasureManifest</code>.</li>
+<li><code>tests/test_registry.py:605-640</code>: <code>TestHR2CascadeStoreCoverage</code>.</li>
+</ul></td><td>
+<p>Task 7.5 now lists each test and the edit it needs.</p>
+<p>The integration fixture's <code>.meta.json</code> stub already returns <code>{"sha256": "cascade-sha256"}</code>, so <code>ctx.sha256</code> should resolve. The build agent must check this and extend the fixture if it does not.</p></td></tr>
+<tr><td class="bad">B3</td><td>No acceptance criterion covered a quarantine-write failure (HR5-critical)</td><td>The design described the failure path, but the RFC had no AC for it and no test was required.</td><td>
+<p>New <strong>R4 AC7</strong>: a failed write still rejects. <code>save_doc</code> / <code>save_flat_doc</code> are never called, <code>QUARANTINE_WRITES_TOTAL{result="error"}</code> is incremented, and <code>quarantine_write</code>=<code>failed</code> is emitted.</p>
+<p>It maps to <strong>P12c</strong>, with write-failure tests on both routes (Tasks 7.3 and 7.4).</p></td></tr>
+</table></div>
+<h3>Other findings (all applied)</h3>
+<div class="wrap"><table>
+<tr><th>#</th><th>Finding</th><th>Applied as</th></tr>
+<tr><td>1</td><td>The write-failure step logged "with <code>doc_id</code>", but no <code>doc_id</code> exists at the reject sites</td><td>It now logs with <code>sha256</code>. A <code>doc_id</code> is minted only on success (<code>indexer.py:2243</code>, <code>images.py:205</code>).</td></tr>
+<tr><td>2</td><td>Live instructions in the body still keyed quarantine by <code>doc_id</code></td><td>v2 bodies contain no <code>quarantine/&lt;doc_id&gt;</code> (grep: 0 hits). Tree site: <code>index()</code> local at <code>:2458</code>. Flat site: inside <code>_persist_flat_result</code> (def <code>:1700</code>), before <code>:1879-1880</code>. The <code>:2622</code> guard is documented as dead and is not a write site.</td></tr>
+<tr><td>3</td><td>The <code>quarantine_write</code> DecisionPoint spec was incomplete: <code>phase</code>, <code>module</code> and <code>function</code> have no defaults</td><td><code>DecisionPoint(event="quarantine_write", phase=Phase.PERSIST, module="pageindex_mcp.storage.documents", function="save_quarantine", choices=("ok","failed"), attrs=("route","reason","payload_bytes","exception_type"), always_emits=False)</code>. <code>save_quarantine</code> is the single emitter, and the target group tuple is located in Task 6.2.</td></tr>
+<tr><td>4</td><td>The erasure helper was described differently in the RFC (AC4) and in Task 7.5</td><td>One implementation. <code>_erase_quarantine(ctx)</code> calls <code>_remove_object_idempotent</code> (<code>documents.py:339-355</code>) for both keys. <code>erase_quarantine(sha256)</code> builds a minimal <code>ErasureContext(doc_id="sha256:&lt;hex&gt;")</code> and calls the same step. Both live in <code>pageindex_mcp.storage.documents</code>, and all three files say so.</td></tr>
+<tr><td>5</td><td>Operator ergonomics</td><td>Task 7.5b adds <code>scripts/erase-quarantine.sh &lt;sha256&gt;</code>, which wraps the <code>python -c</code> call.</td></tr>
+<tr><td>6</td><td>Checkpoint B dependencies</td><td>The JSON <code>depends_on</code> lists <code>7.5b</code> and the new <code>7.5d</code>. The JSON parses (checked with <code>json.loads</code>).</td></tr>
+<tr><td>7</td><td>The type of <code>_garble_blocks</code></td><td>Stated as <code>list[dict]</code> of plain JSON-serialisable dicts; no <code>asdict()</code> needed (Task 7.2, design §9 and data model).</td></tr>
+<tr><td>8</td><td>Traceability omitted the P12 sub-properties</td><td>Traceability and Task 9.1 now cite P1–P12, P12a, P12b, P12c and P12d.</td></tr>
+<tr><td>9</td><td>P4 carve-out gap</td><td><code>FLAT-01-C3</code> and <code>CONV-01-C5</code> keep their pre-existing labels while their effect text is wrong. The R1 carve-out is extended, and the same PR as Wave 0/1 closes it (RFC R1 clarification, design P4).</td></tr>
+<tr><td>10</td><td>Whether step numbers must be unique</td><td><code>step=3</code> is valid: numbers are shared, and only non-decreasing order is enforced (<code>tests/test_storage.py:711-715</code>). The uniqueness concern was dropped.</td></tr>
+<tr><td>11</td><td>AC5 clear-on-success</td><td>Stated as intended: the served artifact supersedes the diagnostic copy.</td></tr>
+<tr><td>12</td><td>Risk 6 claimed that the manual backup purge covers <code>quarantine/</code></td><td>Withdrawn; coverage is <strong>unverified</strong>. Task 6.2 checks for a documented backup. Task 7.5c checks bucket versioning and adds a noncurrent-version rule if versioning is on. The general versioning/HR2 exposure is flagged. New open question: RFC Q5.</td></tr>
+<tr><td>13</td><td>HR5 wording</td><td>Task 7.9 proposes: <em>"…not a stored artifact reachable through the MCP query surface or any HTTP route; an unserved <code>quarantine/</code> copy, purged by <code>delete_doc</code> and expiring within 30 days, is permitted for diagnosis."</em> The HR2 list-all-stores edit is kept. Human approval only.</td></tr>
+<tr><td>14</td><td>Wave-numbering trap</td><td>The tasks v2 lists phases in wave order (1, 2, 5 → 3 → 4 → 6, 7 → 8, 9) with stable IDs. The RFC keeps one sequencing table (the current one); the original pre-decision table moved to Appendix A.2.</td></tr>
+<tr><td>15</td><td>Effort</td><td>~2.75–3.25 days including the corpus re-run (+0.25 day for 7.5d and the write-failure tests), consistent across all three files.</td></tr>
+</table></div>
+
+<h2>User decisions (iteration 3, binding)</h2>
+<div class="wrap"><table>
+<tr><th>#</th><th>Decision</th><th>Applied as</th></tr>
+<tr><td>1</td><td class="ok">Meta holds <code>filenames: []</code></td><td>Merged read-modify-write on every rewrite, following the <code>save_doc_meta</code> pattern (<code>storage/verdict.py:52-172</code>). The 7.5b runbook matches the requester's filename against <code>filenames</code>. Recorded in RFC R4 clarifications, design data model and §10, and Task 7.2.</td></tr>
+<tr><td>2</td><td class="ok">Surface the sha256 on rejection</td><td>
+<p>New R4 AC8, design <strong>§12 Worker and upload status</strong> plus a sequence diagram, P12d, and new <strong>Task 7.5d</strong> (with four tests, before Checkpoint B). Task 7.8 covers the DESIGN.md and ARCHITECTURE.md upload-status docs.</p>
+<p>Verified path:</p>
+<ul>
+<li><code>process_document_job</code> <code>except ConverterChildError</code> (<code>worker/job.py:242</code>) resolves the reason (<code>:249</code>) and writes the job hash with <code>_set_job_status</code>, which stores every non-<code>None</code> kwarg (<code>job_status.py:55-105</code>).</li>
+<li><code>GET /upload/status</code> (<code>upload_app.py:190-203</code>) returns <code>{"job_id", **hgetall}</code> through <code>job_status_get</code> (<code>cache.py:57-60</code>).</li>
+<li>The parent hashes the staged <code>local_path</code>, which the child also hashes (<code>indexer.py:2457-2458</code>).</li>
+</ul></td></tr>
+<tr><td>3</td><td class="ok">v2 consolidation</td><td>Design and tasks were rewritten as single current texts. The prior files sit verbatim in a <em>fenced</em> Appendix Z, so their headings and <code>&lt;a id&gt;</code> anchors do not render or collide. The RFC stays a decision record: an expanded Current-state table, Options A and B plus two superseded tables moved verbatim to Appendix A, and new text marked <code>(Amendment 2026-09-23, iter 3)</code>. Property numbers and task IDs are stable; the new ones are P12c, P12d and 7.5d.</td></tr>
+<tr><td>4</td><td class="ok">Status <code>accepted</code>; frontmatter relation fixed</td><td>RFC, design and tasks are <code>accepted</code>, and Task 9.1 now sets <code>implemented</code>. The design and tasks now use <code>governed_by: [[RFC-049]]</code>. The RFC-048 triad (and all 26 design/task files) still use the inverted <code>governs</code>; no tooling reads either key.</td></tr>
+</table></div>
+
+<h2>Deviation flagged for the user</h2>
+<p class="warn">"Add sha256 to the <code>low_quality_tree</code> arq job result" was applied to the job's <em>persisted result record</em> (the Redis job hash that <code>GET /upload/status</code> returns), not to arq's return value.</p>
+<p>The terminal path's <code>return ""</code> (<code>worker/job.py:278</code>) is asserted by <code>tests/test_worker.py:178</code> (<code>test_flat_04_c2_low_quality_tree_is_terminal_without_dlq_or_retry</code>). Success paths return a <code>doc_id</code>, which a bare hash could be mistaken for.</p>
+<p>The <code>FLAT-04-C2</code> effect text ("byte-for-byte unchanged from WORKER-01-C2") gets an editorial amendment in the same change. If the arq return value itself must carry the hash, Task 7.5d and FLAT-04-C2 need a further decision.</p>
+
+<h2>Changes applied per file</h2>
+<div class="wrap"><table>
+<tr><th>File</th><th>Lines (before → after)</th><th>Changes</th></tr>
+<tr><td><code>agents/rfcs/049-contract-drift-remediation.md</code></td><td>465 → 524</td><td>
+<ul>
+<li><code>status: accepted</code>.</li>
+<li>Current-state table expanded to 18 rows: D1–D6, D2-C override, quarantine, write-failure rule, sha256 surfacing, Q4, lifecycle owner, erasure, contracts, R3, R4, checkpoints, effort.</li>
+<li>R1 carve-out extended.</li>
+<li>R4 gains AC7 and AC8, plus clarifications to AC2, AC4, AC5 and AC6.</li>
+<li>Option C: B1 correction, revised HR5 clause, meta/failure/surfacing bullet, effort.</li>
+<li>Options A and B replaced by a pointer in the body.</li>
+<li>Sequencing reduced to one table, with an iter-3 note on row 7.</li>
+<li>Effort row, Test Strategy, Risk 6 correction, Q4 note and new Q5, Traceability "Amends".</li>
+<li>Appendix A: A.1 Options A and B, A.2 original sequencing table, A.3 iter-2 current-state table.</li>
+</ul></td></tr>
+<tr><td><code>agents/designs/design-rfc049-contract-drift-remediation.md</code></td><td>538 → 1187 (v2 body ≈ 624 + Appendix Z 538 verbatim + fence)</td><td>
+<ul>
+<li>v2 note, <code>accepted</code>, <code>governed_by</code>.</li>
+<li>Principle 7 (HR5 over inspectability); one current route-dispatch diagram.</li>
+<li>Erasure diagram now includes the operator path; new sha256-surfacing sequence diagram.</li>
+<li>AD2 rewritten.</li>
+<li>Service contracts §7, §8, §9 and §10 rewritten; new §12.</li>
+<li>Data model updated for <code>filenames[]</code>.</li>
+<li>P4 carve-out; new P12c and P12d.</li>
+<li>Error categories and the write-failure path rewritten; test layers and scenarios extended.</li>
+</ul></td></tr>
+<tr><td><code>agents/tasks/tasks-rfc049-contract-drift-remediation.md</code></td><td>371 → 914 (v2 body ≈ 541 + Appendix Z 371 verbatim + fence)</td><td>
+<ul>
+<li>v2 note, <code>accepted</code>, <code>governed_by</code>.</li>
+<li>Phases in wave order.</li>
+<li>6.2 expanded: decision-point group, worker path, test ranges, backup check.</li>
+<li>7.2 uses a single implementation, <code>filenames[]</code>, full DecisionPoint.</li>
+<li>7.3 gets the B1 fix and the write-failure test.</li>
+<li>7.4 gets the flat write-failure test.</li>
+<li>7.5 lists the B2 test updates.</li>
+<li>7.5b adds the script; 7.5c adds the versioning check.</li>
+<li>New 7.5d.</li>
+<li>7.8 adds DESIGN.md and removes the backup claim.</li>
+<li>7.9 carries the new HR5 text.</li>
+<li>9.1 sets <code>implemented</code>.</li>
+<li>JSON: 7.5d added to Wave 2 and to Checkpoint B.</li>
+</ul></td></tr>
+</table></div>
+<p><strong>Appendix integrity:</strong> the text inside each fenced Appendix Z equals the pre-edit file exactly (design 73,590 chars, tasks 60,589 chars; string equality <code>True</code>). In the RFC, all three moved blocks are found verbatim in Appendix A. The only old RFC line not carried over is <code>status: review</code>. Every other old line survives, either verbatim or with iter-3 text inserted beside it.</p>
+
+<h2>Link check</h2>
+<p class="ok">595 relative markdown links checked across the three files: 0 broken.</p>
+<p>The checker applies GitHub slug rules, suffixes duplicate headings with <code>-N</code>, honours <code>&lt;a id&gt;</code> anchors, and ignores fenced blocks, including the 5-backtick appendices. The <code>CLAUDE.md#hard-rules</code> target resolves. A negative self-test detected both planted broken links. Because the appendices are fenced, no link can land on a history heading.</p>
+
+<h2>Gate arithmetic</h2>
+<div class="wrap"><table>
+<tr><th>Point</th><th>Gate</th><th>Composition</th></tr>
+<tr><td>Today</td><td>PASS=64 FAIL=2</td><td>66 gate lines = 61 contract IDs + 5 module-coverage lines. The FAIL set is {<code>LANG-01-C2</code>, <code>OCR-01-C3</code>}.</td></tr>
+<tr><td>Checkpoint A</td><td>PASS=65 FAIL=1</td><td><code>LANG-01-C2</code> is labelled after its amendment. The only FAIL left is <code>OCR-01-C3</code>.</td></tr>
+<tr><td>Checkpoint B</td><td>PASS=68 FAIL=0</td><td>66 lines plus <code>OCR-01-C4</code> and <code>ERASE-01-C4</code>. The <code>FLAT-04-C2</code> amendment changes no count.</td></tr>
+</table></div>
+
+<h2>Newly verified anchors (iteration 3)</h2>
+<p><code>helpers/types.py:219</code> · <code>:459</code> · <code>recovery.py:947</code> · <code>:1125-1126</code> · <code>:1206</code> · <code>:1290</code> · <code>indexer.py:2457-2458</code> · <code>:2683-2684</code> · <code>obs/decision_points.py:74-108</code> · <code>obs/phases.py:25-42</code> · <code>storage/documents.py:281-297</code> · <code>:339-355</code> · <code>storage/verdict.py:52-172</code> · <code>worker/job.py:242</code> · <code>:249</code> · <code>:278</code> · <code>job_status.py:55-105</code> · <code>cache.py:57-60</code> · <code>upload_app.py:190-203</code> · <code>tests/test_worker.py:156-182</code> (assert <code>:178</code>) · <code>tests/test_storage.py:701-759</code> · <code>:711-715</code> · <code>:718</code> · <code>:762-794</code> · <code>tests/test_integration.py:149-194</code> · <code>tests/test_client.py:806-863</code> · <code>tests/test_registry.py:605-640</code> · <code>agents/contracts/flat-04.yaml:19-23</code></p>
+
+<h2>Open items</h2>
+<ul>
+<li><strong>Task 7.9 needs human approval</strong> for the bundled <code>CLAUDE.md</code> HR2 (full cascade list) and HR5 (revised clause) diff. It has not been applied.</li>
+<li><strong>The lifecycle rule has no owner yet</strong>: someone on the operator or infra side must apply the 30-day <code>quarantine/</code> rule, and a noncurrent-version rule if versioning is on (Task 7.5c).</li>
+<li><strong>Backup and versioning coverage is unverified</strong> (RFC Q5; Tasks 6.2 and 7.5c). If versioning is on, <code>remove_object</code>-based erasure leaves noncurrent versions in <em>every</em> prefix. That HR2 exposure is out of scope here.</li>
+<li><strong>Where the sha256 lives</strong> (see "Deviation flagged"): the job hash, not arq's return value. The user should confirm.</li>
+<li>The group tuple for <code>quarantine_write</code> inside <code>DECISION_POINTS</code> is to be located in 6.2. The <code>WORKER-01-C2</code> wording must be checked for the same "byte-for-byte" claim.</li>
+<li>Residual: if neither the sidecar nor the registry has a <code>sha256</code>, <code>delete_doc</code> cannot reach the quarantine copy. The operator path (now fed by the job status) is the only route.</li>
+</ul>
+
+<h2>Recommendation</h2>
+<p class="ok">Start the build at Wave 0.</p>
+<p>Waves 0 and 1 are independent of every open item. Wave 2 can proceed through Checkpoint B without Task 7.9 or 7.5c, which block only close-out.</p>
+<p>Before Wave 2, the user should confirm the arq-return-value interpretation of decision 2 and name an owner for the lifecycle rule. Keep Task 7.9 strictly human-gated.</p>
+</body>
+</html>

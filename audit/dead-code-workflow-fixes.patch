@@ -1,0 +1,28 @@
+--- a/.claude/workflows/dead-code-discover-verify.js
++++ b/.claude/workflows/dead-code-discover-verify.js
+@@ -9,8 +9,8 @@
+   ],
+ }
+ 
+-const PROJECT = 'Users-saliltrehan-Documents-Python_n_R-Personal-pageindex'
+-const REPO = '/Users/saliltrehan/Documents/Python_n_R/Personal/pageindex'
++const PROJECT = process.env.CBM_PROJECT || 'mnt-HC_Volume_106759881-pageindex_deployment'
++const REPO = process.env.REPO_ROOT || '/mnt/HC_Volume_106759881/pageindex_deployment'
+ 
+ const CTX = `# Dispatch Context
+ 
+@@ -53,11 +53,12 @@
+ 
+ const RULES = `
+ ## Session rules (binding)
+-- Repo: ${REPO}. codebase-memory project name: "${PROJECT}" (already indexed and fresh at HEAD 9e2b310).
++- Repo: ${REPO}. codebase-memory project name: "${PROJECT}". Do NOT assume the index is fresh: confirm it against the CURRENT HEAD (\`git -C ${REPO} rev-parse --short HEAD\`), and run index_repository first if the project is not indexed.
++- CLAUDE.md Hard Rule 6: every /mem-search must query BOTH claude-mem projects "pageindex" AND "pageindex_deployment" — issue each search/timeline/get_observations call twice in parallel and merge/dedupe. Never one alone.
+ - Load MCP tools with ToolSearch first, e.g. ToolSearch("select:mcp__codebase-memory-mcp__search_graph,mcp__serena__find_referencing_symbols"). Serena is already activated on this repo. Serena line numbers are 0-based.
+ - For Python source: use codebase-memory (search_graph / query_graph / search_code / trace_path / get_code_snippet) and Serena (get_symbols_overview / find_symbol / find_referencing_symbols / get_diagnostics_for_file). Do NOT use the Read tool on .py files. Grep/Bash grep is allowed ONLY for non-code files (Makefile, yaml/toml/json, Dockerfile, .sh, .md, .env*) and for string-literal reference checks.
+ - For Markdown notes (agents/, audit/, docs/): use the Obsidian MCP tools (mcp__obsidian__search_notes, get_note_outline, read_note_lines). The Obsidian vault root IS the repo root.
+-- READ-ONLY PHASE: do not edit, create, or delete any file. Never run git checkout/stash/reset/clean — the working tree has intentional uncommitted changes (5 test files, 1 tasks note).
++- READ-ONLY PHASE: do not edit, create, or delete any file. Never run git checkout/stash/reset/clean. Do NOT assume the working-tree state; run \`git status --short\` yourself and reason from what it actually reports.
+ - Verify at file:line before asserting anything; never fabricate evidence. If a tool errors, adjust the call and retry rather than guessing.
+ - Your final answer must be the StructuredOutput call only; no prose.
+ - Entry points that are NEVER dead even with zero graph degree: FastAPI/Starlette route handlers and Depends() callables; @mcp.tool registrations; arq WorkerSettings functions/cron/on_startup/on_shutdown; pydantic Settings/BaseModel/dataclass fields and Enum members; __getattr__/__setattr__ module proxies; pytest fixtures and test_* functions; Makefile/CI/Dockerfile-invoked scripts; names listed in an erasure manifest (CLAUDE.md Hard Rule 2); symbols asserted by tests/test_architecture_guards.py.

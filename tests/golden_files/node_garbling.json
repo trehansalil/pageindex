@@ -1,0 +1,48 @@
+{
+  "archetype": "node_garbling",
+  "description": "Document with per-node garbling detected across multiple nodes",
+  "input": {
+    "structure": [
+      {
+        "title": "Root",
+        "text": "",
+        "nodes": [
+          {
+            "title": "Section 1",
+            "text": "  xqzk wvjf plmn qrst garbled text mojibake patterns triggering per-node garble detection heuristics",
+            "nodes": []
+          },
+          {
+            "title": "Section 2",
+            "text": "  zjxk fvwq mlnp garbage characters interspersed with random alphabetic sequences",
+            "nodes": []
+          },
+          {
+            "title": "Section 3",
+            "text": "  qzjx kwfv additional garbled content that should be detected by the node-level garble check",
+            "nodes": []
+          },
+          {
+            "title": "Section 4",
+            "text": "Some valid text here to ensure the tree has enough content volume for meaningful evaluation.",
+            "nodes": []
+          }
+        ]
+      }
+    ],
+    "content_class": "text",
+    "expected_script": null
+  },
+  "expected": {
+    "garble_detected": true,
+    "gate_ok": false,
+    "gate_defect_in": [
+      "garbling",
+      "node_garbling"
+    ],
+    "verdict": "FAIL",
+    "verdict_reason_prefix": "garbling",
+    "recovery_eligible": true,
+    "recovery_method": "_recover_garble_ocr"
+  }
+}

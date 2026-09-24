@@ -10,7 +10,13 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from pageindex_mcp import converters as C  # noqa: E402
+from pageindex_mcp import converters as C
+
+# ``_relevel_by_numbering`` is not re-exported by the converters facade -- the
+# monolith decomposition (06b2bae) left it in the submodule only, so the
+# ``C.`` form below raised AttributeError. Reach it through the submodule
+# rather than growing the barrel that RFC-045 is shrinking.
+from pageindex_mcp.converters.headings import _relevel_by_numbering
 
 PDF = os.path.join(
     os.path.dirname(__file__),
@@ -83,7 +89,7 @@ def main():
     md = C._relevel_by_containment(C._relevel_headings(C.normalize_dashes(md)))
     dump("after_containment", md)
     if C._max_heading_level(md) < 2:
-        md = C._relevel_by_numbering(md)
+        md = _relevel_by_numbering(md)
         dump("after_numbering_fallback", md)
 
     final_max = C._max_heading_level(md)

@@ -10,6 +10,7 @@
 #   4. dag           topology + execution-log integrity        (no infra)
 #   5. build         uv build wheel (docker build → build-push job)  (no infra)
 #   6. supply-chain  pip-audit                                 (no infra)
+#      test-budget   collected-test-count ratchet               (no infra)
 #   7. integration   MinIO + Redis + arq testcontainers        (infra)
 #   8. e2e           full upload → worker → query round-trip   (infra)
 #
@@ -49,7 +50,7 @@ for arg in "$@"; do
             echo "  --built-only     Pass --built-only to contracts.sh."
             echo "  --gate=<name>    Run only the named gate(s)."
             echo ""
-            echo "Gates (in order): static unit contracts dag build supply-chain integration e2e"
+            echo "Gates (in order): static unit contracts dag build supply-chain test-ratio-guard test-budget test-index-guard integration e2e"
             exit 0
             ;;
         *)
@@ -61,7 +62,7 @@ done
 
 # ── Gate definitions (name, script, needs_infra) ──────────────────────────────
 # Declared in §7 order: gates 1–6 no-infra, 7–8 infra.
-declare -a GATE_NAMES=(static unit contracts dag build supply-chain integration e2e)
+declare -a GATE_NAMES=(static unit contracts dag build supply-chain test-ratio-guard test-budget test-index-guard integration e2e)
 declare -A GATE_NEEDS_INFRA=(
     [static]=false
     [unit]=false
@@ -69,6 +70,9 @@ declare -A GATE_NEEDS_INFRA=(
     [dag]=false
     [build]=false
     [supply-chain]=false
+    [test-ratio-guard]=false
+    [test-budget]=false
+    [test-index-guard]=false
     [integration]=true
     [e2e]=true
 )
@@ -79,6 +83,9 @@ declare -A GATE_SCRIPTS=(
     [dag]="$GATES_DIR/dag.sh"
     [build]="$GATES_DIR/build.sh"
     [supply-chain]="$GATES_DIR/supply-chain.sh"
+    [test-ratio-guard]="$GATES_DIR/test-ratio-guard.sh"
+    [test-budget]="$GATES_DIR/test_budget.sh"
+    [test-index-guard]="$GATES_DIR/test-index-guard.sh"
     [integration]="$GATES_DIR/integration.sh"
     [e2e]="$GATES_DIR/e2e.sh"
 )

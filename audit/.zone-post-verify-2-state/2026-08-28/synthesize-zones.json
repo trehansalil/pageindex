@@ -1,0 +1,118 @@
+{
+  "zones": [
+    {
+      "name": "Verdict-Gate Threshold / Promotion / Override Cascade",
+      "severity": "critical",
+      "description": "The verdict computation pipeline (evaluate_gates -> apply_promotions -> compute_verdict) is an order-dependent, first-match-wins cascade with threshold boundaries, promotion overrides, and bypass flags (source_selection, image_enrichment_promoted) that systematically generate regressions: widening a threshold masks defects at the new edge, tightening it regresses previously-passing docs, and each promotion path can bypass content-volume floors that other paths enforce. Five consecutive RFCs (022, 024, 025, 026, 033) each fixed and re-broke this same boundary.",
+      "mechanism": "The cascade has three interacting layers that amplify each other: (1) HARD_FAIL_DEFECTS membership + _GATE_PRIORITY tiebreak in evaluate_gates determines whether promotions run at all -- adding/removing a defect from this set changes which documents reach apply_promotions. (2) apply_promotions uses source-code order as specification (RFC-040 D2 'first match wins'), so reordering _try_* helpers changes verdicts. (3) _try_image_enrichment bypasses _apply_clamp's content-volume floor (guarded only by _has_image_rescue), and source_selection=True bypasses _apply_clamp entirely. Each threshold change also invalidates test fixtures calibrated to the prior value, causing test failures that look like code regressions. The hysteresis band added to stabilize borderline documents reclassified zero-content failures from FAIL to MARGINAL, violating CLAUDE.md Hard Rule #5.",
+      "evidence_history": "Chains 12-16, 26-27: PASS_MAX_LEAF_RATIO widened 0.17->0.30 allowed 81-garbled-node docs to PASS (chain 12); hysteresis reclassified zero-content as MARGINAL violating HR5 (chain 13); image_enrichment_promoted bypassed content-volume floor allowing 38-char docs to PASS (chain 14); hardening produced 12 corpus regressions (chain 15); every threshold change invalidated test fixtures (chain 16); five RFCs hit this boundary (chain 26-27).",
+      "evidence_code": "verdict.py:379-466 apply_promotions: D1 structural hard-fail gate (sig.max_leaf_ratio > th.hard_fail_max_leaf_ratio) runs BEFORE promotions, but _try_image_enrichment inside it returns _apply_clamp(_ie) which, when source_selection=True, bypasses the inner clamp entirely (line 410-413). The D2 ordered chain (_try_image_enrichment -> _try_structural_pass -> _try_ocr_promotion -> _try_flat_promotion -> _try_content_class_promotion -> _try_small_doc_promotion -> MARGINAL fallback) is pure source-order specification. evaluate_gates:124-222 uses _GATE_PRIORITY tiebreak (line 201: min(_masked, key=lambda d: _GATE_PRIORITY.get(d, len(GATE_TABLE)))) to suppress co-firing defects. classify_verdict:515-536 is a backward-compat wrapper with 55 callers that could diverge.",
+      "bug_count_attributed": 8,
+      "key_files": [
+        "src/pageindex_mcp/helpers/verdict.py",
+        "src/pageindex_mcp/helpers/types.py",
+        "src/pageindex_mcp/helpers/gates.py",
+        "src/pageindex_mcp/config.py"
+      ]
+    },
+    {
+      "name": "Garble Detection Cross-Cutting Kernel",
+      "severity": "critical",
+      "description": "detect_garble is a single shared kernel (13 callers across 9+ distinct subsystems: text-layer probing, tree validation, flat-block checks, Tesseract recovery, image-enrichment verdict promotion, keep-best OCR comparison, converter pre-garble probe, and tree conversion) with multiple interacting prongs and config flags. A narrow fix to one prong (e.g., excluding non-alphanumeric tokens from token_repetition to fix table false-positives) silently changes behavior for all other callers, and blind spots in the kernel (numeric-junk, Latin mojibake from Arabic OCR) propagate simultaneously to every downstream gate.",
+      "mechanism": "Three amplification layers: (1) detect_garble is the terminal check inside multiple independent gates (_text_layer_has_content for OCR skip, _garble_check_nodes for tree validation, _try_image_enrichment for verdict promotion, _keep_best_wins for OCR comparison), so a single prong change ripples across all subsystems simultaneously with no per-consumer tuning. (2) The config.garble_short_text_default override forces is_garbled=True for text<200 chars unconditionally (RFC-025 D2), creating a hidden mode switch that interacts unpredictably with each caller's context. (3) NFKC normalization destroys Arabic presentation-form codepoints (U+FB50-FEFF) before text reaches detect_garble, making the presentation_forms prong dependent on a pre-normalization ScriptContext that not all callers supply correctly -- _text_layer_has_content constructs ScriptContext with had_presentation_forms=False when script_context is None.",
+      "evidence_history": "Chains 2, 5-7, 15, 25, 29: NFKC normalization destroys the bidi coherence detector's ONLY failure signal (chain 2); Latin language tessdata silently substituted producing mojibake that passes every prong (chain 5); token_repetition fix left wider blast radius unaddressed (chain 6); GATE_TABLE severity ordering lets node_count_low suppress garbling reason preventing OCR recovery (chain 7); table block.get('text','') returns 0 sharing blind spot with audit tooling (chain 17); each RFC iteration narrowed scope creating escape hatches (chain 25); Zone 4 confirmed throwaway ScriptContext bug (chain 29).",
+      "evidence_code": "garble.py:494-572 detect_garble: lines 525-530 show the short_text_prior_garble override (blob_kind==RAW_MARKDOWN, config.garble_short_text_default, len(blob)<200, original_defect in garbling/node_garbling -> force is_garbled=True). Lines 543-554 show the presentation-forms fallback where _had_pf is set True when _arc>0 and _pf==0 and _effective_script=='Arabic' -- covering the NFKC destruction gap. garble.py:318-405 garble_prongs: 11 independent prongs including digit_ratio (line 379, guarded by garble_digit_floor), token_repetition (line 388, tokens filtered to isalnum), and latin_gibberish (line 393). pictures.py:240-272 _text_layer_has_content constructs ScriptContext with had_presentation_forms=False when script_context is None (line 269-272). garble.py:622-713 _garble_check_nodes: per-node + whole-tree concatenated fallback with recursive descent.",
+      "bug_count_attributed": 7,
+      "key_files": [
+        "src/pageindex_mcp/helpers/garble.py",
+        "src/pageindex_mcp/converters/pictures.py",
+        "src/pageindex_mcp/helpers/tree_validation.py",
+        "src/pageindex_mcp/client/recovery.py"
+      ]
+    },
+    {
+      "name": "OCR Recovery Cascade and Kill-Switch Conflation",
+      "severity": "high",
+      "description": "The OCR escalation pipeline conflates three independently-evolving concerns (page-level OCR escalation, per-picture crop OCR, and image-enrichment promotion) under shared decision points and kill-switches. decide_ocr_strategy's ordered gate chain has load-bearing sequence (re-entry guard MUST precede UNIFIED_OCR_PLAN_ENABLED), decide_ocr_mode is a legacy wrapper that historically dropped document_type and ocr_langs parameters, and the _OCR_ESCALATION kill-switch gates both page-level and per-picture OCR with no independent control. Detection fires without corresponding remediation being wired: garble detection can fire at the verdict stage but OCR recovery is gated on a narrower set of early-stage validation reasons.",
+      "mechanism": "Three structural problems compound: (1) decide_ocr_strategy uses an ordered if-chain where sequence IS specification (re-entry guard -> UNIFIED_OCR_PLAN_ENABLED -> force_full_page -> per-picture escalation -> NONE), and a prior bug had image-type docs bypass the re-entry guard causing redundant full-page OCR. (2) The single _OCR_ESCALATION kill-switch conflates page-level and per-picture OCR -- toggling it for one runaway behavior disables the other. (3) OCR recovery routing in indexer.py is gated on literal string matching of gate reasons ('garbling', 'node_garbling') but GATE_TABLE severity ordering can cause node_count_low to be reported instead of garbling, so a correctly-detected garbled document never reaches its OCR recovery hook. The page-coverage OCR-skip fires without a corresponding marker-removal step, leaving literal '<!-- image -->' markers in output.",
+      "evidence_history": "Chains 7-11, 24: GATE_TABLE severity ordering lets node_count_low suppress garbling reason preventing OCR escalation (chain 7); page-coverage filter skips OCR but leaves markers in output (chain 8); per-picture OCR conflates with page-level escalation degrading retrieval (chain 9); _OCR_ESCALATION kill-switch gates both paths unconditionally (chain 10); decide_ocr_mode dropped document_type/ocr_langs parameters (chain 11); standalone .jpg/.png missing OCR capture (chain 24).",
+      "evidence_code": "picture_plane.py:357-430 decide_ocr_strategy: lines 389-395 show the re-entry guard MUST run first (Zone-2 fix comment), lines 404-411 show UNIFIED_OCR_PLAN_ENABLED+image-type short-circuit runs AFTER guard. picture_plane.py:438-469 decide_ocr_mode: thin wrapper returning only .mode field, now forwards document_type/ocr_langs (Zone-8 fix at line 460-468) but has only 1 caller. pictures.py:240-272 _text_layer_has_content: feeds has_image_markers/skip-OCR signal consumed by decide_ocr_strategy's per-picture escalation gate. The chain from indexer.py _convert_to_tree (line 537-551) shows force_full_page decision is made pre-conversion while per-picture decision is deferred to post-conversion, creating a temporal split in the decision surface.",
+      "bug_count_attributed": 6,
+      "key_files": [
+        "src/pageindex_mcp/picture_plane.py",
+        "src/pageindex_mcp/converters/pictures.py",
+        "src/pageindex_mcp/client/indexer.py",
+        "src/pageindex_mcp/client/recovery.py"
+      ]
+    },
+    {
+      "name": "Converter Chain Fallback and AGPL Gating",
+      "severity": "high",
+      "description": "The converter chain walk in _convert_to_tree treats all failures uniformly, with a ConverterFailurePolicy classification that was added to fix the original unconditional walk but still allows structural failures to silently advance to AGPL-licensed converters. The remote Docling microservice runs a separately-deployed image that predates local converter fixes (bidi heading guard never committed, expected_script not forwarded), creating a local-vs-remote code divergence that no test can catch. The chain produces output that downstream gates (garble, verdict) must evaluate, but the gates cannot distinguish a converter failure artifact from genuinely low-quality source content.",
+      "evidence_history": "Chains 1, 3-4, 29: RFC-033 bidi heading guard was never committed to git (chain 1); rotation detection applied asymmetrically across corpus (chain 3); unconditional chain-walk on any failure silently activates AGPL conversion with only logger.warning (chain 4); converter-gate-route ordering entanglement required Zone 5 refactor (chain 29).",
+      "evidence_code": "indexer.py:441-914 _convert_to_tree: lines 560-565 show the converter chain walk loop. Lines 576-600 show failure-mode classification via _classify_transient_failure. Lines 609-625 show ConverterFailurePolicy decision: RETRY for transient+under-limit, BLOCK_AGPL for transient+next-is-agpl, REJECT for end-of-chain, WALK otherwise. Lines 570-572 show the NOTE about remote path not forwarding expected_script. pipeline.py:682-770 pdf_markdown_converters: builds the chain with is_agpl flags. The AGPL_FALLBACK_TOTAL metric (lines 641, 656) shows operator awareness but no hard gate beyond the ConverterFailurePolicy classification.",
+      "bug_count_attributed": 4,
+      "key_files": [
+        "src/pageindex_mcp/client/indexer.py",
+        "src/pageindex_mcp/converters/pipeline.py",
+        "src/pageindex_mcp/converters/normalize.py"
+      ]
+    },
+    {
+      "name": "Dual-Writer Verdict Persistence and Consistency Model Split",
+      "severity": "high",
+      "description": "Two independent writers (save_doc_meta from the isolated converters_cli child subprocess, _upsert_registry_row from the long-lived worker parent) target overlapping verdict fields for the same doc_id across different process boundaries. Postgres is documented authoritative (CAS + RETURNING, max-priority-wins per RFC-037 D5) and MinIO sidecar is a passive archive, but the consistency model is split: save_doc/save_flat_doc retain a _confirm_write_visible barrier while save_doc_meta deliberately omits it. When registry_enabled is false or the pool is unavailable, the sidecar silently becomes the sole source of truth with degraded consistency. force_verdict_override provides a partial CAS bypass. The reconcile_registry_drift cron job has load-bearing ordering (drain Redis verdict retry queue BEFORE MinIO etag diff).",
+      "evidence_history": "Chains 20-23: erasure manifest missing preloaded/ prefix discovered only by audit (chain 20); registry-delete was fire-and-forget logging success on silent failure (chain 21); save_doc_meta barrier removal created asymmetric consistency across three writers (chain 22); registry_enabled=false silently changes consistency model at runtime (chain 23).",
+      "evidence_code": "verdict.py:78-197 save_doc_meta: lines 84-89 document 'eventual' consistency with no _confirm_write_visible barrier (contrast with documents.py save_doc line 106 which retains the barrier). Line 186 stamps consistency_model='eventual'. registry_mirror.py:55-164 _upsert_registry_row: lines 87-93 show pool-not-ready fallback to sidecar-only with _enqueue_verdict_retry. Lines 136-145 show best-effort sidecar backfill from Postgres winning row. reconcile.py:109-228: line 156 shows _drain_verdict_retry_queue runs BEFORE the MinIO etag diff scan (line 163-170), a load-bearing ordering to prevent overwriting recovered verdicts with stale MinIO reads.",
+      "bug_count_attributed": 4,
+      "key_files": [
+        "src/pageindex_mcp/storage/verdict.py",
+        "src/pageindex_mcp/storage/documents.py",
+        "src/pageindex_mcp/worker/registry_mirror.py",
+        "src/pageindex_mcp/registry_backfill/reconcile.py",
+        "src/pageindex_mcp/registry/queries.py"
+      ]
+    },
+    {
+      "name": "Bidi/RTL Processing Split (Local vs. Remote)",
+      "severity": "high",
+      "description": "RTL/bidi text processing is split across local and remote code paths that run different versions of the same logic. The RFC-033 bidi heading guard (_heading_is_logical_order) was designed but never committed to git. The remote Scaleway Docling microservice runs a separately-deployed image predating local converter fixes, so documents routed remotely still get headings unconditionally reversed. The bidi coherence gate (_check_bidi_coherence) was measured at '0 violations' but this was a null-detector fallacy: NFKC normalization destroys Arabic presentation-form codepoints that are the detector's ONLY failure signal, and the run-selector counts only U+0600-06FF (excluding presentation forms).",
+      "evidence_history": "Chains 1-3: bidi heading guard never committed to git, 0 occurrences of _heading_is_logical_order in HEAD (chain 1); bidi coherence '0 violations' was a null-detector fallacy due to NFKC destroying the failure signal (chain 2); rotation detection applied asymmetrically leaving residual undetected reversed documents (chain 3).",
+      "evidence_code": "The _heading_is_logical_order guard has 0 occurrences in src/ (confirmed via search_code returning only audit/ references). _gate_bidi_degraded in gates.py:126-175 references _check_bidi_coherence at line 145. The detect_garble presentation-forms fallback at garble.py:549-554 attempts to compensate: when _arc>0 and _pf==0 and _effective_script=='Arabic', it assumes had_presentation_forms=True, acknowledging that NFKC normalization destroys the signal before text reaches the detector. indexer.py line 570-572 documents the known gap: remote path does NOT forward expected_script to the external Docling microservice.",
+      "bug_count_attributed": 3,
+      "key_files": [
+        "src/pageindex_mcp/converters/normalize.py",
+        "src/pageindex_mcp/helpers/gates.py",
+        "src/pageindex_mcp/helpers/garble.py",
+        "src/pageindex_mcp/client/indexer.py"
+      ]
+    },
+    {
+      "name": "Erasure Cascade and Storage Consistency Drift",
+      "severity": "medium",
+      "description": "The right-to-erasure cascade (CLAUDE.md Hard Rule #2) is driven by a manually-maintained _ERASURE_MANIFEST tuple that must enumerate every storage prefix written by the ingestion pipeline. When new ingestion routes add storage locations, the manifest drifts out of sync -- the preloaded/<filename> prefix was missing and discovered only by audit (ISS-41). The erasure itself cascades across MinIO, Redis, Postgres, and hash-cache stores with ordered steps, but the registry-delete step historically was fire-and-forget (logging success on silent failure), and still lacks a statement timeout on the underlying DELETE query (ISS-40).",
+      "mechanism": "The manifest is maintained by convention, not derived mechanically from the actual storage-write code paths. Each new storage route (preloaded/, figures/, verdicts/) requires a human to add a corresponding ErasureStep. The driver function (delete_doc) iterates the manifest in order, but individual steps are best-effort (required=False for optional prefixes like figures/), so a partial erasure can complete 'successfully' while leaving data behind. The asymmetric consistency model (save_doc with barrier vs. save_doc_meta without) means an erasure can race with a concurrent write that lands after the erase-step but before the barrier confirms visibility.",
+      "evidence_history": "Chains 20-21: preloaded/ prefix missing from manifest discovered by audit ISS-41 (chain 20); registry-delete was fire-and-forget, now has asyncio.wait_for timeout but DELETE query itself lacks statement timeout ISS-40 (chain 21).",
+      "evidence_code": "documents.py:551-618 _ERASURE_MANIFEST: 11 ErasureStep entries ordered uploads->processed_json->processed_flat_json->figures->verdicts->meta_json->redis_cache->reconcile_etag->hash_cache->registry->preloaded. The preloaded step (line 539-544) was the ISS-41 addition. Each step has name, step number, description, execute coroutine, and optional required=False flag. The manifest is a module-level tuple constant with no mechanical derivation from the storage-write functions (save_doc, save_flat_doc, save_doc_meta, _stage_to_minio).",
+      "bug_count_attributed": 2,
+      "key_files": [
+        "src/pageindex_mcp/storage/documents.py",
+        "src/pageindex_mcp/registry/queries.py",
+        "src/pageindex_mcp/storage/verdict.py"
+      ]
+    },
+    {
+      "name": "Measurement/Audit Tooling Shared Blind Spots",
+      "severity": "medium",
+      "description": "The corpus audit/scoring tooling inherits the same structural blind spots as the pipeline it measures: char-count scoring via block.get('text','') is 0 for role='table' blocks in BOTH the verdict-promotion code (synthetic-structure content builder) and the corpus audit's own diagnostic. The scoring harness had a process-integrity bug where the score-stage never invoked the path to consume persisted MinIO metas, defaulting all 24 documents to ERROR with null node_count/chars. RFC-025 D4 added mandatory pre-publish MinIO re-verification, but this is a process workaround, not a root-cause fix of the harness defect itself.",
+      "evidence_history": "Chains 17-19, 28: synthetic-structure builder measures content via block.get('text','') which is 0 for table blocks, inheriting the same blind spot as the audit diagnostic (chain 17); scoring harness defaulted entire corpus to ERROR without detection until reconciliation (chain 18); pre-publish verification is a process workaround not a root-cause fix (chain 19); Run 9 through Run 15 claims of improvement were refuted by later audits (chain 28).",
+      "evidence_code": "The block.get('text','') pattern for table blocks yields 0 because role='table' blocks store content in rows/cells, not in a top-level 'text' field. This affects both the synthetic-structure content builder in indexer.py (which measures content for verdict promotion) and the corpus audit harness (which measures content for scoring). The scoring harness process bug (chain 18) defaulted all documents to ERROR because the score-stage never invoked read_registry_fields to consume persisted MinIO metas after ingestion. Memory note fabricated-corpus-report-2026-07-17.md confirms this pattern.",
+      "bug_count_attributed": 4,
+      "key_files": [
+        "src/pageindex_mcp/client/indexer.py",
+        "src/pageindex_mcp/storage/verdict.py",
+        "src/pageindex_mcp/helpers/verdict.py"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RFC-049 Review Iteration 2</title>
+<style>
+:root{--bg:#fff;--fg:#1d1d1f;--muted:#6b6b73;--line:#e3e3e8;--ok:#1a7f37;--warn:#9a6700;--bad:#b42318;--chip:#f3f3f6}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#141417;--fg:#e8e8ec;--muted:#9a9aa4;--line:#2c2c33;--ok:#4ac26b;--warn:#d29922;--bad:#f97066;--chip:#1f1f25}}
+:root[data-theme="dark"]{--bg:#141417;--fg:#e8e8ec;--muted:#9a9aa4;--line:#2c2c33;--ok:#4ac26b;--warn:#d29922;--bad:#f97066;--chip:#1f1f25}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:15px/1.55 -apple-system,system-ui,sans-serif;max-width:960px;margin:0 auto;padding:24px 16px;overflow-wrap:anywhere}
+h1{font-size:1.5rem;margin:0 0 4px}h2{font-size:1.15rem;margin:28px 0 8px;border-bottom:1px solid var(--line);padding-bottom:4px}
+.sub{color:var(--muted);margin-bottom:16px}
+table{width:100%;border-collapse:collapse;font-size:.9rem;margin:8px 0}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600}
+code{background:var(--chip);padding:1px 5px;border-radius:4px;font-size:.85em}
+pre{background:var(--chip);padding:10px;border-radius:6px;overflow-x:auto;font-size:.8rem}
+.ok{color:var(--ok);font-weight:600}.warn{color:var(--warn);font-weight:600}.bad{color:var(--bad);font-weight:600}
+.wrap{overflow-x:auto}
+ul{padding-left:20px}
+</style>
+</head>
+<body>
+<h1>RFC-049 Review Iteration 2</h1>
+<div class="sub">2026-09-23 · branch <code>ICR-97-rfc49-contract-drift-remediation</code> · RFC-049 triad (RFC, design, tasks) · amendment marker <code>(Amendment 2026-09-23, iter 2)</code> · RFC status stays <code>review</code></div>
+
+<h2>Verdict</h2>
+<p class="warn">Iteration 1's Option C could not have been implemented as written. Four blocking defects are now resolved inline, and the triad is internally coherent.</p>
+<p>Option C (reject and quarantine) still stands as the decision, but four of its mechanisms depended on things that do not exist in the code:</p>
+<ul>
+<li>a <code>doc_id</code> at the reject sites;</li>
+<li>a flat guard that actually fires;</li>
+<li>a route-safe override condition;</li>
+<li>a per-document decision trail.</li>
+</ul>
+<p>All four are corrected with verified <code>file:line</code> anchors. The two <code>CLAUDE.md</code> edits (HR2 and HR5) are proposed as a diff only and still need human approval. Link check: <strong>0 broken anchors</strong> across 518 markdown links in the three files.</p>
+
+<h2>User decisions (iteration 2, binding)</h2>
+<div class="wrap"><table>
+<tr><th>#</th><th>Decision</th><th>Applied as</th></tr>
+<tr><td>1</td><td class="ok">Quarantine key = sha256</td><td>
+<p><code>quarantine/&lt;sha256&gt;.json</code> + <code>.meta.json</code>. The meta file holds <code>filename</code>, <code>job_id</code> if available, <code>reason</code>, <code>first_defect</code>, <code>route</code> and a timestamp.</p>
+<p>Where the <code>sha256</code> comes from:</p>
+<ul>
+<li>Tree override: the <code>index()</code> local at <code>indexer.py:2458</code>.</li>
+<li>Flat site: the <code>sha256</code> parameter of <code>_persist_flat_result</code>, in scope at <code>:1879</code>.</li>
+<li>Erasure: <code>ctx.sha256</code>, set by <code>_erase_verdicts</code> (<code>documents.py:440-481</code>). It reads the sidecar and falls back to the registry.</li>
+</ul>
+<p>A document that was only ever rejected is erased with the operator helper <code>erase_quarantine(sha256)</code> (Task 7.5b).</p></td></tr>
+<tr><td>2</td><td class="ok">Payload = full tree + verdict + garble samples; decision trail dropped; HR5 clause bundled</td><td>
+<p>The trail is removed everywhere, because <code>obs/decisions.py:19-58</code> <code>decision()</code> only logs.</p>
+<p>Task 7.9 now bundles the HR2 edit with this HR5 clause: <em>"…not a stored artifact served by any query tool; an unserved, erasable <code>quarantine/</code> copy kept for diagnosis is permitted."</em></p>
+<p>The RFC claim "HR5 holds as written" is softened accordingly.</p></td></tr>
+<tr><td>3</td><td class="ok">Retention = 30-day MinIO lifecycle TTL + clear-on-success</td><td>
+<p>New tasks: 7.5a (clear after <code>save_doc</code> / <code>save_flat_doc</code>) and 7.5c (lifecycle TTL, an operator step).</p>
+<p>Open Q4 is resolved and reworded as a storage-limitation question. The design's Launch Constraints bullet on the "HR3 ZDR standing" contradicted bullet 4; it is now amended.</p></td></tr>
+<tr><td>4</td><td class="ok">The HR2 edit lists every <code>_ERASURE_MANIFEST</code> store</td><td>
+<p>Task 7.9 shows the full diff and stays <strong>human approval only</strong>. The same list is mirrored in the <code>erase-01.yaml</code> header (Task 7.6) and in the ARCHITECTURE "Required erasure fan-out" block (Task 7.8).</p></td></tr>
+</table></div>
+
+<h2>Blocking defects and how each was resolved</h2>
+<div class="wrap"><table>
+<tr><th>Defect</th><th>Evidence</th><th>Resolution</th></tr>
+<tr><td class="bad">The <code>doc_id</code> quarantine key does not exist at the reject sites</td><td>
+<p>The tree route mints <code>doc_id</code> with <code>uuid4</code> at <code>indexer.py:2243</code>, inside <code>_persist_tree_result</code>.</p>
+<p>The flat route mints it in <code>_apply_picture_enrichment</code> (<code>client/images.py:205</code>), after the garble check.</p>
+<p>Task 6.2's "derive exactly as save_doc does" was wrong: <code>save_doc</code> derives nothing.</p></td><td>Every <code>quarantine/&lt;doc_id&gt;</code> is replaced by <code>quarantine/&lt;sha256&gt;</code> (R4 AC2/AC4, Option C, the design's data model, service contracts and P12, and tasks 6.2 and 7.2–7.6). The OCR-01-C4 and ERASE-01-C4 rows are rewritten.</td></tr>
+<tr><td class="bad">The flat guard is dead code</td><td>
+<p><code>state.flat_garble_unrecovered</code> is set only inside <code>_persist_flat_result</code> (<code>:1778</code>).</p>
+<p>That method's single caller is the <code>(False, Route.FLAT)</code> arm at <code>:2653</code>, which runs after the guard at <code>:2622</code>. So the guard sees the flag as <code>False</code>, every time.</p>
+<p>The flat reject that actually fires is <code>return None</code> at <code>:1879-1880</code>, followed by the raise in the arm at <code>~:2667-2681</code>.</p></td><td>The flat quarantine write moves <strong>inside <code>_persist_flat_result</code>, before <code>return None</code></strong>, where <code>_garble_blocks</code> and <code>sha256</code> are in scope. The <code>:2622</code> guard is left untouched and noted as defensive. The doc #12 expectation in Task 8.2 depends on this placement.</td></tr>
+<tr><td class="bad">The override has no route guard</td><td>The tesseract-raster branch of <code>_recover_vlm_fallback</code> (<code>recovery.py:1127-1134</code>) forces <code>Route.FLAT</code> without setting <code>force_ok</code>. That leaves <code>ok=False</code> and a <code>GARBLING</code> first defect, so a guard on the defect alone would reject a legitimately recovered document.</td><td>The guard is now <code>not state.ok and state.route == Route.TREE and state.first_defect in {GARBLING, NODE_GARBLING}</code>. This is recorded in AD2, Service Contract 9, Task 7.3, P10 and P11, and pinned by a raster-to-FLAT probe that must <em>not</em> be rejected (Task 7.1).</td></tr>
+<tr><td class="bad">The decision-event trail does not exist</td><td><code>decision()</code> (<code>obs/decisions.py:19-58</code>) only logs. There is no per-document collector.</td><td>The trail is dropped from the payload everywhere and replaced by garble samples (fired prongs, ratio and bounded excerpts).</td></tr>
+</table></div>
+
+<h2>Mechanical fixes applied</h2>
+<div class="wrap"><table>
+<tr><th>#</th><th>Fix</th><th>Verified anchor</th></tr>
+<tr><td>1</td><td>Insertion point. The loop <em>starts</em> at <code>:2561</code> and its body ends at <code>~:2592</code>; <code>no_gate_eligible</code> is at <code>~:2594-2600</code>. The override goes at <code>~:2601</code>, before <code>_recover_flat_prefer</code> (<code>:2604</code>). That method and <code>_recover_landscape_reroute</code> both return early unless <code>state.ok</code>.</td><td><code>indexer.py:2561/2597/2604/2605</code>; <code>recovery.py:1171-1172</code>, <code>:1255-1256</code></td></tr>
+<tr><td>2</td><td>The call passes <code>state.gate_result</code> as the required <code>vt_raw</code>; the tuple form warns. No site forces <code>REJECT</code> today, so this is a new use of an existing API, and the RFC's "reuses the existing pattern" is corrected. "~19 callers" is the graph in-degree including tests; there are 7 production call sites.</td><td><code>types.py:411</code>; override sites <code>recovery.py:955/1133/1214/1298</code>; call sites <code>indexer.py:611,1556</code>, <code>recovery.py:897,949,1127,1208,1292</code></td></tr>
+<tr><td>3</td><td>HR2 import-time guard, three parts: register <code>quarantine/</code>; add a <code>_PREFIX_TO_ERASURE_STEPS</code> entry; add an <code>ErasureStep(name="quarantine")</code>. The manifest anchor is corrected (it was <code>~:599-640</code>). Also add the <code>produces</code>/<code>consumes</code> of <code>ctx.sha256</code>, extend <code>TestHR2CascadeStoreCoverage</code>, and leave <code>wipe_processed</code> unchanged (reason documented).</td><td><code>documents.py:32,35,48-53,594-676,689-695,698-755,759,762-780</code>; <code>tests/test_registry.py:605-640</code></td></tr>
+<tr><td>4</td><td>The <code>QUARANTINE_WRITES_TOTAL{result=ok|error}</code> metric is defined in <code>metrics/definitions.py</code> and re-exported (import + <code>__all__</code>). The <code>quarantine_write</code> decision point is registered with choices ok/failed, content-free attrs and <code>always_emits=False</code>.</td><td><code>definitions.py:144-148</code>; <code>metrics/__init__.py:30,97</code>; <code>decision_points.py:74-108,1831-1844,1873-1905</code>; <code>test_source_invariants.py:258</code></td></tr>
+<tr><td>5</td><td>The quarantine helper is sync and mirrors <code>save_doc</code>; async callers use <code>asyncio.to_thread</code>. A failed write logs, counts <code>error</code>, emits <code>failed</code> and still raises. It never calls <code>save_doc</code>.</td><td><code>documents.py:89-110</code></td></tr>
+<tr><td>6</td><td>Task 7.1 names the fixtures to reuse.</td><td><code>test_flat.py:1442-1472</code>, <code>:1528-1559</code>; <code>test_gates.py:1435-1475</code>; <code>garble.py:953-1057</code></td></tr>
+<tr><td>7</td><td>Task 6.2 uses the sha256 approach and re-checks its anchors.</td><td><code>indexer.py:2243,2458</code>; <code>images.py:205</code></td></tr>
+<tr><td>8</td><td>Gate wording: 61 IDs + 5 module lines = 66 gate lines. Checkpoint A: PASS=65 FAIL=1. Checkpoint B: PASS=68 FAIL=0. Task 7.11 now reads "66 existing gate lines (61 IDs + 5 module checks)".</td><td>RFC Consequences; tasks 4, 7.11</td></tr>
+<tr><td>9</td><td>The static test for R4 AC3 is now mandatory.</td><td><code>server.py:27-31</code> (5 tools) and <code>:40</code>; <code>verdict.py:273</code></td></tr>
+<tr><td>10</td><td>The R1 carve-out (the FLAT-03-C2 label stays although its trigger is stale) is encoded in P9.</td><td>design P9</td></tr>
+<tr><td>11</td><td>Effort is ~2.5–3 days, <strong>including</strong> the Wave 3 corpus re-run, and the same figure now appears in all three files.</td><td>RFC effort table; design AD2; tasks overview and Phase 7</td></tr>
+<tr><td>12</td><td>Task ordering: a note that Phase 5 is Wave 0 and precedes Checkpoint A. "Four waves" means work waves 0–3; JSON ids 0–7 are sequential stages including the gates. The dependency JSON gains 7.5a, 7.5b and 7.5c.</td><td>tasks overview; JSON <code>amendment</code> field</td></tr>
+<tr><td>13</td><td>Task 7.8 covers the Compliance "Required erasure fan-out" block and the note that backups capture <code>quarantine/</code>. It must not graft the override onto the stale "planned / warn-only" <code>validate_tree</code> prose.</td><td>ARCHITECTURE.md "Required erasure fan-out" block</td></tr>
+<tr><td>14</td><td>Risk 1 goes from "Mitigated" to "Partially mitigated", now citing the sha256 keying and the erasure path. Risk 6 is updated to cover the prefix guard, TTL, backups and residual gaps.</td><td>RFC Risks</td></tr>
+<tr><td>15</td><td>RFC readability: a "Current state (2026-09-23)" table; a "→ see Option C" pointer under the D2 status; the Recommendation heading renamed to "Recommendation (superseded by Option C)" (no inbound anchors existed); A/B rows marked "(not adopted)"; Non-Goal 3 annotated to say REASON_POLICY is unchanged under C.</td><td>RFC Decision Summary, D2, Sequencing, Effort, Test Strategy</td></tr>
+</table></div>
+
+<h2>Erasure cascade position</h2>
+<p><code>_erase_quarantine</code> runs <strong>after <code>meta_json</code> (step 3) and before <code>redis_cache</code> (step 4)</strong>.</p>
+<p>The step needs <code>ctx.sha256</code>. <code>_erase_verdicts</code> sets that field (step 2d) before <code>_erase_meta_json</code> deletes the sidecar, and <code>ErasureContext</code> keeps it after the deletion.</p>
+<p>The dependency is declared, not left implicit. The <code>verdicts</code> step gets <code>produces={"ctx.sha256"}</code> and <code>quarantine</code> gets <code>consumes={"ctx.sha256"}</code>, so the D4 ordering loop in <code>validate_erasure_manifest()</code> rejects any reorder that breaks it.</p>
+<p>This position keeps HR2's order: MinIO derivatives, then the diagnostic copy, then Redis. If no sha256 can be found, the step returns <code>False</code> (<code>required=False</code>) and the operator helper <code>erase_quarantine(sha256)</code> applies.</p>
+
+<h2>Lifecycle-config finding</h2>
+<p>There is <strong>no MinIO lifecycle configuration anywhere in the repo</strong>. None of <code>set_bucket_lifecycle</code>, <code>LifecycleConfig</code> or <code>mc ilm</code> appears in <code>src/</code>, <code>scripts/</code>, <code>Makefile</code>, <code>docker-compose.yml</code>, <code>services/</code> or <code>docs/</code>, and <code>uploads/staging/</code> has no rule either. The only expiries are presigned-URL lifetimes and Redis TTLs.</p>
+<p>So there was no existing rule to reference. Task 7.5c adds an operator step: <code>mc ilm rule add --prefix "quarantine/" --expire-days 30</code>. It is documented through Task 7.8, and nobody owns it yet.</p>
+
+<h2>Coherence matrix after the amendments</h2>
+<div class="wrap"><table>
+<tr><th>Acceptance criterion</th><th>Property</th><th>Tasks</th></tr>
+<tr><td>R1 AC1/AC5</td><td>P3, P5, P6, P7</td><td>2.1, 2.2, 3.1, 3.2</td></tr>
+<tr><td>R1 AC2/AC4 (+ carve-out)</td><td>P4, P9</td><td>3.3, 7.6, 7.7; Checkpoint A (4)</td></tr>
+<tr><td>R1 AC3</td><td>P9</td><td>6.1, 7.9</td></tr>
+<tr><td>R2 AC1–AC2</td><td>P1, P2</td><td>1.1, 1.2, 1.3</td></tr>
+<tr><td>R3 AC1–AC2</td><td>P8</td><td>5.1, 5.2, 7.5</td></tr>
+<tr><td>R4 AC1 (route-guarded override)</td><td>P10, P11</td><td>6.2, 7.1, 7.3, 7.7, 8.1, 8.2</td></tr>
+<tr><td>R4 AC2 (sha256 key; flat write inside <code>_persist_flat_result</code>)</td><td>P12</td><td>7.1, 7.2, 7.3, 7.4, 7.6</td></tr>
+<tr><td>R4 AC3 (mandatory static test)</td><td>P12</td><td>7.10</td></tr>
+<tr><td>R4 AC4 (<code>ctx.sha256</code> cascade)</td><td>P8, P12, P12b</td><td>7.5, 7.6, 7.9</td></tr>
+<tr><td>R4 AC5 (TTL + clear-on-success), new</td><td>P12a</td><td>7.5a, 7.5c, 7.8</td></tr>
+<tr><td>R4 AC6 (operator erase by sha256), new</td><td>P12b</td><td>7.5b, 7.8</td></tr>
+</table></div>
+
+<h2>Open items</h2>
+<ul>
+<li><strong>Task 7.9: human approval</strong> for the bundled <code>CLAUDE.md</code> HR2 edit (full cascade list) and HR5 edit (the unserved-quarantine clause). The diff is shown in the task and has not been applied.</li>
+<li><strong>Owner for the lifecycle config</strong>: someone on the operator or infra side must apply the 30-day <code>quarantine/</code> rule in every environment and verify it with <code>mc ilm rule ls</code> (Task 7.5c).</li>
+<li>Residual: if neither the sidecar nor the registry row has a <code>sha256</code>, <code>delete_doc</code> cannot reach the quarantine copy. The operator path by sha256 is the only route in that case.</li>
+</ul>
+
+<h2>Revised effort</h2>
+<p>D2-C: ~1.5–2 days, now revised to <strong>~2.5–3 days, including the Wave 3 corpus re-run</strong>. The extra time covers:</p>
+<ul>
+<li>sha256 keying and the operator erasure path;</li>
+<li>the lifecycle TTL operator step;</li>
+<li>clear-on-success;</li>
+<li>the prefix guard;</li>
+<li>metric and decision-point registration;</li>
+<li>extra probes: route guard, raster-to-FLAT not rejected, and the static no-reader test.</li>
+</ul>
+<p>The other items are unchanged: D1 ~20 min; D3 and D4 ~30 min; D5 is done; D6 ~5 min.</p>
+
+<h2>Files and deltas</h2>
+<div class="wrap"><table>
+<tr><th>File</th><th>Lines (before → after)</th><th>Iteration-2 markers</th></tr>
+<tr><td><code>agents/rfcs/049-contract-drift-remediation.md</code></td><td>436 → 465</td><td>37 full + 13 short-form</td></tr>
+<tr><td><code>agents/designs/design-rfc049-contract-drift-remediation.md</code></td><td>451 → 538</td><td>31 full + 11 short-form</td></tr>
+<tr><td><code>agents/tasks/tasks-rfc049-contract-drift-remediation.md</code></td><td>308 → 371</td><td>22 full + 11 short-form</td></tr>
+</table></div>
+</body>
+</html>

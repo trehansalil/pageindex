@@ -1,0 +1,199 @@
+{
+  "chains": [
+    {
+      "what_was_fixed": "ocr_langs.py fix #2 (commit cf904ff / RFC-040 D5): ensure_tessdata now raises TessdataUnavailableError instead of silently substituting deu/eng when a non-Latin script was requested but unavailable — closing the silent-Latin-mojibake garble-gate blind spot flagged in docstore audit ISS-34 back in 2026-07-15.",
+      "module_or_layer": "OCR language resolution (ocr_langs.py) / garble detection kernel",
+      "what_it_broke_or_disabled": "Bilingual Arabic/English documents that previously recovered via the silent Latin fallback now raise and never persist an artifact. MOU MOHRE went PASS(Run19)->ERROR(Run20); the labor-distribution pie-chart .jpg went MARGINAL->ERROR (job times out before save_doc, zero MinIO artifact).",
+      "evidence": "CORPUS_REINGESTION_AUDIT_RUN-20.md 'Regressions' section; RFC-040 D5 explicitly: 'The MOU MOHRE regression (PASS->ERROR) in Run-20 was caused by the FIRST half of this fix; this completes it' (D5 goes further, closing Latin-substitution too).",
+      "rfc_or_run": "RFC-040 D5 / commit cf904ff / Run-20"
+    },
+    {
+      "what_was_fixed": "verdict.py fix #3 (cf904ff): _try_image_enrichment returns None instead of MARGINAL when content is below the char floor, closing a leniency bypass that let near-empty/all-image docs escape the structural hard-fail.",
+      "module_or_layer": "Verdict gate / promotion pipeline (verdict.py)",
+      "what_it_broke_or_disabled": "4 documents that were previously softened to MARGINAL via the image-enrichment bypass now correctly hard-fail to FAIL (2x قرار مجلس الوزراء decrees, مرسوم 13, مرسوم 33) — a correct reclassification, but the RFC-040/Zone-Delta analysis shows the underlying _has_image_rescue guard itself was never removed, only its blast radius shrank.",
+      "evidence": "ZONE_DELTA_2026-08-27_POST-RUN20.md 'Verdict Gate...NOT IMPLEMENTED. ...code evidence shows this guard still exists verbatim'; CORPUS_REINGESTION_AUDIT_RUN-20.md regression list.",
+      "rfc_or_run": "RFC-040 D1 (partial) / commit cf904ff / Run-20"
+    },
+    {
+      "what_was_fixed": "garble.py fix #1 (cf904ff): improved Arabic presentation-forms/NFKC detection, assuming NFKC decomposition when dominant script is Arabic but zero presentation-form codepoints survive in the blob.",
+      "module_or_layer": "Garble detection kernel (garble.py)",
+      "what_it_broke_or_disabled": "Surfaced pre-existing IPA-symbol font-encoding corruption in documents previously scored PASS: القرار التنظيمي لوزارة الاقتصاد1 PASS->MARGINAL, اتفاقية مستوى الخدمة ERROR->FAIL. Structural metrics (node/char counts) unchanged — this is a detection improvement mistaken for regression until traced.",
+      "evidence": "CORPUS_REINGESTION_AUDIT_RUN-20.md: 'the underlying defect was almost certainly already present and only became visible after the garble.py fix.'",
+      "rfc_or_run": "RFC-040 (garble precursor) / commit cf904ff / Run-20"
+    },
+    {
+      "what_was_fixed": "Zone 7 config-layering fix (commit 610d078): refactored frozen threshold constants into a live-reading pipeline_config singleton, propagating garble_digit_floor and depth-adequacy expectations dynamically.",
+      "module_or_layer": "Config layer / verdict depth-adequacy gate",
+      "what_it_broke_or_disabled": "Silently tightened depth-adequacy thresholds (expected_min_depth raised, e.g. to 5) causing PASS->MARGINAL flips (Ministerial Resolution No279, federal_decree_law_no_33_of_2021) on documents whose underlying trees were structurally unchanged (28 nodes/7,771 chars identical; 506-node tree, not an 80-node collapse as originally dispatched).",
+      "evidence": "CORPUS_REINGESTION_AUDIT_RUN-20.md pre-publish D4 correction: 'the dispatched claim of an 84% node collapse (505 -> 80) is NOT reproduced against live state... the regression is therefore a verdict-gate tightening... not a structural tree loss.'",
+      "rfc_or_run": "Zone 7 fix / commit 610d078 / Run-20"
+    },
+    {
+      "what_was_fixed": "RFC-040 D2: reordered the verdict promotion pipeline from six independent _try_* functions + max(priority) into source-code-order first-match-wins.",
+      "module_or_layer": "Verdict gate promotion pipeline (verdict.py)",
+      "what_it_broke_or_disabled": "_has_image_rescue bypass was still not deleted, AND a new source_selection=True path was added that bypasses _apply_clamp (the quality-clamp step) entirely — net effect: Verdict-Gate zone bug count rose 5->8 (regressed) despite the structural reorder landing.",
+      "evidence": "ZONE_DELTA_2026-08-28_POST-FIX-WAVE3.md: 'Reordered to source-code-order first-match-wins (RFC-040 D2), but _has_image_rescue bypass not deleted; new source_selection=True path now bypasses _apply_clamp entirely'.",
+      "rfc_or_run": "RFC-040 D2 / POST-FIX-WAVE3"
+    },
+    {
+      "what_was_fixed": "Garble detection consolidation: duplicate tree/flat implementations merged into one shared detect_garble kernel (addressing RFC-040 D3's duplicated digit-ratio floor).",
+      "module_or_layer": "Garble detection kernel",
+      "what_it_broke_or_disabled": "NFKC normalization still runs before the bidi presentation-form signal for some callers (RFC-040 D6 not fully applied), and a new hardcoded config.garble_short_text_default override was introduced that short-circuits detection for short texts — Garble Detection zone bug count rose 5->7 (regressed) despite the consolidation.",
+      "evidence": "ZONE_DELTA_2026-08-28_POST-FIX-WAVE3.md: 'Consolidation...appears complete. However, NFKC normalization still runs before the bidi presentation-form signal for some callers, creating a race condition... new hardcoded override...introducing 2 additional bugs.'",
+      "rfc_or_run": "RFC-040 D3/D6 (partial) / POST-FIX-WAVE3"
+    },
+    {
+      "what_was_fixed": "D2 Part A guard (_heading_is_logical_order) written to prevent reconstruct_bidi_order from unconditionally reversing Arabic headings.",
+      "module_or_layer": "Bidi/RTL text normalization (converters.py) / remote Docling microservice",
+      "what_it_broke_or_disabled": "The guard exists ONLY in the local working tree (git log -S finds it in no commit), while the remote Scaleway Docling microservice runs a stale deployed image containing pageindex_mcp's OWN converter code from before the guard existed — so headings reverse on the remote route regardless of the local fix, and the worker never re-normalizes markdown returned from that route. سياسة حوكمة و إدارة البيانات and other Arabic docs got reversed headings on fresh ingests.",
+      "evidence": "BIDI_ROOT_CAUSE_RFC033.md §1.1: 'the remote service runs our converter, not vanilla Docling... The deployed image is therefore a build from the 2026-07-30..2026-08-04 window: unconditional heading flip, no table repair.' §0.1 M-A reproduces 23/23 heading repair once the guard is applied locally to captured remote output.",
+      "rfc_or_run": "RFC-033 D2 Part A / BIDI_ROOT_CAUSE_RFC033.md 2026-08-07"
+    },
+    {
+      "what_was_fixed": "_check_bidi_coherence gate, intended to detect visual-order (reversed) Arabic text and block promotion when found (BIDI_COHERENCE_ENFORCE default true).",
+      "module_or_layer": "Bidi coherence detector (helpers.py)",
+      "what_it_broke_or_disabled": "Nothing was 'broken' by a fix — the gate was a null detector from inception with two independent, each-sufficient causes: (1) its only signal is Arabic Presentation-Forms morphology, but get_display()-reversed text is composed entirely of canonical U+06xx letters (0 presentation-form codepoints in 21k+ chars tested); (2) the line-selector at helpers.py:1029 restricts sampling to U+0600-U+06FF, excluding the presentation-form range that WOULD carry the signal. Result: 0% true-positive rate on a corpus of visibly-reversed trees, yet the 'zero violations' measurement was used to justify defaulting BIDI_COHERENCE_ENFORCE=true.",
+      "evidence": "BIDI_ROOT_CAUSE_RFC033.md §2.1-2.2: 'A detector with any nonzero capability must fail that [fully-reversed] control... it does not.' Confirmed still unresolved in WAVE3: 'NFKC normalization still runs before the bidi presentation-form signal for some callers'.",
+      "rfc_or_run": "RFC-033 F2 / carried into RFC-040 D6, still open at POST-FIX-WAVE3"
+    },
+    {
+      "what_was_fixed": "GATE_TABLE in validate_tree evaluates garbling (severity=0) before node_count_low (severity=1), intending garbling to win as the reported defect reason for numeric-junk-OCR documents.",
+      "module_or_layer": "Tree validation gate table / OCR recovery routing",
+      "what_it_broke_or_disabled": "The reason-assignment mechanism actually surfaces reason=node_count_low instead of reason=garbling for minimal-tree garbled documents. Since OCR escalation only fires when reason in ('garbling','node_garbling'), recovery never triggers for exactly the documents that most need it — detection without remediation. The zone housing this defect was 'closed' by being absorbed into two other zones rather than independently fixed, and RFC-040 D4's proposed reordering was still 'not_implemented' at POST-FIX-WAVE3.",
+      "evidence": "RFC-040 Zone 2 root-cause 2b; ZONE_DELTA_2026-08-27_POST-RUN20.md 'Gate-to-Recovery Signal Threading Gaps... the underlying defect is not independently fixed; it was re-scoped into two other zones rather than remediated'; ZONE_DELTA_2026-08-28_POST-FIX-WAVE3.md 'kill-switch split and marker-removal-after-coverage-skip fixes not done'.",
+      "rfc_or_run": "RFC-040 D4 / open since original OCR_IMAGE_BLOCK_CONFLATION_INVESTIGATION 2026-07-27"
+    },
+    {
+      "what_was_fixed": "_OCR_ESCALATION single kill-switch, originally flagged in OCR_IMAGE_BLOCK_CONFLATION_INVESTIGATION (2026-07-27) as conflating page-level OCR escalation with per-picture crop OCR, with P1 proposing to split it into OCR_ESCALATION and IMAGE_ENRICH.",
+      "module_or_layer": "OCR recovery cascade / picture enrichment pipeline",
+      "what_it_broke_or_disabled": "The split was never implemented across four+ RFC waves. As of POST-FIX-WAVE3, _OCR_ESCALATION still conflates both modes, unresolved <!-- image --> markers still leak into final output (same Issue 4 from the original 2026-07-27 investigation), and a NEW string-matching fragility was discovered in indexer.py's gate-reason routing making error classification brittle. Zone regressed 4->6 bugs despite the largest prior-wave improvement (15->4, critical->high) in Run-20.",
+      "evidence": "OCR_IMAGE_BLOCK_CONFLATION_INVESTIGATION_2026-07-27.md P1/Issue4; ZONE_DELTA_2026-08-28_POST-FIX-WAVE3.md: 'The proposed kill-switch split...and marker-removal-after-coverage-skip fixes were not implemented... new fragility was discovered in indexer.py's gate-reason routing that relies on string matching'.",
+      "rfc_or_run": "RFC-018 P1/P3 (2026-07) unresolved through POST-FIX-WAVE3 (2026-08-28)"
+    },
+    {
+      "what_was_fixed": "ISS-02 (delete_doc fire-and-forget registry delete): fixed by wrapping the Postgres registry delete in asyncio.wait_for with a timeout (commit 610d078), closing the HR2 erasure-cascade gap flagged in the 2026-07-15 docstore audit.",
+      "module_or_layer": "Erasure cascade / registry delete (storage.py, registry.py)",
+      "what_it_broke_or_disabled": "Did not eliminate the class of bug — it recurred in a NEW derived store. RFC-037 (2026-08-24) finds the verdict ledger file verdicts/{sha256}.json excluded from the 7-step erasure cascade, an HR2 gap structurally identical to ISS-02/ISS-41 (preloaded/ objects) but in a storage location added after the original fix landed. The Zone-Delta notes 'manually-maintained erasure-manifest' as a persistent residual risk because new storage prefixes require manual cascade updates with no auto-discovery.",
+      "evidence": "ISSUES.md ISS-02/ISS-41; RFC-037 Context #2: 'The verdict ledger... is excluded from the 7-step erasure cascade... This violates CLAUDE.md Hard Rule 2'; ZONE_DELTA_2026-08-27_POST-RUN20.md: 'New storage locations (figures/, verdicts/) still required retroactive manifest additions after the fixes'.",
+      "rfc_or_run": "ISS-02/ISS-41 (docstore audit) recurring in RFC-037 (2026-08-24)"
+    },
+    {
+      "what_was_fixed": "Dual verdict-arbitration guards intended to prevent stale writes: MinIO sidecar CAS (_verdict_cas_guard, strict '>' on verdict_computed_at) and Postgres upsert CAS (_UPSERT_SQL, '>=' on the same timestamp).",
+      "module_or_layer": "Verdict persistence (storage/verdict.py, registry/queries.py)",
+      "what_it_broke_or_disabled": "The two guards never consult each other, so a tie on the timestamp is BLOCKED by the sidecar but ALLOWED by Postgres, leaving the two substrates holding permanently different verdicts for the same document. RFC-037 proposes designating Postgres sole arbiter; by POST-FIX-WAVE3 this had not resolved but instead was re-scoped into a brand-new 'Dual-Writer Verdict Persistence and Consistency Model Split' zone extracted from the Erasure Cascade zone.",
+      "evidence": "RFC-037 Context #1: 'The guards never consult each other. A tie on the sidecar blocks the write while the same tie on Postgres allows it'; ZONE_DELTA_2026-08-28_POST-FIX-WAVE3.md New Zones: 'Dual-Writer Verdict Persistence and Consistency Model Split... Extracted from Erasure Cascade zone... signals that prior erasure-zone complexity analysis was conflating cascade semantics with persistence-layer concerns.'",
+      "rfc_or_run": "RFC-037 D1/D5, unresolved into POST-FIX-WAVE3 new zone"
+    },
+    {
+      "what_was_fixed": "PDF_INSPECTOR_PRECLASSIFY confidence gate (RFC-031/032) added to indexer.py to require confidence>=0.90 before triggering forced full-page OCR on scanned/image-based PDFs.",
+      "module_or_layer": "Worker timeout management / PDF inspector (indexer.py, subprocess_mgr.py)",
+      "what_it_broke_or_disabled": "The confidence gate was applied only client-side (indexer.py); subprocess_mgr.py's 16.5x timeout multiplier applies based on pdf_type ALONE with no confidence check. A document classified as scanned at confidence 0.50 receives the enormous 16.5x timeout budget but never actually runs the forced OCR that budget was sized for — a split-brain between what work is authorized and what timeout is granted. RFC-038 proposes a shared INSPECTOR_CONFIDENCE_THRESHOLD constant to close this.",
+      "evidence": "RFC-038 Context: 'A document classified as scanned at confidence 0.50 receives an enormous timeout budget but never runs the forced OCR that the budget was sized for.'",
+      "rfc_or_run": "RFC-031/032 (confidence gate) split-brain surfaced in RFC-038 (2026-08-24)"
+    },
+    {
+      "what_was_fixed": "JOB_TIMEOUT raised to 3630s (RFC-028) and the 16.5x inspector multiplier calibrated (RFC-032) as independent timeout-safety mechanisms.",
+      "module_or_layer": "Worker subprocess management (job.py, subprocess_mgr.py)",
+      "what_it_broke_or_disabled": "JOB_TIMEOUT is independently duplicated in job.py and subprocess_mgr.py (admitted in a comment at subprocess_mgr.py:38), and the chunked-Docling timeout extension is NOT mutually exclusive with the 16.5x multiplier — when both apply, effective timeout can reach ~500,000 seconds against a 3,630s intended baseline. Separately, the extended deadline is only persisted to Redis AFTER the subprocess completes, not at handshake time, so reap_stale_jobs can falsely reap a legitimately running job during the gap; this is masked (not fixed) by a late_success ERROR->DONE recovery transition.",
+      "evidence": "RFC-038 Context: 'the computed effective timeout can reach ~500,000 seconds while JOB_TIMEOUT remains 3,630 seconds'; 'The late_success ERROR->DONE recovery path... masks this race rather than closing it.'",
+      "rfc_or_run": "RFC-028/RFC-032 interactions surfaced as RFC-038 (2026-08-24)"
+    },
+    {
+      "what_was_fixed": "HR3 boot-time ZDR compliance gate (RFC-011 D6) added to server.py's _lifespan_with_scrape to refuse startup when pii_corpus=True and openai_base_url is not ZDR-allowlisted.",
+      "module_or_layer": "HR3/PII egress compliance (server.py, worker/lifecycle.py, client/llm.py, client/remote.py)",
+      "what_it_broke_or_disabled": "The gate protects nothing that actually touches documents: all ingestion (Docling remote conversion, LLM tree-generation) happens in the arq WORKER process, which has zero ZDR/pii_corpus checks. Three concrete egress paths are ungated: the primary LLM tree-generation call (only the fallback branch checks ZDR), and both Docling remote PDF and image conversion calls (build presigned URLs and POST raw document bytes with zero compliance validation).",
+      "evidence": "RFC-039 Context: 'The boot-time HR3 gate... runs ONLY in the MCP server process; the arq worker process... has ZERO ZDR/pii_corpus checks. All document ingestion... happens exclusively in the worker process, meaning the gate that exists protects nothing that touches documents.'",
+      "rfc_or_run": "RFC-011 D6 gap surfaced as RFC-039 (2026-08-24)"
+    },
+    {
+      "what_was_fixed": "zdr_egress_gate raises a compliance-block RuntimeError to stop VLM calls from reaching non-ZDR endpoints under HR3.",
+      "module_or_layer": "VLM egress compliance (converters/pictures.py, client/indexer.py)",
+      "what_it_broke_or_disabled": "The compliance-block exception is caught by the SAME except Exception handler used for genuine VLM API failures in client/indexer.py, and both increment the identical VLM_FALLBACK_TOTAL.labels(result='error') metric — making a deliberate policy block indistinguishable from a real service outage in monitoring/alerting. RFC-039 D4 proposes a distinct ZDRComplianceError subclass and result='compliance_blocked' label to fix this.",
+      "evidence": "RFC-039 Context: 'the VLM compliance block raised by zdr_egress_gate... is caught by the same except Exception handler as genuine API failures... Both paths increment VLM_FALLBACK_TOTAL.labels(result='error')'",
+      "rfc_or_run": "RFC-039 D4 (2026-08-24)"
+    },
+    {
+      "what_was_fixed": "route_and_extract_flat's table-role blocks intentionally omit a 'text' key by design, storing parsed cell content in headers/rows/row_records instead, consumed separately by _flat_search_text for retrieval.",
+      "module_or_layer": "Flat extraction / content scoring & measurement tooling",
+      "what_it_broke_or_disabled": "Any code that measures document content via block.get('text','') — including the corpus audit's own char-count diagnostic AND the proposed RFC-022 B1-Fix synthetic-structure builder in client.py — sees 0 chars for every table block and silently misses hundreds of pricing/data figures, producing false 'content dropped 4267->375 chars' regression reports and risking false promotion failures for table-heavy docs. Formalized into 'Measurement/Audit Tooling Shared Blind Spots' zone; core fixes (table-aware char-count signal, fail-loud ERROR-default scoring harness) still NOT implemented at POST-FIX-WAVE3.",
+      "evidence": "OCR_IMAGE_BLOCK_CONFLATION_INVESTIGATION_2026-07-27.md Addendum: 'role=\"table\" blocks carry no \"text\" key by design... Any code that measures document content via block.get(\"text\", \"\")... sees 0 chars for all 3 table blocks'; ZONE_DELTA_2026-08-28_POST-FIX-WAVE3.md: 'core fixes (table-aware shared char-count signal, fail-loud scoring harness) not implemented; block.get('text','') and ERROR-default harness bug persist'.",
+      "rfc_or_run": "RFC-022 B3 addendum (2026-07-28), unresolved through POST-FIX-WAVE3"
+    },
+    {
+      "what_was_fixed": "allow_agpl_fallback gating and AGPL_FALLBACK_TOTAL metric added to prevent silent, unobserved fallback from Docling to AGPL-licensed pymupdf4llm on docling failure (closing ISS-35 latent risk), plus converter provenance now persisted via _MERGE_FIELDS.",
+      "module_or_layer": "Converter chain fallback (converters.py, pdf_markdown_converters)",
+      "what_it_broke_or_disabled": "Zone improved 5->2 in Run-20, but then REGRESSED to severity high with 4 bugs by POST-FIX-WAVE3: structural (non-transient) converter failures still silently walk the chain to AGPL converters — only transient failures were addressed — and the remote Docling service still has no version/contract enforcement, the same 'no build-provenance check on the external service' mechanism identified as the root cause of the BiDi F1 stale-remote-image chain.",
+      "evidence": "ISS-35 (ISSUES.md); ZONE_DELTA_2026-08-27_POST-RUN20.md 'Converter Chain Fallback... 5->2'; ZONE_DELTA_2026-08-28_POST-FIX-WAVE3.md: 'Severity escalated to high because structural (not just transient) converter failures still silently walk the chain to AGPL-licensed converters... remote Docling service has no version-checking or contract enforcement'.",
+      "rfc_or_run": "ISS-35 (2026-07-15) partial fix regressed at POST-FIX-WAVE3 (2026-08-28)"
+    },
+    {
+      "what_was_fixed": "Test suite consolidation from 85 to 37 files to control test file proliferation",
+      "module_or_layer": "Test infrastructure / Converter pipeline",
+      "what_it_broke_or_disabled": "Tuple compatibility in ConverterChainEntry — chain walker expected .name/.fn/.supports_ocr attributes but tuples lacked them, raising AttributeError across inspector, bidi, client, image-block, quality test suites (21 failures)",
+      "evidence": "4bdfee1 (refactor consolidate test suite) introduced regression; e28f1c8 (fix zone7 tuple compatibility) restored backward-compat via as_chain_entry() normalisation. test-ratio-guard gate (63fdab4) prevents ratio regression from returning to pre-consolidation 1.47"
+    },
+    {
+      "what_was_fixed": "Garble detection kernel: presentation-forms fallback with NFKC blind spot in verdict.py, images.py, indexer.py pre-garble probe",
+      "module_or_layer": "Garble detection / PDF extraction pipeline",
+      "what_it_broke_or_disabled": "Left two hardcoded had_presentation_forms=False sites in indexer.py (flat_garble_gate at line 998, vlm_fallback_garble at line 1024) running AFTER NFKC normalisation. Arabic documents with presentation-form codepoints lost during normalisation would reach gates asserting False, bypassing compensation at garble.py:583, reporting documents as clean when garbled",
+      "evidence": "e02ec93 (fix zone4 garble kernel) closed 3 sites but missed 2; 136a60c (fix zone2) closed remaining sites. TestPresentationFormsNotHardcoded AST guard in test_architecture_guards.py pins pattern via AST parsing (not text grep) so docstrings describing defect are not misidentified as instances"
+    },
+    {
+      "what_was_fixed": "Verdict gate promotion cascade: _try_cat_a path lacked effectively_garbled guard that five siblings all carried",
+      "module_or_layer": "Verdict promotion pipeline / Quality gate",
+      "what_it_broke_or_disabled": "Garbled ocr_* documents with max_leaf_ratio < 0.15 and ocr_noise_ratio < 0.005 could promote straight to PASS, violating HR#5 constraint. Zone 1 bug count 8→11 across two audit cycles (chronic regressor). Thresholds hardcoded in six places with inconsistent values",
+      "evidence": "9ccc6f1 (fix zone1 verdict-gate cascade VG-1..VG-7) added effectively_garbled guard to _try_cat_a; extracted thresholds (0.15, 0.005, 100, 15000) to VerdictThresholds config; added import-time assertions on ceiling/floor consistency; introduced promotion_paths_matched for first-match-wins partition auditability"
+    },
+    {
+      "what_was_fixed": "OCR recovery eligibility check only inspected first_defect, missing other document defects that should trigger recovery",
+      "module_or_layer": "OCR recovery / Recovery cascade",
+      "what_it_broke_or_disabled": "Documents with multiple recoverable defects (not in first slot) would miss eligibility for recovery path. Dual-writer consistency regime not observable in sidecars or logs",
+      "evidence": "2a53e02 (fix zone1,zone5 OCR recovery + dual-writer consistency) changed _eligible_garble/_eligible_low_content to check all_defects instead of first_defect_only; added ocr_escalation_low_content config flag to separate concerns; added REGISTRY_CONSISTENCY_DEGRADED metric + Redis bridge; stamped consistency_regime in sidecars on bypass/drain-write"
+    },
+    {
+      "what_was_fixed": "Erasure cascade missing explicit tracking — no way to verify MinIO write paths are covered by delete_doc cleanup",
+      "module_or_layer": "Storage layer / Document lifecycle",
+      "what_it_broke_or_disabled": "Silent erasure gaps possible: deleting raw upload in uploads/ doesn't auto-remove derivatives in processed/*.json or processed/*.meta.json or Redis cache. No compile-time verification that all paths are listed",
+      "evidence": "c1850d4 (fix zone6 wave3 erasure cascade completeness) added register_storage_prefix() to track every MinIO write path; validate_erasure_manifest() runs at import-time raising ImportError on gaps (not silent failures); delete_doc now reports required-ok/optional-skipped counts; added write-visibility barrier to save_doc_meta matching save_doc consistency model"
+    },
+    {
+      "what_was_fixed": "AGPL converter structural failures fell through silently without gating or metrics. Remote Docling /version cached once per process, only gating first conversion",
+      "module_or_layer": "Converter chain pipeline / Remote service integration",
+      "what_it_broke_or_disabled": "Structural failures into AGPL converters were unnamed fall-through into WALK with only warning log — AGPL path neither gateable nor counted in metrics. Remote pipeline_version skew detected once then ignored for all subsequent conversions in same process",
+      "evidence": "0625ecb (fix zone6 AGPL structural fallback + remote converter drift) named ConverterFailurePolicy.GATE_AGPL_STRUCTURAL branch (previously unnamed else); added AGPL_STRUCTURAL_FALLBACK_ENABLED gate with AGPL_FALLBACK_TOTAL{reason} metrics; introduced sticky _remote_pipeline_version_behind flag re-evaluated per conversion; forwarded expected_script to external Docling service eliminating client-side script re-inference"
+    },
+    {
+      "what_was_fixed": "Four independent regression fixes: Arabic presentation-forms fallback, Latin-only OCR fallback, _try_image_enrichment double-evaluation, re-entry guard gap in picture_plane.py",
+      "module_or_layer": "Converters / Picture plane / Verdict pipeline / OCR decision",
+      "what_it_broke_or_disabled": "Arabic presentation-forms assumed NFKC when zero codepoints survived. Latin-only fallback (deu,eng) applied even when original request included non-Latin languages. _try_image_enrichment evaluated twice from independent call sites, running detect_garble twice. Re-entry guard gap: full_page_already_applied not plumbed through decide_ocr_mode wrapper",
+      "evidence": "cf904ff (fix regression four gates) added NFKC fallback guard in garble.py; refused Latin-only fallback in ocr_langs.py with TessdataUnavailableError; changed _try_image_enrichment to return None (not MARGINAL) below char floor; plumbed full_page_already_applied through decide_ocr_mode wrapper to decide_ocr_strategy"
+    },
+    {
+      "what_was_fixed": "Wave 2 triage spec for garble-detection kernel marked as redundant — all four items already shipped in e02ec93",
+      "module_or_layer": "Audit / Specification framework",
+      "what_it_broke_or_disabled": "Risk of dispatching agents to remediate already-completed work. Zone entry marked 'stalled' when actually partially-remediated",
+      "evidence": "136a60c (fix zone2) retired wave-2 spec; zone dropped 7→5 bugs, status stalled→partially-remediated; documented mapping so next audit does not re-derive completed work. Remaining blast-radius mechanism (detect_garble 15+ callers, garble_short_text_default hidden global) marked as design-level issue"
+    }
+  ],
+  "themes": [
+    "Null-detector pattern: multiple quality gates (bidi coherence presentation-forms check, garble-gate Latin-gibberish blind spot, digit-ratio floor below 500 chars) structurally cannot fire on their real failure mode — the signal they test for is destroyed (NFKC decomposition) or excluded (line-selector range, char floor) before the check runs — yet their 'zero violations' measurement was historically read as evidence of safety and used to justify enabling stricter enforcement defaults (e.g., BIDI_COHERENCE_ENFORCE=true).",
+    "Threshold/config tightening repeatedly masquerades as content regression in corpus audits: Run-20's D4 pre-publish live-store re-verification found that reported 'structural collapses' (505->80 nodes) were in fact unchanged trees whose verdict flipped purely because a config-layering refactor (610d078) silently raised depth-adequacy or char-floor thresholds — underscoring that live-store verification against actual MinIO state, not just dispatched figures, is required before attributing a verdict change to extraction damage.",
+    "Fix-one-instance-miss-the-other duplication is a chronic, cross-cutting defect generator: the garble digit-ratio floor was duplicated between _tree_is_garbled/_flat_text_is_garbled (ISS-36) and again between garble_prongs and _garble_check_nodes' fallback (RFC-040 2a); verdict priority maps were duplicated (_LEDGER_VERDICT_PRIORITY vs _LEDGER_PRIORITY, RFC-037); dual verdict-arbitration CAS guards used inconsistent comparison operators (> vs >=, RFC-037). Each recurrence independently produced a defect zone.",
+    "Partial RFC implementation is actively net-negative across consecutive remediation waves: POST-FIX-WAVE3 shows 4 of 7 zones REGRESSED (net +14 bugs) precisely because proposed fixes were applied incompletely — new code paths (source_selection=True bypassing _apply_clamp; config.garble_short_text_default hard override) were introduced alongside old bypasses (_has_image_rescue) that were never removed, compounding rather than resolving the underlying cascade. The scorecard explicitly recommends halting further zone-by-zone fixes pending a clean re-audit baseline.",
+    "Remote/external-service code drift is a repeated generative mechanism: the same 'no version/contract check on an externally deployed service' root cause independently produces the BiDi F1 stale-Docling-microservice heading-reversal defect and the Converter-Chain-Fallback zone's inability to distinguish a legitimate remote outage from AGPL-fallback-worthy structural failure — both flagged as needing a /version endpoint or build-provenance check that has not landed in either case.",
+    "HR2 (erasure) and HR3 (PII/ZDR egress) compliance gaps recur every time a new storage location or new egress call site is added, because there is no single canonical, auto-discovering cascade/gate list: the original ISS-02/ISS-41 erasure gaps (preloaded/, registry fire-and-forget) reappear structurally identical in RFC-037's verdicts/{sha256}.json gap; the RFC-011 boot-time HR3 gate covers only the server process while all real document egress happens in the unchecked worker process and two Docling remote-conversion call sites.",
+    "Verdict/garble/OCR-recovery form a tightly coupled triad where a fix to one leg reliably flips outcomes on the other two: closing the tessdata Latin-substitution garble blind spot (RFC-040 D5) directly caused verdict ERRORs (MOU MOHRE, pie-chart) that are OCR-recovery failures in disguise; the GATE_TABLE reason-masking defect sits exactly at the verdict<->OCR-recovery boundary and was never independently fixed, only relabeled across zone reorganizations — reflecting the historical PASS_MAX_LEAF_RATIO threshold oscillation (0.17->0.20->0.30) that motivated RFC-037's ledger/hysteresis removal in the first place.",
+    "Compensating heuristics are repeatedly substituted for the actual proposed fix, then themselves become new defect sources: the Bidi/RTL zone 'stalled' with only a workaround heuristic (assume presentation forms survive when none do) instead of the proposed NFKC reorder; the OCR Recovery zone's kill-switch split was never implemented but a NEW string-matching fragility appeared in its place — each wave trades a known, documented gap for a fresh, undocumented one.",
+    "Audit/measurement tooling shares the same blind spots as the code it audits: table-role blocks' by-design absence of a 'text' key causes both the production content-scoring path and the audit's own char-count diagnostics (plus the proposed RFC-022 B1-Fix synthetic-structure builder) to independently undercount content — meaning a fix applied only to production code, without also fixing the audit harness, leaves the harness capable of re-reporting the same false regression on the next run.",
+    "Shared choke points in converters and verdict pipeline create cascading regressions when refactored",
+    "Hardcoded constants and fallback boolean flags scattered across files cause invisible asymmetries and missed sites",
+    "NFKC normalisation blind spot in garble detection: presentation-forms lost before detection sees text",
+    "Silent degradation patterns: failures fall through unnamed else branches without metrics or gates",
+    "Caching strategies that gated only first operation then ignored state for all subsequent operations",
+    "Test file consolidation introduced backward-compatibility gap requiring normalisation layer",
+    "Audit zones describing work that was already completed, creating risk of redundant remediation",
+    "Multi-site fixes that consistently miss 1-2 locations, requiring follow-up commits and AST guards"
+  ],
+  "source_count": 2,
+  "total_chains": 26
+}

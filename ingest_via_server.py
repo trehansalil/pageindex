@@ -6,13 +6,13 @@ Usage:
     uv run python ingest_via_server.py [filename]
 """
 
+import os
 import sys
 import time
 from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
-import os
 
 load_dotenv()
 

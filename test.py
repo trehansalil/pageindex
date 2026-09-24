@@ -1,11 +1,12 @@
 import asyncio
 import os
 import time
+
 from dotenv import load_dotenv
-from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain.agents import create_agent
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessageChunk
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_openai import ChatOpenAI
 
 load_dotenv()
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]

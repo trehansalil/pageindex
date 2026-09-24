@@ -82,6 +82,18 @@ class _FilteredStderr:
         lines = self._buf.split("\n")
         self._buf = lines[-1]  # hold incomplete last line
         for line in lines[:-1]:
+            # RFC-046 D12: obs.configure() binds its StreamHandler to whatever
+            # sys.stderr is at the time, and on this route that is *this*
+            # object -- the swap at the bottom of the module happens before
+            # preprocess() runs. Without this passthrough a structured record
+            # whose msg merely mentions e.g. litellm_logging.py is silently
+            # dropped, and the log stream 12.C-core reconstructs from has
+            # holes in it. A JSON object on its own line is a record, never a
+            # traceback frame: emit it and clear any suppression state.
+            if line.startswith("{") and line.rstrip().endswith("}"):
+                self._suppressing = False
+                self._wrapped.write(line + "\n")
+                continue
             # Trigger: enter suppression mode
             if any(t in line for t in _NOISE_TRIGGERS):
                 self._suppressing = True
@@ -107,6 +119,7 @@ class _FilteredStderr:
 from dotenv import load_dotenv
 
 from pageindex_mcp.client import _SUPPORTED as SUPPORTED
+from pageindex_mcp.obs import bind_log_context, configure as configure_obs
 
 load_dotenv()
 
@@ -138,25 +151,29 @@ def _concurrency() -> int:
         return 1
 
 
-async def _process_one(sem: asyncio.Semaphore, file: Path) -> None:
+async def _process_one(sem: asyncio.Semaphore, file: Path, run_id: str) -> None:
     # Same isolation primitive the arq worker uses: a fresh converters_cli child
     # per file that dies (and frees Docling/torch memory) when it returns. The
     # child runs CustomPageIndexClient.index() in-process, then exits.
     from pageindex_mcp.worker import ConverterOOMError, _run_converter_subprocess
 
+    # RFC-046 D12 (task 12.2): bind INSIDE the semaphore, not before it -- each
+    # concurrent document must carry its own doc_name in the correlation
+    # context passed down to the converter child via PAGEINDEX_LOG_CONTEXT.
     async with sem:
-        try:
-            result = await _run_converter_subprocess(str(file))
-        except ConverterOOMError:
-            print(f"  [{file.name}] ERROR: converter child OOM-killed", flush=True)
-            return
-        except TimeoutError:
-            print(f"  [{file.name}] ERROR: converter child timed out", flush=True)
-            return
-        except Exception as e:
-            # Report and continue to the next file (matches prior behaviour).
-            print(f"  [{file.name}] ERROR: {e}", flush=True)
-            return
+        with bind_log_context(run_id=run_id, doc_name=file.name):
+            try:
+                result = await _run_converter_subprocess(str(file))
+            except ConverterOOMError:
+                print(f"  [{file.name}] ERROR: converter child OOM-killed", flush=True)
+                return
+            except TimeoutError:
+                print(f"  [{file.name}] ERROR: converter child timed out", flush=True)
+                return
+            except Exception as e:
+                # Report and continue to the next file (matches prior behaviour).
+                print(f"  [{file.name}] ERROR: {e}", flush=True)
+                return
 
     doc_id = result.get("doc_id")
     content_class = result.get("content_class")
@@ -167,10 +184,28 @@ async def _process_one(sem: asyncio.Semaphore, file: Path) -> None:
     if doc_id:
         from pageindex_mcp.worker import _upsert_registry_row
 
-        try:
-            await _upsert_registry_row(doc_id, content_class)
-        except Exception as exc:
-            print(f"  [{file.name}] registry upsert failed (non-fatal): {exc}", flush=True)
+        # Zone-7 (dual-write consistency): this CLI drives the very same
+        # converters_cli child as the arq worker, so its stdout JSON already
+        # carries registry_fields / verdict_fields.  Thread them through so
+        # the batch path skips the MinIO re-read and its race window too —
+        # otherwise the optimisation only covers the worker.  Both are None
+        # for older child binaries, which restores the MinIO-read fallback.
+        # RFC-046 D12, gate 12.C (2026-09-19): re-bind here. The upsert runs
+        # deliberately OUTSIDE the semaphore so the next document can start
+        # converting while this one writes, which also puts it outside the
+        # bind above -- leaving `registry: dual-write upserted doc_id=...`,
+        # the one per-document record on this route that names the doc_id,
+        # with no run_id and no doc_name_sha8 to resolve it by.
+        with bind_log_context(run_id=run_id, doc_name=file.name, doc_id=doc_id):
+            try:
+                await _upsert_registry_row(
+                    doc_id,
+                    content_class,
+                    verdict_fields=result.get("verdict_fields"),
+                    registry_fields=result.get("registry_fields"),
+                )
+            except Exception as exc:
+                print(f"  [{file.name}] registry upsert failed (non-fatal): {exc}", flush=True)
 
 
 async def _init_registry_pool() -> None:
@@ -203,28 +238,121 @@ async def _close_registry_pool() -> None:
         pass
 
 
+#: Signals a supervisor actually sends. SIGKILL is deliberately absent: it
+#: cannot be caught, and no amount of Python can cover it — see
+#: ``run_with_child_reaping``.
+_REAPING_SIGNALS = ("SIGTERM", "SIGINT")
+
+
+def install_child_reaping_signal_handlers(loop, task) -> list[str]:
+    """Turn a supervisor's signal into a cancellation of *task*.
+
+    Why this exists (observed 2026-09-19, gate 12.C): ``_kill_group``
+    (``worker/subprocess_mgr.py:209``) reaps the converter child correctly on
+    every *exception* path — timeout, cancel, handshake failure. But a
+    supervisor (``timeout 2400``, a harness OOM reaper, Ctrl-C) kills this
+    process with a *signal*, and Python's default SIGTERM action terminates
+    immediately: no ``finally``, no ``except CancelledError``, so
+    ``_kill_group`` never runs. The child is spawned with
+    ``start_new_session=True``, so it is in its own session and the signal
+    does not reach it either — it survives, holding ~2-3 GB, and on this host
+    it was still burning CPU on OCR minutes after its parent had gone.
+
+    Cancelling the task instead routes the shutdown through the cleanup that
+    already exists and is already tested, rather than adding a second one.
+
+    Returns the names of the signals actually hooked, so a caller can log what
+    coverage it got — ``add_signal_handler`` is a no-op on platforms that do
+    not support it, and that must not be silent.
+    """
+    import contextlib
+    import signal as _signal
+
+    installed: list[str] = []
+    for name in _REAPING_SIGNALS:
+        sig = getattr(_signal, name, None)
+        if sig is None:  # pragma: no cover - POSIX always has both
+            continue
+        with contextlib.suppress(NotImplementedError, ValueError, RuntimeError):
+            loop.add_signal_handler(sig, _cancel_for_signal, task, name)
+            installed.append(name)
+    return installed
+
+
+def _cancel_for_signal(task, signame: str) -> None:
+    print(f"  {signame} received — cancelling, converter child will be reaped", flush=True)
+    task.cancel()
+
+
+async def run_with_child_reaping(files: list[Path]) -> None:
+    """``preprocess(files)``, with signals routed into cancellation.
+
+    Covers SIGTERM and SIGINT. **It cannot cover SIGKILL** — nothing in this
+    process can. A ``kill -9`` of this process still leaves the converter
+    child running; check ``pgrep -f converters_cli`` after one. Closing that
+    last gap needs ``PR_SET_PDEATHSIG`` in the child, which is a
+    ``preexec_fn`` in a threaded asyncio parent and is not worth the hazard
+    for a case a supervisor rarely produces.
+    """
+    task = asyncio.current_task()
+    loop = asyncio.get_running_loop()
+    if task is not None:
+        install_child_reaping_signal_handlers(loop, task)
+    try:
+        await preprocess(files)
+    except asyncio.CancelledError:
+        print("  aborted; converter child reaped", flush=True)
+        raise
+
+
 async def preprocess(files: list[Path]) -> None:
+    import uuid
+
+    configure_obs()
+    # RFC-046 D12 (task 12.2): one run_id per invocation of this script -- the
+    # correlation key spanning every document this batch processes.
+    run_id = str(uuid.uuid4())
     concurrency = _concurrency()
     print(
         f"Processing {len(files)} file(s) via isolated converter subprocesses "
         f"(concurrency={concurrency})...",
         flush=True,
     )
-    await _init_registry_pool()
-    sem = asyncio.Semaphore(concurrency)
-    try:
-        await asyncio.gather(*(_process_one(sem, f) for f in files))
-    finally:
-        await _close_registry_pool()
+    # Gate 12.C (2026-09-19): bind run_id for the WHOLE run, not just per
+    # document. The registry pool's own lifecycle records ("connecting to
+    # Postgres", "schema ready", "pool closed" -- registry/schema.py) are
+    # emitted outside any document's bind and reached the Arabic capture with
+    # run_id=None. They are run-scoped, not document-scoped, so this is the
+    # level they belong at; the per-document binds in _process_one merge on
+    # top of it rather than replacing it.
+    with bind_log_context(run_id=run_id):
+        await _init_registry_pool()
+        sem = asyncio.Semaphore(concurrency)
+        try:
+            await asyncio.gather(*(_process_one(sem, f, run_id) for f in files))
+        finally:
+            await _close_registry_pool()
 
 
 async def recompute_verdicts(doc_id: str | None = None) -> None:
     """Recompute verdict for one or all docs without re-ingestion (RFC-014 D3)."""
     import json
     from datetime import UTC, datetime
-    from pageindex_mcp.config import _load_settings
-    from pageindex_mcp.helpers import _tree_max_leaf_ratio, classify_verdict
-    from pageindex_mcp.storage import get_minio, save_doc_meta
+
+    from pageindex_mcp.config import CURRENT_PIPELINE_VERSION, _load_settings
+    from pageindex_mcp.helpers import (
+        HARD_FAIL_DEFECTS,
+        REASON_POLICY,
+        TreeDefect,
+        TreeGateResult,
+        _defect_from_reason_str,
+        _ReasonPolicy,
+        _tree_max_leaf_ratio,
+        classify_verdict,
+        validate_tree,
+    )
+    from pageindex_mcp.storage import get_minio
+    from pageindex_mcp.worker import _upsert_registry_row
 
     settings = _load_settings()
     mc = get_minio()
@@ -250,6 +378,9 @@ async def recompute_verdicts(doc_id: str | None = None) -> None:
     updated = 0
     errors = 0
 
+    # RFC-042 D3: this CLI has Postgres access (unlike the converter child),
+    # so route through the registry write-through path just like preprocess().
+    await _init_registry_pool()
     for did in doc_ids:
         try:
             key = f"processed/{did}.json"
@@ -283,32 +414,79 @@ async def recompute_verdicts(doc_id: str | None = None) -> None:
             if is_flat:
                 verdict = data.get("verdict", "")
                 verdict_reason = data.get("verdict_reason", "")
+                # Zone-1: reconcile the stored verdict against the CURRENT
+                # defect policy via a reconstructed TreeGateResult rather
+                # than raw-string branching.
+                #
+                # classify_verdict is deliberately NOT re-run here: a flat
+                # doc has no "structure", and the ingest-time inputs that
+                # produced its verdict (image_enrichment_ratio above all)
+                # are not persisted on the sidecar, so a re-run would
+                # invent tree metrics from the block list and silently
+                # demote legitimate `image_enrichment_promoted` PASSes
+                # (Finding 5, audit 2026-07-21).  Driving REASON_POLICY /
+                # HARD_FAIL_DEFECTS off the typed defect gives the same
+                # defect -> verdict consistency guarantee classify_verdict
+                # enforces, without fabricating the metrics it cannot
+                # reproduce.
+                stored_defect = _defect_from_reason_str(verdict_reason)
+                gate_result = TreeGateResult(
+                    ok=stored_defect == TreeDefect.OK,
+                    defect=stored_defect,
+                    all_defects=(
+                        frozenset()
+                        if stored_defect == TreeDefect.OK
+                        else frozenset({stored_defect})
+                    ),
+                )
+                if gate_result.defect in HARD_FAIL_DEFECTS:
+                    # Hard-fails are terminal in classify_verdict regardless
+                    # of the prior verdict — mirror that here.
+                    verdict = "FAIL"
+                elif (
+                    REASON_POLICY.get(gate_result.defect) is _ReasonPolicy.CAP_MARGINAL
+                    and verdict == "PASS"
+                ):
+                    # CAP_MARGINAL defects (bidi_degraded) cap a PASS at
+                    # MARGINAL and never upgrade a worse verdict.
+                    verdict = "MARGINAL"
                 mlr = data.get("max_leaf_ratio", 0.0)
             else:
                 structure = data.get("structure") or []
-                verdict, verdict_reason = classify_verdict(structure, content_class, None)
+                # Zone-8 Target 8: re-run validate_tree on stored structure
+                # and pass its result to classify_verdict instead of None.
+                # Prevents silently promoting gate-rejected docs.
+                vt_result = validate_tree(structure)
+                verdict, verdict_reason = classify_verdict(structure, content_class, vt_result)
                 _, _, mlr = _tree_max_leaf_ratio(structure)
 
-            meta = {
+            verdict_computed_at = datetime.now(UTC).isoformat()
+
+            # RFC-042 D3: route verdict + provenance through the sole
+            # write-through path (_upsert_registry_row) instead of
+            # write_verdict + save_doc_meta -- CAS-upserts Postgres, then
+            # best-effort backfills the MinIO sidecar with the winning row.
+            registry_meta = {
                 "doc_id": did,
                 "doc_name": data.get("doc_name", ""),
                 "source_url": data.get("source_url", ""),
                 "processed_at": data.get("processed_at", ""),
                 "verdict": verdict,
                 "verdict_reason": verdict_reason,
+                "pipeline_version": CURRENT_PIPELINE_VERSION,
+                "verdict_computed_at": verdict_computed_at,
                 "max_leaf_ratio": round(mlr, 4),
-                "verdict_computed_at": datetime.now(UTC).isoformat(),
             }
             if content_class:
-                meta["content_class"] = content_class
-
-            save_doc_meta(did, meta)
+                registry_meta["content_class"] = content_class
+            await _upsert_registry_row(did, content_class or None, registry_fields=registry_meta)
             updated += 1
             print(f"  {did}: {verdict} ({verdict_reason or 'clean'})", flush=True)
         except Exception as e:
             errors += 1
             print(f"  {did}: ERROR — {e}", flush=True)
 
+    await _close_registry_pool()
     print(f"\nDone: {updated} updated, {errors} errors", flush=True)
 
 
@@ -376,6 +554,6 @@ if __name__ == "__main__":
                 _orig(ctx)
 
             loop.set_exception_handler(_exception_handler)
-            runner.run(preprocess(files))
+            runner.run(run_with_child_reaping(files))
     finally:
         sys.stderr = sys.stderr._wrapped  # type: ignore[union-attr]

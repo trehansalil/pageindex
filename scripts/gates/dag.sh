@@ -17,15 +17,15 @@
 #     a tracked file.
 #
 # Needs infra: no
-# Reads thresholds from .agents/governance/verify-gates.yaml via read-yaml.sh.
+# Reads thresholds from agents/governance/verify-gates.yaml via read-yaml.sh.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LIB_DIR="$REPO_ROOT/scripts/lib"
-GATES_YAML="$REPO_ROOT/.agents/governance/verify-gates.yaml"
-DAG_YAML="$REPO_ROOT/.agents/governance/dag.yaml"
-EXEC_LOG="$REPO_ROOT/.agents/state/execution-log.jsonl"
+GATES_YAML="$REPO_ROOT/agents/governance/verify-gates.yaml"
+DAG_YAML="$REPO_ROOT/agents/governance/dag.yaml"
+EXEC_LOG="$REPO_ROOT/agents/state/execution-log.jsonl"
 
 # shellcheck source=../lib/read-yaml.sh
 source "$LIB_DIR/read-yaml.sh"

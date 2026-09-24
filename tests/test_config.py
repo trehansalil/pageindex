@@ -1,6 +1,31 @@
 # tests/test_config.py
 import importlib
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _restore_config_module_identity():
+    """Undo the identity damage of importlib.reload(pageindex_mcp.config).
+
+    Reloading a module re-executes its class statements, producing NEW class
+    objects (e.g. ``ZDRComplianceError``) distinct from the ones every other
+    already-imported module (client/indexer.py, client/remote.py,
+    client/llm.py, ...) bound via ``from ..config import ZDRComplianceError``
+    at collection time. Left unreverted, this breaks `except
+    ZDRComplianceError` / `isinstance` checks in every test that runs after
+    this file — the reload is process-global and outlives monkeypatch's env
+    rollback. Snapshot the module namespace before each test and restore it
+    afterward so downstream tests see the original, collection-time class
+    and settings objects again.
+    """
+    import pageindex_mcp.config as cfg
+
+    snapshot = dict(vars(cfg))
+    yield
+    cfg.__dict__.clear()
+    cfg.__dict__.update(snapshot)
+
 
 def test_settings_has_redis_url(monkeypatch):
     monkeypatch.setenv("REDIS_URL", "redis://myredis:6379/1")
@@ -59,3 +84,374 @@ def test_settings_llm_provider_normalized(monkeypatch):
 
     importlib.reload(cfg)
     assert cfg.settings.llm_provider == "compatible"
+
+
+def test_reset_pipeline_config_refreshes_singleton(monkeypatch):
+    """reset_pipeline_config() rebuilds the singleton and propagates to consumer modules."""
+    monkeypatch.setenv("ALLOW_AGPL_FALLBACK", "false")
+    from pageindex_mcp.config import PipelineConfig, reset_pipeline_config
+
+    reset_pipeline_config()
+    from pageindex_mcp.config import pipeline_config
+
+    assert isinstance(pipeline_config, PipelineConfig)
+    assert pipeline_config.allow_agpl_fallback is False
+
+    # Verify consumer modules received the refreshed singleton.
+    import sys
+
+    for mod_name in (
+        "pageindex_mcp.converters.pipeline",
+        "pageindex_mcp.converters.pictures",
+        "pageindex_mcp.client.recovery",
+        "pageindex_mcp.worker.subprocess_mgr",
+    ):
+        mod = sys.modules.get(mod_name)
+        if mod is not None and hasattr(mod, "pipeline_config"):
+            assert getattr(mod, "pipeline_config") is pipeline_config, (
+                f"{mod_name}.pipeline_config is stale after reset"
+            )
+
+    # Flip back and verify refresh
+    monkeypatch.setenv("ALLOW_AGPL_FALLBACK", "true")
+    reset_pipeline_config()
+    from pageindex_mcp.config import pipeline_config as refreshed
+
+    assert refreshed.allow_agpl_fallback is True
+
+
+# ---------------------------------------------------------------------------
+# Zone-5 Config Layering: reset_pipeline_config re-reads all 6 formerly-frozen
+# fields from os.environ AND refreshes the backward-compat module-level aliases.
+# ---------------------------------------------------------------------------
+
+_FORMERLY_FROZEN_FIELDS = {
+    # (env_var, pipeline_config_attr, module_alias_name, non_default_env_value, expected_python_value)
+    "PDF_INSPECTOR_PRECLASSIFY": (
+        "pdf_inspector_preclassify",
+        "PDF_INSPECTOR_PRECLASSIFY",
+        "1",
+        True,
+    ),
+    "REMOTE_MD_RENORMALIZE": ("remote_md_renormalize", "REMOTE_MD_RENORMALIZE", "0", False),
+    "ALLOW_AGPL_FALLBACK": ("allow_agpl_fallback", "ALLOW_AGPL_FALLBACK", "0", False),
+    "OCR_ESCALATION_GARBLE": ("ocr_escalation_garble", "OCR_ESCALATION_GARBLE", "0", False),
+    "OCR_ESCALATION_PER_PICTURE": (
+        "ocr_escalation_per_picture",
+        "OCR_ESCALATION_PER_PICTURE",
+        "0",
+        False,
+    ),
+    "IMAGE_DOMINANT_OCR_ESCALATION_ENABLED": (
+        "image_dominant_ocr_escalation_enabled",
+        "IMAGE_DOMINANT_OCR_ESCALATION_ENABLED",
+        "0",
+        False,
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "env_var",
+    list(_FORMERLY_FROZEN_FIELDS.keys()),
+    ids=list(_FORMERLY_FROZEN_FIELDS.keys()),
+)
+def test_reset_pipeline_config_rereads_formerly_frozen_field(monkeypatch, env_var):
+    """Contract: reset_pipeline_config() re-reads os.environ for each of the
+    6 formerly-frozen fields and also updates the module-level backward-compat
+    alias to match."""
+    attr, alias_name, env_value, expected = _FORMERLY_FROZEN_FIELDS[env_var]
+
+    monkeypatch.setenv(env_var, env_value)
+
+    import pageindex_mcp.config as cfg_mod
+
+    cfg_mod.reset_pipeline_config()
+
+    # pipeline_config attribute must reflect the env override
+    assert getattr(cfg_mod.pipeline_config, attr) is expected, (
+        f"pipeline_config.{attr} should be {expected} after setting {env_var}={env_value}"
+    )
+
+    # module-level backward-compat alias must also reflect the env override
+    assert getattr(cfg_mod, alias_name) is expected, (
+        f"config.{alias_name} (backward-compat alias) should be {expected} "
+        f"after reset_pipeline_config() with {env_var}={env_value}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Zone-5: PipelineConfig.from_env reads garble_digit_floor from env
+# ---------------------------------------------------------------------------
+
+
+def test_pipeline_config_from_env_reads_garble_digit_floor(monkeypatch):
+    """Contract: PipelineConfig.from_env() reads GARBLE_DIGIT_FLOOR from
+    os.environ (not hardcoded 500)."""
+    monkeypatch.setenv("GARBLE_DIGIT_FLOOR", "1000")
+
+    from pageindex_mcp.config import PipelineConfig
+
+    pc = PipelineConfig.from_env()
+    assert pc.garble_digit_floor == 1000
+
+
+# ---------------------------------------------------------------------------
+# Zone-5: GarbleConfig.from_config threads garble_digit_floor from PipelineConfig
+# ---------------------------------------------------------------------------
+
+
+def test_garble_config_from_config_threads_garble_digit_floor(monkeypatch):
+    """Regression: GarbleConfig.from_config(pipeline_config) must thread
+    garble_digit_floor from PipelineConfig rather than hardcoding the default."""
+    monkeypatch.setenv("GARBLE_DIGIT_FLOOR", "1000")
+
+    import pageindex_mcp.config as cfg_mod
+
+    cfg_mod.reset_pipeline_config()
+
+    from pageindex_mcp.helpers.garble import GarbleConfig
+
+    gc = GarbleConfig.from_config(cfg_mod.pipeline_config)
+    assert gc.garble_digit_floor == 1000, (
+        "GarbleConfig.garble_digit_floor should be sourced from PipelineConfig, not hardcoded"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Zone-5: effective_config_snapshot includes garble_digit_floor
+# ---------------------------------------------------------------------------
+
+
+def test_effective_config_snapshot_includes_garble_digit_floor(monkeypatch):
+    """Contract: effective_config_snapshot() includes garble_digit_floor in the
+    sidecar output and reflects the live pipeline_config value."""
+    monkeypatch.setenv("GARBLE_DIGIT_FLOOR", "777")
+
+    import pageindex_mcp.config as cfg_mod
+
+    cfg_mod.reset_pipeline_config()
+
+    snap = cfg_mod.effective_config_snapshot()
+    assert "garble_digit_floor" in snap, (
+        "garble_digit_floor must appear in effective_config_snapshot output"
+    )
+    assert snap["garble_digit_floor"] == 777, (
+        "garble_digit_floor in snapshot should reflect live pipeline_config value (777), "
+        f"got {snap['garble_digit_floor']}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Zone-5: pdf_markdown_converters reads from pipeline_config (integration)
+# ---------------------------------------------------------------------------
+
+
+def test_pdf_markdown_converters_consistent_with_pipeline_config(monkeypatch):
+    """Integration: pdf_markdown_converters() reads pdf_converter and
+    allow_agpl_fallback from the same source (pipeline_config). When
+    PDF_CONVERTER=pymupdf4llm and ALLOW_AGPL_FALLBACK=0, the chain must
+    NOT contain a pymupdf4llm entry (AGPL is blocked)."""
+    import importlib.util
+    from unittest.mock import patch
+
+    monkeypatch.setenv("PDF_CONVERTER", "pymupdf4llm")
+    monkeypatch.setenv("ALLOW_AGPL_FALLBACK", "0")
+
+    import pageindex_mcp.config as cfg_mod
+
+    cfg_mod.reset_pipeline_config()
+
+    assert cfg_mod.pipeline_config.pdf_converter == "pymupdf4llm"
+    assert cfg_mod.pipeline_config.allow_agpl_fallback is False
+
+    # docling not installed => RuntimeError because AGPL blocked
+    with patch.object(importlib.util, "find_spec", return_value=None):
+        from pageindex_mcp.converters.pipeline import pdf_markdown_converters
+
+        with pytest.raises(RuntimeError, match="ALLOW_AGPL_FALLBACK=false"):
+            pdf_markdown_converters()
+
+    # docling installed => chain should only have docling (no pymupdf4llm since AGPL blocked)
+    with patch.object(importlib.util, "find_spec", return_value=True):
+        chain = pdf_markdown_converters()
+        names = [n for n, _, _ in chain]
+        assert "pymupdf4llm" not in names, (
+            "pymupdf4llm must not appear in chain when ALLOW_AGPL_FALLBACK=false"
+        )
+        assert "docling" in names
+
+
+# ---------------------------------------------------------------------------
+# Zone (converter-chain fallback + AGPL gating): new PipelineConfig flags
+#   AGPL_STRUCTURAL_FALLBACK_ENABLED  -> agpl_structural_fallback_enabled
+#   REMOTE_VERSION_ENFORCE            -> remote_version_enforce
+# ---------------------------------------------------------------------------
+
+
+def test_agpl_structural_fallback_enabled_defaults_true(monkeypatch):
+    """Contract: unset AGPL_STRUCTURAL_FALLBACK_ENABLED defaults to True, which
+    preserves the historical behavior (structural failures always walked the
+    chain, AGPL next entry included)."""
+    from pageindex_mcp.config import PipelineConfig
+
+    monkeypatch.delenv("AGPL_STRUCTURAL_FALLBACK_ENABLED", raising=False)
+    assert PipelineConfig.from_env().agpl_structural_fallback_enabled is True
+
+
+def test_remote_version_enforce_defaults_false(monkeypatch):
+    """Contract: unset REMOTE_VERSION_ENFORCE defaults to False, keeping the
+    remote pipeline_version skew check warn-only."""
+    from pageindex_mcp.config import PipelineConfig
+
+    monkeypatch.delenv("REMOTE_VERSION_ENFORCE", raising=False)
+    assert PipelineConfig.from_env().remote_version_enforce is False
+
+
+def test_agpl_structural_fallback_enabled_reads_env(monkeypatch):
+    """Contract: the flag is operator-settable from the environment."""
+    from pageindex_mcp.config import PipelineConfig
+
+    failures = []
+    for raw, expected in [("false", False), ("0", False), ("true", True)]:
+        monkeypatch.setenv("AGPL_STRUCTURAL_FALLBACK_ENABLED", raw)
+        got = PipelineConfig.from_env().agpl_structural_fallback_enabled
+        if got is not expected:
+            failures.append(f"{raw!r}: expected {expected}, got {got!r}")
+    assert not failures, failures
+
+
+def test_remote_version_enforce_reads_env(monkeypatch):
+    """Contract: the flag is operator-settable from the environment."""
+    from pageindex_mcp.config import PipelineConfig
+
+    failures = []
+    for raw, expected in [("true", True), ("1", True), ("false", False)]:
+        monkeypatch.setenv("REMOTE_VERSION_ENFORCE", raw)
+        got = PipelineConfig.from_env().remote_version_enforce
+        if got is not expected:
+            failures.append(f"{raw!r}: expected {expected}, got {got!r}")
+    assert not failures, failures
+
+
+def test_new_zone_flags_are_declared_fields():
+    """Both flags are real declared fields on the frozen PipelineConfig, not
+    ad-hoc attributes -- production reads them via dataclasses.replace()."""
+    import dataclasses
+
+    from pageindex_mcp.config import PipelineConfig
+
+    names = {f.name for f in dataclasses.fields(PipelineConfig)}
+    assert "agpl_structural_fallback_enabled" in names
+    assert "remote_version_enforce" in names
+
+
+# ---------------------------------------------------------------------------
+# RFC-046 task 1.7 (adopted from RFC-042 task 4.2) -- config consistency
+# ---------------------------------------------------------------------------
+
+
+def _pipeline_config_bool_env_map() -> dict[str, str]:
+    """Map every ``bool`` field of PipelineConfig to the env var it reads.
+
+    Derived from the AST of ``PipelineConfig.from_env`` rather than hand-listed,
+    so a boolean field added later is covered by the property test below without
+    anyone remembering to extend a literal. That is the point: the parse
+    asymmetry this test exists to catch survived precisely because each new flag
+    was written by copying a neighbour, and nothing compared them.
+    """
+    import ast
+    import dataclasses
+    import inspect
+    import pathlib
+
+    from pageindex_mcp.config import PipelineConfig
+
+    tree = ast.parse(pathlib.Path(inspect.getfile(PipelineConfig)).read_text(encoding="utf-8"))
+    from_env = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "from_env"
+    )
+    ctor = next(
+        n
+        for n in ast.walk(from_env)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "cls"
+    )
+    bool_fields = {f.name for f in dataclasses.fields(PipelineConfig) if f.type in ("bool", bool)}
+
+    mapping: dict[str, str] = {}
+    for kw in ctor.keywords:
+        if kw.arg not in bool_fields:
+            continue
+        env_names = [
+            n.value
+            for n in ast.walk(kw.value)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value.isupper()
+        ]
+        if env_names:
+            # First literal is the field's own var; later ones are fallbacks
+            # (ocr_escalation_low_content falls back to OCR_ESCALATION_GARBLE).
+            mapping[kw.arg] = env_names[0]
+    return mapping
+
+
+_BOOL_ENV_MAP = _pipeline_config_bool_env_map()
+
+#: All three divergences (PRE_GARBLE_FORCE_OCR_ENABLED, GARBLE_SHORT_TEXT_DEFAULT,
+#: GARBLE_FLAT_MARKDOWN_NORMALIZE) fixed by RFC-046 task 3.5.
+_KNOWN_PARSE_DIVERGENCES: frozenset[str] = frozenset()
+
+
+def test_every_bool_field_is_covered_by_the_parse_property():
+    """Guard the guard: no boolean field may escape the property test below.
+
+    If ``from_env`` stops passing a boolean field through a literal env-var
+    name -- or a new field is added by another route -- the parametrisation
+    would silently shrink and the property would stop being a property.
+    """
+    import dataclasses
+
+    from pageindex_mcp.config import PipelineConfig
+
+    bool_fields = {f.name for f in dataclasses.fields(PipelineConfig) if f.type in ("bool", bool)}
+    uncovered = bool_fields - set(_BOOL_ENV_MAP)
+    assert not uncovered, (
+        "R9/D9 (RFC-046): these PipelineConfig boolean fields are not reachable "
+        f"from a literal env var in from_env, so their parse is unguarded: {sorted(uncovered)}"
+    )
+
+
+def test_bool_fields_share_one_parse_predicate(monkeypatch):
+    """Property (RFC-042 4.2 / RFC-046 R9): every PipelineConfig boolean
+    answers to the same spellings.
+
+    An operator who writes ``FLAG=1`` reasonably expects the flag on. Where a
+    field's default is ``true``, a divergent parse is worse than inert -- it
+    reads ``1`` as falsy and *disables* the feature the operator was enabling.
+
+    Table-driven over every boolean field rather than parametrised: the
+    parse predicate is one shared function, so ~28 collected cases bought
+    nothing a single assertion listing all offenders does not.
+    """
+    from pageindex_mcp.config import PipelineConfig
+
+    truthy = ("1", "true", "TRUE", "True", "yes", " true ")
+    falsy = ("0", "false", "no", "")
+
+    divergent: list[str] = []
+    for field, var in sorted(_BOOL_ENV_MAP.items()):
+        if field in _KNOWN_PARSE_DIVERGENCES:
+            continue
+        for raw in truthy:
+            monkeypatch.setenv(var, raw)
+            if getattr(PipelineConfig.from_env(), field) is not True:
+                divergent.append(f"{field}: {var}={raw!r} -> False, expected True")
+        for raw in falsy:
+            monkeypatch.setenv(var, raw)
+            if getattr(PipelineConfig.from_env(), field) is not False:
+                divergent.append(f"{field}: {var}={raw!r} -> True, expected False")
+        monkeypatch.delenv(var, raising=False)
+
+    assert not divergent, (
+        "R9/D8 (RFC-046): these PipelineConfig booleans do not use the shared "
+        f"`_envbool` predicate. Divergences: {divergent}"
+    )

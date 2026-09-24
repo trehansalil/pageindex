@@ -1,0 +1,2988 @@
+[
+  {
+    "filename": "FEDERAL LAW NO (3) OF 1987 ON ISSUANCE OF THE PENAL CODE  - Copy.pdf",
+    "detected_langs": [
+      "en"
+    ],
+    "lang_source": "text_layer",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "text_based",
+      "page_count": 77,
+      "pages_needing_ocr": [],
+      "ocr_page_count": 0,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 1.0,
+      "processing_time_ms": 11
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "FEDERAL LAW NO (3) OF 1987\nON ISSUANCE OF THE PENAL CODE\n\nWe, Zayed Bin Sultan, President of the State of the United Arab Emirates,\nHaving taken cognizance of the provisional constitution,\nFederal Law No. (1) of 1972 concerning the functions of the Ministers, the powers of Ministries\nand the laws amending it,\nFederal Law No. (9) of 1976 concerning juvenile delinquents and homeless,\n\nAnd in accordance with the presentations made by the Minister of Justice, approved by the\nCouncil of Ministers and the Federal National Council and ratified by the Supreme Council of the\nFederation,\n\nHave promulgated the following Law:\n\nArticle (1)\n\nThe law attached herewith on crimes and penalties shall be enforced, and any provision\ncontrary\nto its provisions shall be repealed.\n\nArticle (2)\n\nMinisters and competent authorities in the Emirates shall, each within his jurisdiction, enforce\nthis\nlaw.\n\nArticle (3)\n\nThis law shall be published in the official gazette, and shall take effect three months after the\ndate\nof its publication.\n\nZayed Bin Sultan Al Nahyan\nPresident of the United Arab Emirates\nissued by us at the Presidential Palace in Abu Dhabi.\n\nDated:17/4/1408 A.H.\n\nCorresp. to: 8/12/1987 A.D.",
+        "char_count": 1197,
+        "elapsed_s": 0.883,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1197,
+          "word_count": 191,
+          "alpha_char_count": 920,
+          "digit_ratio": 0.0267,
+          "nonsense_ratio": 0.0326,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.21
+        }
+      },
+      {
+        "page_index": 1,
+        "text": "VOLUME ONE\n\nGENERAL PROVISIONS\n\nPART ONE\n\nINTRODUCTORY PROVISIONS\n\nArticle (1)\n\nProvisions of the Islamic Law shall apply to the crimes of doctrinal punishment, punitive\npunishment and blood money. Crimes and chastisement punishments shall be determined in\naccordance with the provisions of this law and other penal codes.\n\nArticle (2)\n\nNo one shall be condemned for a crime committed by another, and the accused shall be\npresumed innocent until he is proved guilty.\n\nArticle (3)\n\nProvisions of Book One of this law shall apply to crimes provided for in other penal codes, if\nthere\n\nis no provision to the contrary.\n\nArticle (4)\n\nNo punitive measure shall be imposed except in cases and under conditions provided for by the\nlaw. Provisions related to punishments shall apply to punitive measures if there is no provision\nto\n\nthe contrary.\n\nArticle (5)\n\nThe following shall ipso jure be considered a public official:\n\n1. Persons entrusted with the public authority and employees working in ministries and\ngovernmental departments.\n\n2. Members of the Armed Forces.\n\n3. Chairmen and members of legislative, consultative and municipal councils.\n\n4. Whoever is delegated by any of the public authorities to perform a specific assignment within\nthe limits of the work entrusted to him.\n\n5. Chairmen and members of boards of directors, managers and all other employees working in\nassociations and public corporations.\n\n6. Chairmen and members of boards of directors and all other employees working in\nassociations\n\nand public welfare institutions.\n\nWhoever is not included in the categories stated in the preceding clauses and performs work\nconnected with public service in accordance with instructions issued to him from a public official\nhaving the authority to give such an instruction according to prescribed laws or regulations,\nconcerning the work assigned to him, shall be considered ipso jure to be entrusted with a public\nservice.\n\nArticle (6)\n\nIn application of provisions of the preceding Article, it shall be even if the job, work or service is\npermanent or temporary, with or without pay, voluntary or compulsory.",
+        "char_count": 2119,
+        "elapsed_s": 1.134,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 2119,
+          "word_count": 333,
+          "alpha_char_count": 1706,
+          "digit_ratio": 0.0057,
+          "nonsense_ratio": 0.0307,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.29
+        }
+      },
+      {
+        "page_index": 2,
+        "text": "Termination of a job or service shall not bar the application of provisions of the preceding Article\nif\n\nthe crime occurs within the course of employment.\n\nArticle (7)\n\nIn this law, unless the context otherwise requires, \"Government\" shall include the Federal\nGovernment and the Governments of the Union Emirates.\n\nArticle (8)\n\nProvisions contained in this law concerning crimes against the President of the State shall also\napply to the crimes committed against the Vice-president of the State and members of the\nSupreme\n\nCouncil of the Federation.\n\nArticle (9)\n\nThe following shall, pursuant to this law, be considered means of publicity:\n\n1. By saying or shouting publicly by any mechanical means in a public gathering, in a public\nroad\n\nor in a permissible or frequented place or if it is announced by any other means.\n\n2. By actions, signals or gestures if they take place in any of the aforementioned places, or if\nthey\n\nare transmitted to any person in such places by any mechanical means or by any other means.\n3. By exhibiting writing, drawings, pictures, films, symbols and other means of expression in any\nof the aforementioned places, by distributing them indiscriminately, by selling them to people, or\nby offering them for sale in any place.\n\nArticle (10)\n\nUnless the law otherwise provides, periods and times in this law shall be computed according to\nthe Gregorian calendar.\n\nArticle (11)\n\nIn no case shall the provisions of this law prejudice the rights of the parties to a law-suit or\nothers\n\nin reimbursement, damages, expenses or any other rights.\n\nPART TWO\n\nSCOPE OF APPLICATION OF THE PENAL CODE\n\nCHAPTER |\n\nVALIDITY OF LAW AS TO PLACE\n\nArticle (12)\n\nAccording to the effective law, a crime shall be punishable at the time of its commitment, and\nregard shall be had to its determination by the time at which the acts have been carried out,\nregardless of the time at which the result has been realized.\n\nArticle (13)\n\nIf a law more favorable to the accused is enacted after the occurrence of a crime and before a\nfinal\n\njudgment is awarded therein, it shall be applied exclusively.\n\nIf a law has been issued after rendering a final judgment, making the act or omission committed\nby\n\na convict non punishable, the judgment shall not be executed and its criminal effects shall cease\nto\n\nexist, unless the new law provides otherwise.\n\nIf a new law provides only for extenuation of a penalty, the court that rendered the final\njudgment\n\nmay, at the request of the public prosecution or the convict, review the sentence in light of the\nprovisions of the new law.",
+        "char_count": 2578,
+        "elapsed_s": 1.226,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 2578,
+          "word_count": 437,
+          "alpha_char_count": 2035,
+          "digit_ratio": 0.0054,
+          "nonsense_ratio": 0.031,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 4.83
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_langs": [
+        "en"
+      ],
+      "source": "text_layer",
+      "text_layer_chars": 5974,
+      "arabic_chars": 0,
+      "latin_chars": 4662,
+      "arabic_ratio": 0.0,
+      "has_german_markers": false
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "Federal Decree-Law No. (47) of 2021 - Copy.pdf",
+    "detected_langs": [
+      "en"
+    ],
+    "lang_source": "text_layer",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "text_based",
+      "page_count": 13,
+      "pages_needing_ocr": [],
+      "ocr_page_count": 0,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 1.0,
+      "processing_time_ms": 1
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "Khalifa bin Zayed Al Nahyan\nPresident of the United Arab Emirates\n\nFederal Decree-Law No. (47) of 2021\nRegarding the Unified General Rules of Labor in the United\n\nArab Emirates\n\nWe, Khalifa bin Zayed Al Nahyan - President of the United\n\nArab Emirates:\n\n— After reviewing the Constitution;\n\n— Federal Law No. (1) of 1972 regarding the competencies of\nministries and powers of ministers and its amendments;\n\n— Federal Law No. (7) of 1999 regarding the pensions and social\ninsurances and its amendments;\n\n— Federal Decree-Law No. (11) of 2008 concerning human\nresources in the federal government and its amendments;\n\n— Federal Decree-Law No. (33) of 2021 on the regulation of\nlabor relations; and\n\n— Based on what was presented by the Minister of Human\n\nResources and Emiratization and the approval of the Cabinet;\n\nWe issued the following Decree-Law:\n\nArticle (1)\n\nThis is not an official translation\n\nFederal Decree-Law Regarding the Unified General Rules of Labor in the United Arab Emirates |1",
+        "char_count": 994,
+        "elapsed_s": 0.762,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 994,
+          "word_count": 161,
+          "alpha_char_count": 750,
+          "digit_ratio": 0.0302,
+          "nonsense_ratio": 0.0362,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.09
+        }
+      },
+      {
+        "page_index": 1,
+        "text": "Definitions\nIn applying the provisions hereof, the following words and\nexpressions shall have the meanings assigned to each of them,\nunless the context otherwise requires:\nState: United Arab Emirates\nLaw: The law regulating human resources in the federal\ngovernment sector or labor relations in the private sector in the\nstate, their executive regulations and the resolutions issued for\ntheir implementation.\nEstablishment: Every economic, technical, industrial,\ncommercial unit or other categories approved in the state, which\naim at producing goods, marketing them or providing services,\nare subject to the provisions hereof and licensed by the\nconcerned entities.\nEmployer: The federal government entity or any of the private\nsector establishments in the state, as the case may be.\nEmployee / Laborer: Every natural person who holds jobs in the\nfederal government entities or from the laborers working in one\nof the establishments licensed in the private sector in the state.\nEmployment Contract: Every agreement concluded by the\nemployer and the employee or laborer, in which the latter is\ncommitted to work for the employer and under its supervision\nand direction, in return for a wage the employer is obliged to\n\npay, according to the contact forms defined by the law.\n\nThis is not an official translation\n\nFederal Decree-Law Regarding the Unified General Rules of Labor in the United Arab Emirates | 2",
+        "char_count": 1408,
+        "elapsed_s": 0.856,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1408,
+          "word_count": 220,
+          "alpha_char_count": 1157,
+          "digit_ratio": 0.0007,
+          "nonsense_ratio": 0.0199,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.39
+        }
+      },
+      {
+        "page_index": 2,
+        "text": "Basic wage: The wage stipulated in the employment contract,\nwhich the employee or laborer receives in return for his work\nunder the employment contract, on a monthly, weekly, daily,\nhourly basis, or per piece and it shall not include any allowances,\nbonuses or other benefits in-kind.\n\nWage: Basic wage plus the allowances, cash bonuses and\n\nbenefits in-kind prescribed for the employee or laborer.\n\nArticle (2)\nObjectives of Decree-Law\n\nThis Decree-Law is intended for the following:\n\n1. Setting and unifying the general rules of labor for all job\noccupants and laborers in the state;\n\n2. Enhancing the effectiveness, attractiveness and sustainability\nof the labor market through ensuring the protection of the\nparties to the relation and its developments;\n\n3. Defining the rights of all employees and laborers in the state\nin a balanced manner; and\n\n4. Creating balance and integration with respect to the\nattractiveness and efficiency of work environment between\nthe public and private sectors.\n\nArticle (3)\n\nScope of application\n\nThis is not an official translation\n\nFederal Decree-Law Regarding the Unified General Rules of Labor in the United Arab Emirates |3",
+        "char_count": 1165,
+        "elapsed_s": 0.712,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1165,
+          "word_count": 181,
+          "alpha_char_count": 934,
+          "digit_ratio": 0.006,
+          "nonsense_ratio": 0.03,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.38
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_langs": [
+        "en"
+      ],
+      "source": "text_layer",
+      "text_layer_chars": 3677,
+      "arabic_chars": 0,
+      "latin_chars": 2841,
+      "arabic_ratio": 0.0,
+      "has_german_markers": false
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "GHV-TKV-Tarif.pdf",
+    "detected_langs": [
+      "de",
+      "en"
+    ],
+    "lang_source": "filename",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "text_based",
+      "page_count": 1,
+      "pages_needing_ocr": [],
+      "ocr_page_count": 0,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 1.0,
+      "processing_time_ms": 1
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "Tarif 1.1.2025 - Neugeschaft\n\nGHV Versicherung GHV\n\nTieroperations- und Tierkrankenversicherung Monatsbeitrage brutto VERSICHERUNG\ninklusive Versicherungsteuer (19 %)\nSelbst- | Eintritts- OP-Versicherung KV inkl. OP Laufzeit ein Jahr\nbehalt alter Basis | Komfort | Premium Premium Rundungsdifferenzen vorbehalten\n0€ 31,15€]| 53,00€| 75,02 € 553,01 €\n250€| Obis [ 27,21€| 45,68€| 67,38€ 487,94 €\n500 € 16 23,24 €}| 37,89€| 60,70€ 422,83 €\n1.000 € 19,63 €] 30,68€| 51,67€ 253,37 € | nur Bestand |\nTarifgemaRe Beitragsanpassung ab Alter 17: drei Prozent jahrlich\nVersicherungssumme: 7.500 € 15.000 € 50.000 € 50.000 €\nwe\nSchulterhohe bis unter 45 cm ab 45 cm\nSelbst- | Eintritts- OP-Versicherung KV inkl. OP OP-Versicherung KV inkl. OP\nbehalt alter Basis _| Komfort | Premium| Basis_| Komfort | Premium] Basis Komfort | Premium | Basis Komfort | Premium\n0 15,84 € | 22,08€ | 26,24€ 54,78 €| 65,81€]| 87,51€}| 17,34€| 2485€)| 29,02€| 63,94€| 73,15€| 95,15€\n1 15,84 € | 22,08€ | 26,24€ 54,78 €| 65,81€] 87,51€| 17,34€| 2485€)| 29,02€| 63,94€| 73,15€| 95,15€\n2 15,84 € | 22,08€ | 26,24€ 54,78 €| 65,81€] 87,51€| 17,34€| 2485€)| 29,02€| 63,94€| 73,15€| 95,15€\nohne 3 18,92€ | 2485€ | 29,02€ 63,94 €| 73,15€]| 95,15€} 20,66€| 26,24€) 30,41€| 75,40€}] 82,31 €| 104,67€\n4 18,92€ | 2485€ | 29,02€ 63,94 €| 73,15€]| 95,15€} 20,66€| 26,24€) 30,41€| 7540€}] 82,31€| 104,67€\n5 60 € | 33,18 € | 37,35€ AZE 80,50 €| 102,76€ STE 34,57 €| 38,73 € 40 €| 100,64 €} 123,76 €\n6 STE | 34,83 € | 39,21 € ATE 84,52 €| 107,90€ TIE 36,29 €| 40,67€ 522 €| 105,68 €} 129,95 €\n7 AZE | 36,57€ | 41,16€ BT €E 88,73 €| 113,30 € BZE 38,11 €| 42,70€ 539 €| 110,97 €} 136,45 €\n0 13,20€ | 17,65€ | 20,99€ 43,83 €] 52,65€| 70,01€] 13,75€| 19,88€| 23,20€) 51,15€| 5851€| 76,12€\n1 13,20€ | 17,65€ | 20,99€ 43,83 €] 52,65€| 70,01€] 13,75€| 19,88€| 23,20€) 51,15€| 5851€| 76,12€\n2 13,20€ | 17,65€ | 20,99€ 43,83 €] 52,65€| 70,01€] 13,75€| 19,88€| 23,20€) 51,15€| 5851€| 76,12€\n20% 3 15,53 € | 19,88 € | 23,20€ 51,15€| 58,51€] 76,12€} 16,52€| 20,99€}| 2432€| 60,33€] 65,85€| 83,74€\n4 15,53 € | 19,88 € | 23,20€ 51,15€| 58,51€] 76,12€} 16,52€| 20,99€) 2432€| 60,33€] 65,85€| 83,74€\n5 OSE | 26,54€ | 29,88 € ATE 64,39 €] 82,21€ AGE 27,65 €} 30,98 € 704 €| 80,51 €} 99,00 €\n6 ATE | 27,86 € | 31,36€ AU E 67,61 €| 86,31€ 4 € 29,03 €] 32,52 € 708 €| 84,54 €} 103,96 €\n\nN\nay\n\n29,27 € | 32,93 € AT € 70,99 €| 90,64 € 86 € 30,49 €]| 34,16€ 770 €| 88,77 €} 109,16 €\n\nTarifgemaRe Beitragsanpassung nach Uberschreiten der o. g. Altersklassen: fiinf Prozent jahrlich\n\nvad Zahlungsweise:\nSelbst- | Eintritts- OP-Versicherung Selbst- | Eintritts- KV inkl. OP\nbehalt alter Basis | Komfort | Premium} behalt alter Basis Komfort | Premium Umrechnung\n0 912€| 1443€] 16,08€ 0 27,04€] 32,14€| 44,05€ Monatsbeitrag\n1 912€| 1443€] 16,08€ 1 27,04€] 32,14€| 44,05€ 1: x 12\n2 912€| 1443€] 16,08€ 2 27,04€} 32,14€| 44,05€ Ye: x6\n20% 3 11,03 €] 17,92€| 19,79€} 20% 3 27,04€] 32,14€| 44,05€ Va: x3\n4 11,03 €] 17,92€| 19,79€ 4 27,04€] 32,14€| 4405€\n5 ACE 23,24 €| 25,10 € 5 ZOE 42,35 €| 54,25€\n6 ACE 23,24 €| 25,10 € 6 25€E 42,35 €| 54,25€\n7 ACE 23,24 €} 25,10 € 7 25€E 42,35 €| 54,25€\n8 BSE ASE BOE\n9 BSE ASE BOE\n0 10,49€] 16,87€| 18,98 € 0 32,49 €] 38,60€} 52,89€\n1 10,49€] 16,87€| 18,98 € 1 32,49 €] 38,60€} 52,89€\n2 10,49€] 16,87€| 18,98 € 2 32,49 €] 38,60€} 52,89€\n10% 3 13,27 €| 21,51€| 23,77€| 10% 3 32,49 €] 38,60€} 52,89€\n4 13,27 €| 21,51€| 23,77€ 4 32,49€] 38,60€}| 52,89€\n5 BIE 27,88 €| 30,14 € 5 TIE 50,85€]| 65,14€\n6 BIE 27,88 €| 30,14 € 6 TIE 50,85€]| 65,14€\n7 BIE 27,88 €| 30,14 € 7 TIE 50,85€| 65,14€ nur fiir\n8 BOE TBE 21 € interne Zwecke\n9 BSE 9B € 21 € Stand: 1.25\nTarifgemaRe Beitragsanpassung nach Uberschreiten der o. g. Altersklassen: fiinf Prozent jahrlich",
+        "char_count": 3707,
+        "elapsed_s": 2.034,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 3707,
+          "word_count": 674,
+          "alpha_char_count": 969,
+          "digit_ratio": 0.3323,
+          "nonsense_ratio": 0.0173,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 4.49
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_lang": null,
+      "source": "garbled_text_layer",
+      "text_layer_chars": 3798,
+      "alpha_ratio": 0.2272,
+      "junk_ratio": 0.4047
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "Haftpflicht-Allgemeine-Bedingungen.pdf.pdf",
+    "detected_langs": [
+      "de",
+      "en"
+    ],
+    "lang_source": "text_layer",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "text_based",
+      "page_count": 16,
+      "pages_needing_ocr": [],
+      "ocr_page_count": 0,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 1.0,
+      "processing_time_ms": 3
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "GHV __Haftpflichtversicherung\n\nVERSICHERUNG\n\nAllgemeine Versicherungsbedingungen\nim Uberblick\n\nAllgemeine Versicherungsbedingungen\nHaftpflichtversicherung (AHB) Seite 2\n\nGHV | Der Versicherer fur Land & Leute\n\nHaftpflicht Allgemeine Bedingungen 2023-001\n\nGemeinnttzige Haftpflicht-Versicherungsanstalt\nAnstalt des offentlichen Rechts\n\nHausanschrift: Kontakt:\nGHV VERSICHERUNG 06151 3603-0 Glaubiger-ID: DE95ZZZOOOOONNSS5\nBartningstraBe 59 info@ghv-versicherung.de USt-ID-Nr.: DEN4107069\n\n64289 Darmstadt www.ghv-versicherung.de Vers.St-Nr.: 807/V90807010692",
+        "char_count": 557,
+        "elapsed_s": 0.538,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 557,
+          "word_count": 49,
+          "alpha_char_count": 424,
+          "digit_ratio": 0.088,
+          "nonsense_ratio": 0.0377,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 10.22
+        }
+      },
+      {
+        "page_index": 1,
+        "text": "Allgemeine Versicherungsbedingungen\nHaftpflichtversicherung (AHB)\n\nUmfang des Versicherungsschutzes\n\nNOORWN SH\n\nGegenstand der Versicherung, Versicherungsfall\nVermdgensschaden, Abhandenkommen von Sachen\nVersichertes Risiko\n\nVorsorgeversicherung\n\nLeistungen der Versicherung\n\nBegrenzung der Leistungen\n\nAusschlusse\n\nBeginn des Versicherungsschutzes / Beitragszahlung\n\n8.\n9.\n10.\n11.\n12.\n13.\n14.\n15.\n\nBeginn des Versicherungsschutzes\n\nZahlung und Folgen verspateter Zahlung / erster oder einmaliger Beitrag\nZahlung und Folgen verspateter Zahlung / Folgebeitrag\n\nRechtzeitigkeit der Zahlung bei Lastschriftermachtigung\n\nTeilzahlung und Folgen bei verspateter Zahlung\n\nBeitragsregulierung\n\nBeitrag bei vorzeitiger Vertragsbeendigung\n\nBeitragsangleichung\n\nDauer und Ende des Vertrages / Kundigung\n\n16.\n17.\n18.\n19.\n\n20.\n\n21.\n\n22.\n\nDauer und Ende des Vertrages\n\nWeofall des versicherten Interesses\n\nKUndigung nach Beitragsangleichung\n\nKUndigung nach Versicherungsfall\n\nKUndigung nach VerauBerung versicherter Unternehmen\n\nKUndigung nach Risikoerhéhung aufgrund Anderung oder Erlass von\nRechtsvorschriften\n\nMehrfachversicherung\n\nObliegenheiten des Versicherungsnehmers\n\n23.\n24.\n25.\n26.\n\nVorvertragliche Anzeigepflichten des Versicherungsnehmers\nObliegenheiten vor Eintritt des Versicherungsfalles\nObliegenheiten nach Eintritt des Versicherungsfalles\nRechtsfolgen bei Verletzung von Obliegenheiten\n\nWeitere Bestimmungen\n\n27.\n28.\n29.\n30.\n\n31.\n\n32.\n\nMitversicherte Personen\n\nAbtretungsverbot\n\nAnzeigen, Willenserklarungen, Anschriftenanderung\nVerjahrung\n\nZustandiges Gericht\n\nAnzuwendendes Recht\n\nGHV\n\nVERSICHERUNG\n\nSeite\n\nSeite\nSeite\nSeite\nSeite\nSeite\nSeite\nSeite\n\nnunKRKRWWW WW\n\nSeite\n\nSeite\nSeite\nSeite\nSeite\nSeite\nSeite\nSeite 10\nSeite 10\n\n© OO © WO MoO 0\n\nSeite 10\n\nSeite 10\nSeite 1]\nSeite 1]\nSeite 1]\nSeite 1]\n\nSeite 12\nSeite 12\n\nSeite 13\n\nSeite 13\nSeite 14\nSeite 14\nSeite 14\n\nSeite 15\n\nSeite 15\nSeite 15\nSeite 15\nSeite 15\nSeite 16\nSeite 16\n\nGHV | Der Versicherer fur Land & Leute\n\nHaftpflicht Allgemeine Bedingungen 2023-001\n\nSeite 2",
+        "char_count": 2027,
+        "elapsed_s": 1.122,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 2027,
+          "word_count": 249,
+          "alpha_char_count": 1580,
+          "digit_ratio": 0.0479,
+          "nonsense_ratio": 0.0824,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 6.91
+        }
+      },
+      {
+        "page_index": 2,
+        "text": "Allgemeine Versicherungsbedingungen GHV\nHaftpflichtversicherung (AHB) VensicHeRuNc\n\nGultig ab 1. Januar 2014\nBeschlossen vom Verwaltungsrat am 30. September 2013\n\nUmfang des Versicherungsschutzes\n\n11\n\n1.2\n\n1.3\n\n2.1\n2.2\n\nGegenstand der Versicherung, Versicherungsfall\n\nVersicherungsschutz besteht im Rahmen des versicherten Risikos fur den Fall, dass der Versiche-\nrungsnehmer wegen eines wahrend der Wirksamkeit der Versicherung eingetretenen Schaden-\nereignisses (Versicherungsfall), das einen Personen-, Sach- oder sich daraus ergebenden Verm6-\ngensschaden zur Folge hatte, aufgrund\n\ngesetzlicher Haftpflichtbestimmungen\nprivatrechtlichen Inhalts\n\nvon einem Dritten auf Schadensersatz in Anspruch genommen wird.\n\nSchadenereignis ist das Ereignis, als dessen Folge die Schadigung des Dritten unmittelbar ent-\nstanden ist. Auf den Zeitounkt der Schadenverursachung, die zum Schadenereignis gefuhrt hat,\nkommt es nicht an.\n\nKein Versicherungsschutz besteht fur Anspruche, auch wenn es sich um gesetzliche Anspruche\nhandelt,\n\n(1) auf Erfullung von Vertragen, Nacherfullung, aus Selostvornahme, Rucktritt, Minderung, auf\nSchadensersatz statt der Leistung;\n\n(2) wegen Schaden, die verursacht werden, um die Nacherftllung durchfUhren zu kénnen;\n\n(3) wegen des Ausfalls der Nutzung des Vertragsgegenstandes oder wegen des Ausbleibens des\nmit der Vertragsleistung geschuldeten Erfolges;\n\n(4) auf Ersatz vergeblicher Aufwendungen im Vertrauen auf ordnungsgemafe Vertragserfullung;\n(5) auf Ersatz von Vermdgensschaden wegen Verzdogerung der Leistung;\n(6) wegen anderer an die Stelle der Erftllung tretender Ersatzleistungen.\n\nEs besteht —- unbeschadet der Ubrigen Vertragsbestimmungen — Versicherungsschutz nur, soweit\nund solange dem keine auf die Vertragsparteien direkt anwendbaren Wirtschafts-, Handels- oder\nFinanzsanktionen bzw. Embargos der Europaischen Union oder der Bundesrepublik Deutschland\nentgegenstehen. Dies gilt auch fur Wirtschafts-, Handels- oder Finanzsanktionen bzw. Embargos,\ndie durch die Vereinigten Staaten von Amerika in Hinblick auf den Iran erlassen werden, soweit\ndem nicht europaische oder deutsche Rechtsvorschriften entgegenstehen.\n\nVermégensschaden, Abhandenkommen von Sachen\n\nDieser Versicherungsschutz kann durch besondere Vereinbarung erweitert werden auf die\ngesetzliche Haftpflicht privatrechtlichen Inhalts des Versicherungsnehmers wegen\n\nVermdgensschaden, die weder durch Personen- noch durch Sachschaden entstanden sind;\n\nSchaden durch Abhandenkommen von Sachen; hierauf finden dann die Bestimmungen Uber\nSachschaden Anwendung.\n\nVersichertes Risiko\nDer Versicherungsschutz umfasst die gesetzliche Haftpflicht\n\n(1) aus den im Versicherungsschein und seinen Nachtragen angegebenen Risiken des Versiche-\nrungsnehmers,\n\nGHV | Der Versicherer fur Land & Leute\n\nHaftpflicht Allgemeine Bedingungen 2023-001 Seite 3",
+        "char_count": 2839,
+        "elapsed_s": 1.46,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 2839,
+          "word_count": 343,
+          "alpha_char_count": 2352,
+          "digit_ratio": 0.013,
+          "nonsense_ratio": 0.0257,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 7.21
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_langs": [
+        "de"
+      ],
+      "source": "text_layer",
+      "text_layer_chars": 5548,
+      "arabic_chars": 0,
+      "latin_chars": 4272,
+      "arabic_ratio": 0.0,
+      "has_german_markers": true
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "Haftpflicht-Besondere-Bedingungen-2024-001_01.pdf.pdf",
+    "detected_langs": [
+      "de",
+      "en"
+    ],
+    "lang_source": "text_layer",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "text_based",
+      "page_count": 38,
+      "pages_needing_ocr": [],
+      "ocr_page_count": 0,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 1.0,
+      "processing_time_ms": 12
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "GHV _Haftpflichtversicherung\n\nVERSICHERUNG\n\nUberblick\n\nBesondere Versicherungsbedingungen im\n\nBesondere Bedingungen und Risikobeschreibungen fur\ndie Haftpflichtversicherung (BHB)\n\nGHV | Der Versicherer fUr Land & Leute\n\nHaftpflicht Besondere Bedingungen 2024-001_01\n\nGemeinnitzige Haftpflicht-Versicherungsanstalt\nAnstalt des offentlichen Rechts\n\nHausanschrift Darmstadt Hausanschrift Kassel\nGHV VERSICHERUNG GHV VERSICHERUNG\nBartningstraBe 59 FalderbaumstraBe 41\n64289 Darmstadt 34123 Kassel\n\nKontakt\n\n06151 3603-0\ninfo@ghv-versicherung.de\nwww.ghv-versicherung.de\n\nGlaubiger-ID: DE95ZZZ00000111555\nUSt-ID-Nr.: DE114107069\nVers.St-Nr.: 807/V90807010692",
+        "char_count": 652,
+        "elapsed_s": 0.558,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 652,
+          "word_count": 60,
+          "alpha_char_count": 487,
+          "digit_ratio": 0.1058,
+          "nonsense_ratio": 0.0475,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 9.7
+        }
+      },
+      {
+        "page_index": 1,
+        "text": "Besondere Bedingungen und Risikobeschreibungen fur die G HV\nHaftpflichtversicherung (BHB)\n\nVERSICHERUNG\n\nA Besondere Bedingungen und Risikobeschreibungen zur Betriebs-\n\nund Berufshaftpflichtversicherung Seite 3\nBHB 1 Mitversicherung des Kfz-Haftpflichtrisikos (Selostfahrende Arbeitsmaschinen\n\nund nicht versicherungspflichtige Kraftfahrzeuge) Seite 6\nBHB 2 Einschluss von Auslandsschdden in die Betriebshaftpflichtversicherung Seite 7\nBHB 3 Land- und Forstwirtschaft Seite 8\nBHB 4 Gewahrsamsschdaden Seite 10\nBHB 5 Schddlings- und Unkrautbekampfung Seite 11\nBHB 6 Gaststdatten- und Beherbergungsbetriebe Seite 11\nBHB 7 Bauhandwerker Seite 13\nBHB 8 Hufschmiede Seite 13\nBHB 9 SchweiBen und Schneiden, Arbeiten mit Lotgeraten Seite 13\nBHB 10 =Bauarbeiten Seite 13\nBHB 11 Abwasserschadden Seite 14\nBHB 12 = Arbeits- und Liefergemeinschaften Seite 14\nBHB 13) =Abbruch- und EinreiBarbeiten sowie Sorengungen Seite 15\nBHB 14 = —- TdtigkeitsschGden bei Betrieben des Handels, Handwerks, des produzieren-\n\nden Gewerbes und der Land- und Forstwirtschaft Seite 15\nBHB 15 = TdtigkeitsschGden bei Betrieben des Bauhaupt-/ Baunebengewerbes Seite 16\nBHB 16 =Postagenturen Seite 17\nBHB 17 Lehrer Seite 17\nB Besondere Bedingungen und Risikobeschreibungen zur Privathaft-\n\npflichtversicherung Seite 18\nBHB 18 = Auslandsschdden Seite 24\nBHB 19 —_Einschluss von Mietsachschdden Seite 24\nCc Besondere Bedingungen und Erlauterungen zur Haftpflichtversiche-\n\nrung der Haus- und Grundbesitzer sowie der Gemeinschaften von\n\nWohnungseigentumern Seite 24\nD Besondere Bedingungen fur die Versicherung der Haftpflicht aus\n\nGewdsserschdden im Rahmen der Privat- sowie privaten Haus- und\n\nGrundbesitzer-Haftpflichtversicherung - auBer Anlagenrisiko — Seite 26\nE Besondere Bedingungen und Risikobeschreibungen zu sonstigen Risikoarten Seite 27\nBHB 20 Tierhaltung Seite 27\nBHB 21 Bauherren Seite 29\nBHB 22 = =Jagdhaftpflicht Seite 31\nBHB 23 ~—s«Vereine Seite 35\nBHB 24. Vermdgensschdden Seite 37\nBHB 25 = Schlusselverlust SchlieBanlagen Seite 37\nBHB 26 =Nachhaftung Seite 38\nBHB 27 = Schiedsgerichtsvereinbarungen Seite 38\n\nGHV | Der Versicherer fUr Land & Leute\n\nHaftpflicht Besondere Bedingungen 2024-001_01 Seite 2",
+        "char_count": 2186,
+        "elapsed_s": 1.211,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 2186,
+          "word_count": 295,
+          "alpha_char_count": 1714,
+          "digit_ratio": 0.0526,
+          "nonsense_ratio": 0.0256,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 6.37
+        }
+      },
+      {
+        "page_index": 2,
+        "text": "Besondere Bedingungen und Risikobeschreibun- GHV\ngen fur die Haftpflichtversicherung (BHB) VeRSICHERUNG\n\nGultig ab 1. Januar 2014\nBeschlossen vom Verwaltungsrat am 30. September 2013\n\nA.  Besondere Bedingungen und Risikobeschreibungen zur Betriebs- und Berufshaft-\npflichtversicherung\n\nl. Versichertes Risiko\n\nVersichert ist im Rahmen der Allgemeinen Versicherungsbedingungen fur die Haftpflichtversicherung (AHB)\nund der nachfolgenden Bestimmungen die gesetzliche Haftpflicht des Versicherungsnehmers aus dem im\nVersicherungsschein und seinen Nachtragen angegebenen Betrieb mit seinen Eigenschaften, Rechtsverhalt-\nnissen oder Tatigkeiten bzw. aus der AusUbung der im Versicherungsschein und seinen Nachtragen beschrie-\nbenen beruflichen Tatigkeit.\n\nIl. Mitversichert ist die gesetzliche Haftpflicht\n\n1, des Versicherungsnehmers als EigentUmer, Mieter, Pachter, Leasingnehmer und NutznieBer von Grund-\nstUcken —nicht jedoch von Luftlandepldtzen-, GebGuden oder RGumlichkeiten, die ausschlieBlich fur\nden versicherten Betrieb oder fUr Wohnzwecke des Versicherungsnehmers und seiner Betriebsange-\nhdrigen benutzt werden (Umfang des Versicherungsschutzes siehe C.);\n\n2. des Versicherungsnehmers aus seinen Sozialeinrichtungen fur Betriebsangehdérige, die ausschlieBlich\nfUr den versicherten Betrieb bestimmt sind (z. B. Betriebssportgemeinschaften, Werkskantinen, Bade-\nanstalten, Erholungsheime, Kindergarten) und aus Vorhandensein und Betdtigung einer Werks- oder\nBetriebsfeuerweblr.\n\nNicht versichert ist die persénliche Haftpflicht der Mitglieder der Betriebssportgemeinschaft aus ihrer\nBetdtigung in dieser;\n\n3. der gesetzlichen Vertreter des Versicherungsnehmers und solcher Personen, die er zur Leitung oder\nBeaufsichtigung des versicherten Betriebes oder eines Teils desselben angestellt hat, in dieser Eigen-\nschaft:\n\n4. samilicher Ubrigen Betriebsangehdrigen fur Schdden, die sie in AusfUhrung ihrer dienstlichen Verrich-\n\ntungen fur den Versicherungsnehmer verursachen.\n\nAusgeschlossen sind Anspruche aus Personenschdden, bei denen es sich um Arbeitsunfdlle und Berufs-\nkrankheiten im Betrieb des Versicherungsnehmers gemdB dem Sozialgesetzbuch VII handelt. Das glei-\nche gilt fur solche Dienstunfdlle gemdaB den beamtenrechtlichen Vorschriften, die in AusUbung oder\ninfolge des Dienstes AngehGrigen derselben Dienststelle zugefUgt werden.\n\n5. wegen Schdden an gemieteten oder gepachteten Gebduden bzw. RGumlichkeiten durch Brand oder\nExplosion (Mietsachschdden). Die Héchstersatzleistung betragt innerhalb der Versicherungssumme fUr\nSachschdGden je Versicherungsfall 300.000 EUR, begrenzt auf 600.000 EUR fur alle Versicherungsfdlle\neines Versicherungsjahres. Die AusschlUsse gemdB BHB 19 gelten entsprechend;\n\n6. wegen im Ausland verursachter Schdden im Umfange von BHB 2.\n7. Kabelklausel fUr gewerbliche Betriebe\n\nFur Haftpflichtanspruche aus der Beschddigung von Erdleitungen (Kabel, Kandle, Wasserleitungen,\nGasrohre und andere Rohrleitungen) aus Anlass von Arbeiten irgendwelcher Art besteht nur dann Ver-\nsicherungsschutz im Rahmen der AHB, wenn die folgenden MaBnahmen durchgefthrt worden sind:\n\na) Vor AusfUhrung der Arbeiten ist von den zustGndigen Stellen — zum Beispiel Elektrizitatswerk, Gas-\nwerk, Tiefbauamt — eine schriftliche AUuskunft darUber einzuholen, ob und wo an der Arbeitsstelle\nErdleitungen verlaufen. Ist schriftlicne Auskunft nicht zu erlangen, so muss das Ergebnis der Ermitt-\nlungen den zustandigen Stellen durch eingeschriebenen Brief bestatigt werden.\n\nGHV | Der Versicherer fUr Land & Leute\n\nHaftpflicht Besondere Bedingungen 2024-001_01 Seite 3",
+        "char_count": 3587,
+        "elapsed_s": 1.732,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 3587,
+          "word_count": 435,
+          "alpha_char_count": 2995,
+          "digit_ratio": 0.012,
+          "nonsense_ratio": 0.0178,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 7.2
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_langs": [
+        "de"
+      ],
+      "source": "text_layer",
+      "text_layer_chars": 6528,
+      "arabic_chars": 0,
+      "latin_chars": 5144,
+      "arabic_ratio": 0.0,
+      "has_german_markers": true
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "MOU MOHRE & Nafis & وزارة الصناعة والتكنولوجيا المتقدمة (1).pdf",
+    "detected_langs": [
+      "ar",
+      "en"
+    ],
+    "lang_source": "filename",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "scanned",
+      "page_count": 9,
+      "pages_needing_ocr": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "ocr_page_count": 9,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 0.949999988079071,
+      "processing_time_ms": 2
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "UNITED ARAB EMIRATES (QS) Sok! ‏الإمارات العربية‎\n\nMINISTRY OF HUMAN RESOURCES Ne 5 ‏المسواره السك رية‎ Bly\n&EMIRATISATION ‏مدو اللي‎\n\n522\n\nمذكرة تفاهم\n\nو\n\nبال\nوزارة الصناعة والتكنولوجيا المتقدمة\n3و\nوزارة الموارد البشرية والتوطين\nو\n\nمجلس تنافسية الكوادر الإماراتية\n\nبشأن برنامج القيمة الوطنية المضافة\n\nص.ب. 5025 2.0.8016 ودبيء الإمارات العربية المتحدة ‎DUBAI, UNITED ARAB EMIRATES‏ 4غاتف 600590000 ‎TEL:‏\n\nwww.mohre.gov.ae",
+        "char_count": 422,
+        "elapsed_s": 0.648,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.6612,
+          "latin_ratio": 0.3388,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 422,
+          "word_count": 59,
+          "alpha_char_count": 307,
+          "digit_ratio": 0.0592,
+          "nonsense_ratio": 0.0782,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 6.02
+        }
+      },
+      {
+        "page_index": 1,
+        "text": "الإماراتالعربيةالمتحدة\nوزارة المواردالبش ‎ae‏\n‏والتتسوظ يسن\n\nUNITED ARAB EMIRATES\nMINISTRY OF HUMAN RESOURCES\n& EMIRATISATION\n\nإنه في يوم الخمس الموافق 9 فبراير 2023 م تم توقيع مذكرة التفاهم (ويشار إليها فيما بعد ب\"هذه المذكرة\")\nبين كل من:\n\nالطرقك 2091 ‎١‏ وؤارة المبداعة والتكتولوجيا اللتقدمة\n\n‎Lal] Lady‏ فيما بعد ب (الطرف الأول) أو (الوزارة)\n\n‏ويمثلها سعادة/ ‎pac‏ صوينع السويدي\n\n‏وكيل وزارة الصناعة والتكنولوجيا المتقدمة\nالعتوان ص ب : 2166 أبوظبي - الإمارات العربية المتحدة\nهاتف 97124032735+\n\n‏الموقع\n\n‎https://www.moiat.gov.ae/ar/\n\n‎PP‏ وزارة الموارد البشرية والتوطين ويشار إلهها فيما بعد ب (الطرف الثاني)\n\n‏ويمثلها سعادة / سيف أجمنن السويدي\nوكيل وزارة الموارد البشرية والتوطين لقطاع التوطين\n\n‏العتوان\n‏لعنوان ص.ب. 5025 دبي - الإمارات العربية المتحدة\n\n‎+971 4 702 3188\n\n‏الموقع\n\n‎https://www.mohre.gov.ae/\n\n‎TEL: 600590000 ‏+عاتف‎ DUBAI, UNITED ARAB EMIRATES ‏ودبيء الإمارات العربية المتحدة‎ P.O.BOX 5025 ‏ص.ب.‎\n\n‎www.mohre.gov.ae",
+        "char_count": 935,
+        "elapsed_s": 1.044,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.7712,
+          "latin_ratio": 0.2288,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 1
+        },
+        "garble_signals": {
+          "char_count": 935,
+          "word_count": 132,
+          "alpha_char_count": 659,
+          "digit_ratio": 0.0567,
+          "nonsense_ratio": 0.0749,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.97
+        }
+      },
+      {
+        "page_index": 2,
+        "text": "UNITED ARAB EMIRATES ‏)غم‎\n\nHh ‏الإماراتالعريية المتحدة‎\n‏ااا‎ DN ™ 55\nMINISTRY OF HUMAN RESOURCES WAN ‏وزارة المواردالبث وححة‎\n& EMIRATISATION [dls ‏والتوطحيححهن‎\n‏الطرف الثالث‎\n\nمجلس تنافسية الكوادر الإماراتية ويشار إليه فيما بعد ب(الطرف الثالث)\n\nالعنوان أبوظي -الإمارات العربية المتحداة\n\nهاتف 80062347\n\nhttps://nafis.gov.ae/ ms\n\nوبشار إلهم معاً ب (الأطراف) ولكل منهم منفرداً ب (الطرف).\n\nدمهيدك\n\nانطلاقاً من رؤية دولة الامارات العربية المتحدة الرامية إلى تعزيز بيئة الأعمال لبناء اقتصاد تنافبي وذلك من\nخلال إتاحة وتطوير مبادرات نوعية تعمل على تعزيز المنتجات المحلية الوطنية والمحتوى المحلي الصناعي والقيمة\nالوطنية المضافة, فقد جاءت هذه المذكرة لتؤكد على أهمية التنسيق والتعاون بين المؤسسات الحكومية إدراكاً\nلدورها الاستراتيجي في مجال دعم الصناعة.\n\nويما أن وزارة الصناعة والتكنولوجيا المتقدمة تتولى بحكم اختصاصها باقتراح وإعداد السياسات\nوالاستراتيجيات والتشريعات والبرامج المتعلقة بتعزيز ‎qo rug‏ وتشجيع المنتجات المحلية الوطنية والمحتوى\nوبينما يتمثل دور وزارة الموارد البشرية والتوطين في تهيئة وتجبيز سوق العمل الإماراتي عبر تمكين الكفاءات\nالوطنية من العمل في القطاع الخاص والعام.\n\nكما هيدف مجلس التنافسية للكوادر الإماراتية إلى العمل على الارتقاء بمنظومة التنمية البشرية الإماراتية وإعداد\nرأس مال بشري إماراتي منتج ومستدام في القطاع الخاص لتحقيق أهداف المشاركة الاقتصادية الفاعلة\nللمواطنين الإماراتيين بما يدعم اقتصاد ‎Aout!‏ ورفع الكفاءة التنافسية للكوادر الإماراتية وتمكينها من شغل\nالوظائف في القطاع الخاص في الدولة.\n\nTEL: 600590000 ‏4ماتف‎ DUBAI, UNITED ARAB EMIRATES ‏ودبيء الإمارات العربية المتحدة‎ P.O.BOX 5025 ‏ص.ب.‎\n\nwww.mohre.gov.ae",
+        "char_count": 1544,
+        "elapsed_s": 1.642,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.8908,
+          "latin_ratio": 0.1092,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1544,
+          "word_count": 219,
+          "alpha_char_count": 1232,
+          "digit_ratio": 0.0155,
+          "nonsense_ratio": 0.0382,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 6.0
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_lang": null,
+      "source": "no_text_layer",
+      "text_layer_chars": 0
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "Ministerial Resolution No279 of 2022 Monitoring Mechanisms of Emiratisation Rates in the Private Sec - Copy.pdf",
+    "detected_langs": [
+      "de",
+      "en"
+    ],
+    "lang_source": "text_layer",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "text_based",
+      "page_count": 5,
+      "pages_needing_ocr": [],
+      "ocr_page_count": 0,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 1.0,
+      "processing_time_ms": 0
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "MINISTERIAL RESOLUTION NO.(279) OF 2022\n\nMONITORING MECHANISMS OF EMIRATISATION RATES IN THE PRIVATE SECTOR &\n\nCONTRIBUTIONS IMPOSED ON NON-COMPLIANT ESTABLISHMENTS\n\nThe Minister of Human Resources & Emiratisation\n\nHaving perused:\n\nFederal Law No.(1) of 1972 on the competencies of the Ministries and Powers of\nthe Ministers and amendments thereof,\n\nFederal Decree-Law No. (33) of 2021 concerning Regulation of Labor Relations\nand its Executive Regulations\n\nCabinet Resolution No. (21) of 2020 regarding Service Fees & Fines in the\nMinistry of Human Resources and Emiratisation\n\nCabinet Resolution No. (1/7m) of 2021 concerning initiatives and programs for\nEmirati Cadres Competitiveness Council “Nafis”\n\nCabinet Resolution No. (19/5m) of 2022 amending some provisions of Cabinet\nResolution No. (1/7m) of 2021 concerning initiatives and programs for Emirati\nCadres Competitiveness Council “Nafis”\n\nCabinet Resolution No. (18) of 2022 concerning the Classification Of Private\nSector Establishments and the amendment of the service fees of the Ministry of\nHuman Resources and Emiratisation,\n\nCabinet Resolution No. (37) of 2022 amending some provisions of Cabinet\nResolution No. (21) of 2020 concerning Service Fees & Fines in the Ministry of\nHuman Resources\n\nMinisterial Resolution No. (45) of 2022 concerning the formation of the\nGrievance Committee against decisions issued by the Ministry of Human\nResources and Emiratisation\n\nHas Resolved:\n\nArticle (1)\nImplementation of Cabinet Resolution No.(19/5m) of 2022\n\nThis is not an official translation",
+        "char_count": 1548,
+        "elapsed_s": 1.011,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1548,
+          "word_count": 220,
+          "alpha_char_count": 1183,
+          "digit_ratio": 0.0484,
+          "nonsense_ratio": 0.0278,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.97
+        }
+      },
+      {
+        "page_index": 1,
+        "text": "In implementation of the provisions of Cabinet Resolution No.(19/ 5m) of 2022\nreferred to, the following controls and procedures shall be implemented in respect\nof increasing the Emiratisation rate in private sector establishments, and\ncontributions imposed on non-compliant establishments.\n\nArticle (2)\n\nCurrent Emiratization Rates & Calculation Mechanisms\n\n1. Establishments registered with the Ministry employing more than 50 workers,\nshall increase their current Emiratisation rate from high-skilled jobs by 2 percent\nannually gradually raising the said rate to 10 percent by 2026.\n\n2. The prescribed Emiratisation percentage shall be calculated based on the total\nnumber of UAE nationals working in the establishment in relation to the total\nnumber of skilled workers, provided that at least one citizen shall be employed\nagainst every 50 skilled workers or part whereof, for each year of\nimplementation, as follows:\n\nNumber of Skilled Workers in Minimum Employment Rate of UAE Nationals\nEstablishments Employing More Than 50\nWorkers\n0 to 50 skilled workers One Citizen\n51 to 100 skilled workers Two Citizens\n101 to 150 skilled workers Three Citizens\nMore than 151 skilled workers One citizen for every 50 skilled workers or\npart whereof\n\n3. The targeted percentage of Emiratisation in establishments shall increase\ngradually by 2 percent as of 2023 until achieving the desired rate of 10 percent\nby 2026 in accordance with Clause (2) of this Article.\n\nThis is not an official translation",
+        "char_count": 1493,
+        "elapsed_s": 0.914,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1493,
+          "word_count": 228,
+          "alpha_char_count": 1180,
+          "digit_ratio": 0.0368,
+          "nonsense_ratio": 0.0214,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.52
+        }
+      },
+      {
+        "page_index": 2,
+        "text": "4. Emiratisation percentage shall be calculated in accordance with the provisions of\nthis resolution based on the number of work permits registered in the Ministry’s\napproved systems issued for UAE nationals, as per the following requirements:\n\na. The UAE national must possess a valid work permit.\n\nb. The UAE national wage shall be paid through the Wages Protection System or\nany other system approved by the competent authorities in the country to\nensure compliance with the payment of wages.\n\nc. The UAE national must be registered with one of the approved pension funds\nin the country.\n\nd. The relationship between the UAE national and the establishment shall be a\ncontractual relationship, satisfying all the terms and conditions of Labor\nRelations Regulation Law, its executive regulations and all decisions and\norders issued in implementation thereof.\n\nArticle (3)\n\nCollection Mechanisms of Assessed Contribution from Non-Compliant\nEstablishments\n\n1. Non-compliant establishments with the stipulated Emiratisation rates contained\nin Article (2) hereinabove shall pay Dh6,000 monthly starting January 2023, for\nevery citizen who has not been employed in accordance with Cabinet Resolution\nNo.(19/ 5m) of 2022 referred to. The amount of the monthly contribution shall\nincrease progressively by Dh1,000 each year.\n\n2. The establishment shall be considered non-compliant if the required number of\nemployed citizens is not maintained until the following year. The establishment\nshall be under obligation to pay the assessed contribution unless the\nEmiratisation percentage and the required numbers of employed citizens are re-\nachieved within two months from the date of its decline.\n\n3. The contribution shall be due at the beginning of the following year for the\n\nnumber of citizens required to be employed to achieve the required\nEmiratisation rates in accordance with the above-mentioned criteria. The total\n\nThis is not an official translation",
+        "char_count": 1951,
+        "elapsed_s": 1.065,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1951,
+          "word_count": 293,
+          "alpha_char_count": 1585,
+          "digit_ratio": 0.0128,
+          "nonsense_ratio": 0.0205,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.62
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_langs": [
+        "de"
+      ],
+      "source": "text_layer",
+      "text_layer_chars": 5093,
+      "arabic_chars": 0,
+      "latin_chars": 3948,
+      "arabic_ratio": 0.0,
+      "has_german_markers": true
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "Reitlehrer - Schäden am Berittpferd.pdf",
+    "detected_langs": [
+      "de",
+      "en"
+    ],
+    "lang_source": "text_layer",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "text_based",
+      "page_count": 1,
+      "pages_needing_ocr": [],
+      "ocr_page_count": 0,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 1.0,
+      "processing_time_ms": 0
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "Besondere Bedingungen und Risikobeschreibungen zur\nHaftpflichtversicherung fir Reitlehrer/Bereiter\n\n14\n\n1.2\n\n1.3\n\n2.1\n\n2.2\n\n2.3\n\n2.4\n\n2.5\n\n2.6\n\n2.7\n\n3.1\n\n3.2\n\n3.3\n\nVersichert ist die gesetzliche Haftpflicht des Versicherungs- 3.4\nnehmers als\nangestellter Reitlehrer *) oder 3.5\nfreiberuflicher Reitlerer *) oder\nBereiter *).\n*) auch ohne Priifung\n4.\nMitversichert ist\ndie Erteilung von Reitunterricht in Theorie und Praxis\ndie Aufsichtsfihrung Uber Reitschiler\ndie Leitung und/oder Beaufsichtigung von Ausritten im Rahmen\ndes Reitunterrichts\ndie Leitung und/oder Beaufsichtigung von Reitpriifungen\ndie Durchfihrung von Veranstaltungen und Ausfltigen und die\naus den damit verbundenen Aufenthalten in Herbergen\ndie Verwendung von Ubungsgeraten zu Unterrichtszwecken\ndas Einreiten/die Ausbildung fremder Pferde.\nNicht versichert ist die Haftpflicht 5.\n\naus Schaden, die im Zusammenhang stehen mit dem Besitz oder\ndem Gebrauch von kKraftfahrzeugen, Kraftfahrzeuganhangern,\nMotorbooten oder mit Hilfsmotoren versehenen Fahrzeugen je-\nder Art\n\nder Reitschuler, Priiflinge und Teilnehmer an den Veranstaltun-\ngen\n\ndes Versicherungsnehmers als Tierhalter sowie als Hiter von\nPensionstieren\n\nGH\n\nVERSICHERUNG\n\naus Schaden an den berittenen oder den im Reitunterricht einge-\nsetzten Pferden sowie an Zaum- und Sattelzeug\n\naus Personenschaden, bei denen es sich um Arbeitsunfalle und Be-\nrufskrankheiten im Betrieb des Versicherungsnehmers gemaB dem\nSozialgesetzbuch VII handelt. Das gleiche gilt fiir solche Dienstun-\nfalle gemaB den beamtenrechtlichen Vorschriften, die in Austbung\noder infolge des Dienstes AngehGrigen derselben Dienststelle zuge-\nfligt werden.\n\nSchaden an Berittpferden (nicht Pensionspferden)\n\nFalls besonders vereinbart, sind - abweichend von Ziff. 3.4 - die\nSchaden an den berittenen Pferden und solchen Pferden, die sich\nbei dem Versicherungsnehmer in Ausbildung befinden, mitversi-\nchert.\n\nVersicherungssummen und Selbstbeteiligung\n\nForm A\n\nVersicherungssumme 12.000 EUR fir Sachschaden (zweifache\nJahresmaximierung). Selbstbeteiligung des Versicherungsnehmers\nan jedem Versicherungsfall: 10%, mindestens 100 EUR.\n\nForm B\n\nVersicherungssumme 25.000 EUR fir Sachschaden (zweifache\nJahresmaximierung). Selbstbeteiligung des Versicherungsnehmers\nan jedem Versicherungsfall: 10%, mindestens 250 EUR.\n\nEinschluss von Auslandsschaden\n\nEingeschlossen ist die Haftpflicht fur Auslandsschaden im Umfang\nder BHB 2.\n\nGlltig ab 1. Januar 2005\n\nGHV | Die Versicherungsmanufaktur fir Mensch, Tier und Natur\n\nGemeinnitzige Haftpflicht-Versicherungsanstalt\nAnstalt des offentlichen Rechts\n\nHausanschrift:\n\nGHV VERSICHERUNG\nBartningstr. 59\n\n64289 Darmstadt\n\nKontakt:\n\n06151 3603-0\ninfo@ghv-versicherung.de\nwww.ghv-versicherung.de\n\nGlaubiger-ID: DE95ZZZ00000111555\nUSt-ID-Nr.: DE114107069\nVersSt-Nr.: 807/V9080701 0692",
+        "char_count": 2816,
+        "elapsed_s": 1.353,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 2816,
+          "word_count": 342,
+          "alpha_char_count": 2225,
+          "digit_ratio": 0.0401,
+          "nonsense_ratio": 0.043,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 7.12
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_langs": [
+        "de"
+      ],
+      "source": "text_layer",
+      "text_layer_chars": 3025,
+      "arabic_chars": 0,
+      "latin_chars": 2204,
+      "arabic_ratio": 0.0,
+      "has_german_markers": true
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "Unfallversicherung-Leistungsuebersicht-2025-001.pdf.pdf",
+    "detected_langs": [
+      "de",
+      "en"
+    ],
+    "lang_source": "text_layer",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "text_based",
+      "page_count": 3,
+      "pages_needing_ocr": [],
+      "ocr_page_count": 0,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 1.0,
+      "processing_time_ms": 1
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "Unfallversicherung 2025\nLeistungsUbersicht\n\nEmpfehlung\n\nUnsere Leistungen Komfort Premium\nInvaliditatsleistungen\nVerbesserte Leistung bei hGherem Invaliditatsgrad 225 % | 350 % | 500 % Progression\nhituckonesklgusel) bei Vorerkrankungen bis unter 25 % bis unter 50 % bis unter 75 %\nErhdhte Invaliditdtsleistung bei Tragen eines Helmes _ 5% 10%\n(Helmklausel)\nInvaliditatsleistung fUr Lebensretter _ 25.000 EUR 25.000 EUR\nVerbesserte Gliedertaxe -\nLeistungen, die Ihnen helfen, wieder in den Alltag zurUckzufinden\nKosmetische Operationen 10.000 EUR 25.000 EUR 50.000 EUR\nZahnersatz nach einem Unfall 10.000 EUR 25.000 EUR 50.000 EUR\nUbergangsleistung\nErweiterte Ubergangsleistung =_\nReha-Management = =\nZusatzbaustein Assistance-Leistungen zuwdGhlbar zuwdGhlbar zuwahlbar\nSofortleistungen\nTodesfall-Leistung auch bei Verschollenheit Summen wéGhlbar | Summen wéhlbar |) Summen wéGhlbar\nSofortleistung bei schweren Verletzungen\nSuch-, Rettungs- und Bergungskosten 10.000 EUR 25.000 EUR 50.000 EUR\nTodesfall-Leistung fUr Lebensretter _ 25.000 EUR 25.000 EUR\nGenesungsgeld =\nKrankenhaustagegeld bei ambulanter OP fur 3 Tage fUr 3 Tage fUr 3 Tage\nVerlGngerung des Krankenhaustagegeldes _ _\nDoppeltes Krankenhaustagegeld im Ausland _ _\nGipsgeld _ _ 300 EUR\nVersicherte Risiken\nInfektionen und Zeckenbisse\nErhohte Kraftanstrengung\nErtrinken, Ersticken, Erfrieren\nStrahlenschdden\nBewusstseinsstérungen durch Alkohol ' bis 0,8 Promille bis 1,3 Promille bis 1,6 Promille\nweitere\n<J Informationen Giltig ab: 1. April 2025\n\nGHV | Der Versicherer fur Land & Leute\n\nSeite 1 Telefon: 06151 3603-188 | service@ghv-versicherung.de | www.ghvy-versicherung.de",
+        "char_count": 1637,
+        "elapsed_s": 0.96,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1637,
+          "word_count": 213,
+          "alpha_char_count": 1230,
+          "digit_ratio": 0.0715,
+          "nonsense_ratio": 0.025,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 6.67
+        }
+      },
+      {
+        "page_index": 1,
+        "text": "Unfallversicherung 2025\nLeistungsUbersicht\n\nEmpfehlung\n\nUnsere Leistungen Komfort Premium\n\n<]\n\nBewusstseinsstOrungen durch Medikamente =\n\nBauch- und Unterleibsbruche durch erhéhte\nKraftanstrengung\n\nLuftfahrtrisiko als Fluggast von Luftfahrzeugen -\n\nLebensmittelvergiftung —\n\nVergiftung durch Gase und Dampfe =\n\nBaas as\n\nVergiftung aufgrund der Verwechslung mit Nahrungsmitteln =\n\nVergiftung durch Einnahme fester oder flUssiger Stoffe durch\nden Schlund\n\nAllergische Reaktionen = =\n\nKinder unter 14 Jahren\n\nErweiterte Infektionsklausel _ —\n\nEigenbewegungen — —\n\nTauchtypische Gesundheitsschaden und\nDekompressionskammer-Kosten\n\nEigenbewegungen = =\n\nTauchtypische Gesundheitsschaden und\nDekompressionskammer-Kosten\n\nSBSE8ESESBEBBRBERBRBSBS\n\nniedrigere Grenzen beim Lenken eines Kfz\n\nEmpfehlung\n\nLeistungen fur Familien Komfort Premium\nBeitragsfreie WeiterfUhrung der Kinderunfall bei Tod des vy, Vv iv;\nVersicherungsnehmers v a a\nBeitragsfreie WeiterfUhrung der Versicherung bei Tod des\n\nPartners\nBeitragsfreie Mitversicherung von Neugeborenen,\n\nAdoptivkindern, Enepartnern oder eingetragenen\nLebenspartnern\n\nRoaming In _\nVorsorgeversicherung flr Neugeborene -\nTodesfall-Leistung fir Vollwaisen - -\n\nweitere\na| Informationen Giltig ab: 1. April 2025\n\nGHV | Der Versicherer fur Land & Leute\n\nSeite 2 Telefon: 06151 3603-188 | service@ghv-versicherung.de | www.ghvy-versicherung.de",
+        "char_count": 1377,
+        "elapsed_s": 0.909,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1377,
+          "word_count": 159,
+          "alpha_char_count": 1124,
+          "digit_ratio": 0.0182,
+          "nonsense_ratio": 0.0501,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 7.49
+        }
+      },
+      {
+        "page_index": 2,
+        "text": "Unfallversicherung 2025\nLeistungsUbersicht\n\nEmpfehlung\n\nExtra-Leistungen fur Hund und Halter Komfort Premium\nTierarztkosten nach Verkehrsunfall mit Ihrem Hund bis 500 EUR bis 500 EUR bis 500 EUR\nHohere Invaliditatsleistung bei Verkehrsunfall mit Ihrem Hund - 5% 10 %\nErhohtes Krankenhaustagegeld fur die Betreuung Ihres\n= 50 % 50 %\nHundes (Betreuungsgeld)\nDoppeltes Gipsgeld bei Verkehrsunfall mit Ihrem Hund = = 600 EUR\nExtra-Leistungen fur Pferd und Reiter\nDoppeltes Krankenhaustagegeld flr die Betreuung Ihres _ vy, vy;\nPferdes (Betreuungsgeld) A ~)\nErhdhte Invaliditdtsleistung bei Tragen eines Helmes\n_ 5% 10 %\n(Helmklausel) |\nFremdreiter-Unfallschutz _ _\n(Wenn das Pferd bei der GHV haftpflichtversichert ist)\n-  Invaliditdtsleistung - - 25.000 EUR\n- Krankenhaustagegeld - - 10 EUR\n- Todesfall-Leistung - - 5.000 EUR\nExtra-Leistungen fur Katze und Besitzer\nTierarztkosten nach Autounfall mit Ihrer Katze = bis 300 EUR bis 300 EUR\nErhohtes Krankenhaustagegeld flr die Betreuung Ihrer Katze\n1 _ 50 % 50 %\n(Betreuungsgela)\nDoppeltes Gipsgeld bei Verkehrsunfall mit Ihrer Katze = = 600 EUR\nExtra-Leistungen fur Jager\nErhdhte Invaliditdtsleistung bei Jagdunfall _ 5% 10 %\nErhohte Todesfall-Leistung bei Jagdunfall _ 50 % 100 %\nExtra-Leistungen fur Land- und Forstwirtschaft\n8 Betriebs- und Haushaltshilfe 100 EUR\n5 Extra-Leistungen fur Imker\n: Erhdhte Invaliditdtsleistung bei Unfall am Bienenstand _ 5% 10 %\nS Krankenhaustagegeld fur DesensibilisierungsmaBnahmen _ _\n\n\" bei Bestehen einer Katzen-OP- oder Krankenversicherung bei der GHV\n\nDer dargestellte Leistungsumfang ist eine KurzUbersicht.\nMaBgeblich fir den Versicherungsschutz ist ausschlieBlich der Wortlaut der Versicherungsbedingungen und besonderen Vereinbarungen.\n\nweitere\na| Informationen Giltig ab: 1. April 2025\n\nGHV | Der Versicherer fir Land & Leute\n\nSeite 3 Telefon: 06151 3603-188 | service@ghv-versicherung.de | www.ghvy-versicherung.de",
+        "char_count": 1908,
+        "elapsed_s": 1.168,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1908,
+          "word_count": 269,
+          "alpha_char_count": 1458,
+          "digit_ratio": 0.0445,
+          "nonsense_ratio": 0.0252,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 6.07
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_langs": [
+        "de"
+      ],
+      "source": "text_layer",
+      "text_layer_chars": 4829,
+      "arabic_chars": 0,
+      "latin_chars": 3835,
+      "arabic_ratio": 0.0,
+      "has_german_markers": true
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "cabinet_resolution_no_21_of_2020_concerning_service_fees_and_administrative_fines_in_the_ministry_of_human_resources_and_emiratisation (1) - Copy.pdf",
+    "detected_langs": [
+      "de",
+      "en"
+    ],
+    "lang_source": "text_layer",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "text_based",
+      "page_count": 11,
+      "pages_needing_ocr": [],
+      "ocr_page_count": 0,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 1.0,
+      "processing_time_ms": 1
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "CABINET RESOLUTION NO.21 OF 2020\n\nCONCERNING SERVICE FEES AND ADMINISTRATIVE FINES IN THE MINISTRY OF\n\nHUMAN RESOURCES AND EMIRATISATION\n\nCouncil of Ministers:\n\nHaving considered the Constitution, and\n\nFederal Law No. (1) of 1972 Concerning the Competencies of Ministries and the\nPowers of Ministers, and amendments thereto,\n\nFederal Law No. (8) of 1980 concerning Regulation of Labour Relations, and\namendments thereto;\n\nFederal Law No. (14) of 2016 Concerning Violations and Administrative Penalties\nin the Federal Government,\n\nFederal Decree-Law No. (26) of 2019 Concerning Public Finance;\n\nCabinet Resolution No. (25) of 2010 concerning Internal Work Permits applicable\nat the Ministry of Human Resources and Emiratisation, and amendments thereto,\nCabinet Resolution (26) of 2010 concerning the classification of establishments\ngoverned by Labor Relations Regulation Law and Bank Guarantees established\nthereon, and amendments thereto,\n\nCabinet Resolution No. 47 of 2019 concerning service fees and administrative fines\nin the Ministry of Human Resources and Emiratisation;\n\nPursuant to the proposal of the Minister of Finance, and the approval of the Council\nof Ministers,\n\nHas Resolved:\n\nARTICLE (1)\nDEFINITIONS\n\nFor the purposes of implementing the provisions of this Resolution, the following\nterms and expressions shall have the meanings opposite thereto unless the context\n\nrequires otherwise:",
+        "char_count": 1403,
+        "elapsed_s": 0.924,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1403,
+          "word_count": 198,
+          "alpha_char_count": 1104,
+          "digit_ratio": 0.0335,
+          "nonsense_ratio": 0.0292,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 6.02
+        }
+      },
+      {
+        "page_index": 1,
+        "text": "State\n\nMinistry\nMinister\nEstablishment\n\nCategories\n\nUnited Arab Emirates\nMinistry of Human Resources and Emiratisation\nMinister of Human Resources and Emiratisation\n\nAny economic, technical, industrial or commercial unit in\nwhich workers are employed and the objectives of which are\nto produce or market commodities or to provide services of\nany kind governed by the provisions of the Federal Law\nNo.(8) of 1980 thereof.\n\nCategories for the classification of establishments mentioned\nin Cabinet Resolution No. (8) of 2010 thereof.\n\nARTICLE (2)\nSERVICE FEES\n\na. The below prescribed fees for the services provided by the Ministry are based on\nthe tables attached herein:\n\nNa WN P\n\nWork permits inside the country\n\nWork permits from outside the country\n\nWork Mission Permit from outside the country\n\nRenewal and amendment of Work Permits and Employment Contracts\nTransfer of workers from one establishment to another\n\nPrivate Recruitment Agencies\n\nThe value of the services specified below, which the service provider collects in\n\nexchange for the services provided through the Ministry’s systems or any approved\nchannel, will be as follows:\n\nSr. Service Service Fees\nCategory (AED)\n1 Category 1 19\n2 Category 2 40\n3 Category 3 80",
+        "char_count": 1228,
+        "elapsed_s": 0.81,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1228,
+          "word_count": 189,
+          "alpha_char_count": 980,
+          "digit_ratio": 0.0187,
+          "nonsense_ratio": 0.0399,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.42
+        }
+      },
+      {
+        "page_index": 2,
+        "text": "4 Category 4 120\n5 Category 5 160\n6 Category 6 250\n7 Category 7 340\n8 Category 8 430\n\nc. The Council of Ministers, pursuant to the proposal of the Minister of Finance and\nafter coordination with the Minister, shall determine the services that will listed\nunder each of the categories of services referred to in clause (B) hereof.\n\nARTICLE (3)\n\nADMINISTRATIVE PENALTIES\n\nThe following administrative fines will be imposed to the violations opposite thereto:\n\nSr.\n\nViolation\n\nFine (AED)\n\nFailure to provide the Ministry with the\nEmployment Contract, within a period not\nexceeding (60) days from the date of amending\nthe worker’s status\n\n(100) per month, maximum\nof (2,000)\n\nFailure to renew work permit, within a period not\nexceeding 60 days from the date of its expiry\n\n(200) per month, maximum\nof (2,000)\n\nFailure to provide the Ministry with the\nEmployment Contract for a Work assignment\npermit, within a period not exceeding 30 days\nfrom the date the worker entered the country.\n\n(100) per day, maximum of\n(2,000)\n\nFailure to renew a work assignment permit,\nwithin a period not exceeding 7 days from the date\nof its expiry\n\n(100) per day, maximum of\n(2,000)\n\nIn case the establishment commits false\nEmiratization\n\n20,000 National\n\nemployee\n\nper",
+        "char_count": 1246,
+        "elapsed_s": 0.91,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1246,
+          "word_count": 206,
+          "alpha_char_count": 911,
+          "digit_ratio": 0.053,
+          "nonsense_ratio": 0.0465,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 4.96
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_langs": [
+        "de"
+      ],
+      "source": "text_layer",
+      "text_layer_chars": 4036,
+      "arabic_chars": 0,
+      "latin_chars": 2991,
+      "arabic_ratio": 0.0,
+      "has_german_markers": true
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "cabinet_resolution_no_96_of_2023_regarding_an_alternative_end_of_service_benefits_system - Copy.pdf",
+    "detected_langs": [
+      "en"
+    ],
+    "lang_source": "text_layer",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "text_based",
+      "page_count": 16,
+      "pages_needing_ocr": [],
+      "ocr_page_count": 0,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 1.0,
+      "processing_time_ms": 2
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "CABINET RESOLUTION NO. (96) OF 2023\nREGARDING AN ALTERNATIVE END-OF-SERVICE BENEFITS SYSTEM\n\nThe Cabinet\n\n- Having perused the Constitution\n\n- Federal Law No. (1) of 1972, concerning jurisdictions of the Ministries and\npowers of the Ministers as amended\n\n- Federal Decree-Law No. 33 of 2021 concerning Regulation of Labour Relations\nand its Amendments\n\n- Cabinet Resolution No. (1) of 2022 regarding the executive regulations of\nFederal Decree-Law on Regulation of Labour Relations\n\n- According to the proposal of the Minister of Human Resources and\nEmiratization and the approval of the Council of Ministers\n\nResolved\n\nArticle 1\nDefinitions\n\nFor the purposes of implementing this Resolution, the following terms and\nexpressions shall have the meanings opposite thereto unless the context requires\n\notherwise:\nState : United Arab Emirates\nMinistry : Ministry of Human Resources and Emiratisation\nAuthority : Securities and Commodities Authority\nCentral Bank : Central Bank of the United Arab Emirates\nDecree law : Federal Decree-Law No. 33 of 2021 concerning\n\nRegulation of Labour Relations\n\nThis document was translated to English through a third party. The ministry is not responsible for any possible discrepancies between it and the\noriginal document",
+        "char_count": 1254,
+        "elapsed_s": 0.799,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1254,
+          "word_count": 188,
+          "alpha_char_count": 996,
+          "digit_ratio": 0.0231,
+          "nonsense_ratio": 0.0295,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.61
+        }
+      },
+      {
+        "page_index": 1,
+        "text": "Employer : An individual or a business that hires one or more\nworkers in exchange for a salary\n\nBasic Salary : The wage stipulated in the employment contract,\nwhich is paid to employees on monthly, weekly,\ndaily, or hourly basis in exchange for the\nperformance of their duties under the employment\ncontract, without additional bonuses or allowances.\n\nTotal Salary : The Basic wage plus cash allowances and in-kind\nbenefits that are outlined in their employment\ncontracts or under the law, as well as benefits in-\nkind provided to employees by employers, or their\nequivalents in cash, if these benefits are\nincorporated into the salary or allowances an\nemployee is entitled to under their employment\ncontract or establishment's system as compensation\nfor their work, the risks associated with their work\nor any other reason. Allowances provided to cover\nhigh living costs or a percentage of sales, or a\npercentage of profit derived from the employee's\nefforts.\n\nAlternative System : An alternative to the end-of-service benefits system\ncurrently in effect is provided by an alternative\nsystem governed by the Decree-Law and _ its\nexecutive regulations, namely, employers pay a\nmonthly subscription to an investment fund for the\npurpose of enabling beneficiaries to receive their\nentitlements upon completion of their employment\nfrom the basic subscription amount allocated to\nthem as well as any investment returns generated in\n\nThis document was translated to English through a third party. The ministry is not responsible for any possible discrepancies between it and the\noriginal document",
+        "char_count": 1590,
+        "elapsed_s": 0.919,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1590,
+          "word_count": 249,
+          "alpha_char_count": 1310,
+          "digit_ratio": 0.0,
+          "nonsense_ratio": 0.0214,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.37
+        }
+      },
+      {
+        "page_index": 2,
+        "text": "lieu of their end-of-service benefits, in accordance\nwith this Resolution.\n\nInvestment Fund : Aninvestment fund that is licensed by the Authority\nand subject to its rules and regulations for the\npurposes of the alternative system.\n\nFund Offering : The document that contains all the details, terms,\n\nDocument and conditions pertaining to the offering as well as\nall the information necessary to introduce the\nproduct in accordance with the authority's\nregulations.\n\nBeneficiary : Anemployee who is registered under the alternative\nsystem and who is selected by their employer to\nreceive gratuity under the alternative system.\n\nEnd-Of-Service Benefits : Sum paid by the employer to the employee\n(beneficiary) upon the termination of his\nemployment in accordance with the Decree Law.\n\nSkilled Labour : Professional level workers (first to fifth levels),\nwhose monthly salary is at least (4,000) four\nthousand dirhams or equivalent as per the approved\nlabour classification system on the labour market in\nthe state, according to Cabinet Resolution No. (2/\n2m) of 2022 pertaining to the updating of the\ncountry's labour classification system.\n\nBasic Subscription : Amount paid by the employer on a monthly basis for\nthe purpose of implementing the alternative system\nas provided in this decree\n\nThis document was translated to English through a third party. The ministry is not responsible for any possible discrepancies between it and the\noriginal document",
+        "char_count": 1453,
+        "elapsed_s": 0.949,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1453,
+          "word_count": 223,
+          "alpha_char_count": 1178,
+          "digit_ratio": 0.0069,
+          "nonsense_ratio": 0.0241,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.48
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_langs": [
+        "en"
+      ],
+      "source": "text_layer",
+      "text_layer_chars": 4413,
+      "arabic_chars": 0,
+      "latin_chars": 3484,
+      "arabic_ratio": 0.0,
+      "has_german_markers": false
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "federal_decree_law_no_33_of_2021_regarding_the_regulation_of_employment_relationship_and_its_amendments - Copy.pdf",
+    "detected_langs": [
+      "en"
+    ],
+    "lang_source": "text_layer",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "text_based",
+      "page_count": 58,
+      "pages_needing_ocr": [],
+      "ocr_page_count": 0,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 0.75,
+      "processing_time_ms": 9
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "UNITED ARAB EMIRATES (fm) 3! 2 pall GLLex!\n\nhe - _\n\nMINISTRY OF HUMAN RESOURCES Wl HA alg My\n& EMIRATISATION lag\n\n\\\\ -\nSS ——— TaD\n\nFederal Decree-Law No. (33) of 2021\nRegarding the Regulation of Employment\nRelationships and its amendments",
+        "char_count": 238,
+        "elapsed_s": 0.383,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 238,
+          "word_count": 42,
+          "alpha_char_count": 168,
+          "digit_ratio": 0.0336,
+          "nonsense_ratio": 0.0504,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 4.6
+        }
+      },
+      {
+        "page_index": 1,
+        "text": "",
+        "char_count": 0,
+        "elapsed_s": 0.247,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 0.0,
+          "primary_script": "empty",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 0,
+          "nonsense_ratio": 0.0,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "digit_ratio": 0.0,
+          "avg_word_len": 0.0
+        }
+      },
+      {
+        "page_index": 2,
+        "text": "",
+        "char_count": 0,
+        "elapsed_s": 0.192,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 0.0,
+          "primary_script": "empty",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 0,
+          "nonsense_ratio": 0.0,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "digit_ratio": 0.0,
+          "avg_word_len": 0.0
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_langs": [
+        "en"
+      ],
+      "source": "text_layer",
+      "text_layer_chars": 217,
+      "arabic_chars": 0,
+      "latin_chars": 166,
+      "arabic_ratio": 0.0,
+      "has_german_markers": false
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "image pie chart about labor distribution in january 2025 - Copy.jpg",
+    "detected_langs": [
+      "en"
+    ],
+    "lang_source": "filename",
+    "file_type": "image",
+    "pdf_inspector": {
+      "available": false
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "2025 salts — Al galls Jarll gj gus ob AlLeall eajgi\n\nRL gill Uy yale gill g Ay pall al gall 5) ge Alena Leal) ay igh ily = ge Lainy! g gill iby Al pally Gold! g Ubi lance eal ait\n2025 se 2025\n\nCee 93\n\n8,432,51\n87%\n\n6,364,003\n86%\n\n2025 piss qiassacLall De Jats Y5 « cuba sSy 4p pall a slyall Sylyy cake sacs, Mull aly oh Lally Geatall, 4 . r\nScola Dall Jats Y aks ghisAlly Gall peal 5 Weal Jas Call\n4 (2583 %86 (3) %14 ) 53: 1S 8 Med aig a 5",
+        "char_count": 440,
+        "elapsed_s": 0.428,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 440,
+          "word_count": 100,
+          "alpha_char_count": 258,
+          "digit_ratio": 0.125,
+          "nonsense_ratio": 0.0341,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 3.36
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_lang": null,
+      "source": "not_pdf"
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "uae_numbers_english_page_16_17_landscape - Copy.pdf",
+    "detected_langs": [
+      "en"
+    ],
+    "lang_source": "text_layer",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "text_based",
+      "page_count": 1,
+      "pages_needing_ocr": [],
+      "ocr_page_count": 0,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 1.0,
+      "processing_time_ms": 16
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "Manufacturing Activities\n\nBillion Dirhams\n\n1330 1ag4 80d\n068 ed:\n\n1975 1980 1985 1990\n\nBillion Dirhams a\n\na\n\nb\n\n8\non\n\nInsurance, Finance and Real Estate\n\nBillion Dirhams\n\nO—-\n\n1975 1980 1985\n\n1990\n\nWholesale and Retail\n\nBillion Dirhams\n\noa\n\n}\n\nv4 2379 3154 *\n[|\n\n1995 2000 2005 2010 2015 2020\n\n60\n\n1975 1980\n\n5\n0\n\n1985\n\n1990\n\n1995 2000 2005 2010 2015 2020\n\nSpecial Edition to mark the UAE's Golden Jubilee |__4 —“y!\nals oul\n\n‘ederal Competitiveness & Statistics Centre (FCSC UAE) | Sars.\n\n17",
+        "char_count": 491,
+        "elapsed_s": 0.577,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 491,
+          "word_count": 85,
+          "alpha_char_count": 235,
+          "digit_ratio": 0.2525,
+          "nonsense_ratio": 0.1202,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 4.47
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_langs": [
+        "en"
+      ],
+      "source": "text_layer",
+      "text_layer_chars": 763,
+      "arabic_chars": 0,
+      "latin_chars": 308,
+      "arabic_ratio": 0.0,
+      "has_german_markers": false
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "uae_numbers_english_page_16_17_portrait - Copy.pdf",
+    "detected_langs": [
+      "en"
+    ],
+    "lang_source": "text_layer",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "text_based",
+      "page_count": 1,
+      "pages_needing_ocr": [],
+      "ocr_page_count": 0,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 1.0,
+      "processing_time_ms": 17
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "(awn 3594) 223499 sonsieys 2 ssouaANaduiO JeIapay\naalgne uepIog s,3¥N eu yew! 0} UORIPS [eIpedg\n\niri]\n\nOcOc GLOC OL0Z GO00c O00 G66L 0661\n\nC} } )\n\nG86L O86L SGZ/6L\n\n)} )} C}\n\nana?\n-_ peyp wee tne 8\n\nggg ee som\nore YsIG WW\n\njle}ay pue sjesajoupA\n\nOcOc GLOC OL0Z GO0O0c O00 G66L O66lL SG86L O86l SGZ6L\n—o O———\n\nsuey Uoll|Ig\n\n9}e}Sq |eay pue soueUl4 ‘soueINSU]\n\nitr i—}\n\n0c0Zd\n\n(avn 3s34) 213U29 srasieys *B ssaUaARedwOD |eLapay\neelignr uepjoy s,3yN eur Yew 0} LONI jeIDeds\n\nGLO?\n\nOLO?\n\non cL\n\nsuey uoll|ig\n\nuoljon1jsuoyd\n\nGOOc 000 S66L O66lL SG86EL O86L\n\nGZ6L\n\nsued Uolliig\n\nSeAnoy Buunjoeynuesy|",
+        "char_count": 594,
+        "elapsed_s": 0.7,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 594,
+          "word_count": 102,
+          "alpha_char_count": 356,
+          "digit_ratio": 0.1195,
+          "nonsense_ratio": 0.0859,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 4.61
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_langs": [
+        "en"
+      ],
+      "source": "text_layer",
+      "text_layer_chars": 763,
+      "arabic_chars": 0,
+      "latin_chars": 308,
+      "arabic_ratio": 0.0,
+      "has_german_markers": false
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "world-stats-pocketbook-2023.pdf",
+    "detected_langs": [
+      "en"
+    ],
+    "lang_source": "filename",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "text_based",
+      "page_count": 292,
+      "pages_needing_ocr": [],
+      "ocr_page_count": 0,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 1.0,
+      "processing_time_ms": 333
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "Series V, No. 47\n\nDepartment of Economic\nand Social Affairs\nStatistics Division\n\nWorld\nStatistics\nPocketbook\n2023 edition\n\nContaining data available\nas of 31 July 2023\n\nUnited Nations, New York, 2023",
+        "char_count": 199,
+        "elapsed_s": 0.235,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 199,
+          "word_count": 30,
+          "alpha_char_count": 146,
+          "digit_ratio": 0.0804,
+          "nonsense_ratio": 0.0704,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.53
+        }
+      },
+      {
+        "page_index": 1,
+        "text": "The Department of Economic and Social Affairs of the United Nations is a vital\ninterface between global policies in the economic, social and environmental\nspheres and national action. The Department works in three main interlinked\nareas: (i) it compiles, generates and analyses a wide range of economic, social\nand environmental data and information on which United Nations Member\nStates draw to review common problems and to take stock of policy options; (ii)\nit facilitates the negotiations of Member States in many intergovernmental\nbodies on joint courses of action to address ongoing or emerging global\nchallenges; and (iii) it advises interested Governments on the ways and means\nof translating policy frameworks developed in United Nations conferences and\nsummits into programmes at the country level and, through technical\n\nassistance, helps build national capacities.\n\nNote\n\nThe designations employed and the presentation of the material in the present\npublication do not imply the expression of any opinion whatsoever on the part of\nthe United Nations concerning the legal status of any country or of its authorities,\nor the delimitations of its frontiers. The term “country” as used in this report also\nrefers, as appropriate, to territories or areas. The designations of country groups\nare intended solely for statistical or analytical convenience and do not necessarily\nexpress a judgement about the stage reached by a particular country, territory or\narea in the development process. Mention of the names of firms and commercial\nproducts does not imply endorsement by the United Nations. The symbols of United\n\nNations documents are composed of capital letters and numbers.\n\nThe term “country” as used in the text of this publication also refers, as appropriate,\nto territories or areas.\n\nVisit the United Nations World Wide Web site on the Internet:\nFor the Department of Economic and Social Affairs,\nhttp://www.un.org/esa/desa/\n\nFor statistics and statistical publications,\nhttp://unstats.un.org/unsd/\n\nFor UN publications, https://shop.un.org/\n\nST/ESA/STAT/SER.V/47\nUnited Nations Publication\nSales No. E.23.X1.4\n\nISBN: 978-92-1-259226-8\nelSBN: 978-92-1-002524-9\nPrint ISSN: 2411-8915\nelSSN: 2411-894X\n\nAll queries on rights and licenses, including subsidiary rights, should be addressed\nto United Nations Publications Customer Service, PO Box 960, Herndon, VA 20172,\nUSA, e-mail: order@un.org, web: https://shop.un.org/\n\nWorld Statistics Pocketbook, 2023 edition\n\n© 2023 United Nations\n\nNew York, NY 10017, United States of America\nAll rights reserved\n\nPrinted by the United Nations, New York",
+        "char_count": 2610,
+        "elapsed_s": 1.147,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 2610,
+          "word_count": 380,
+          "alpha_char_count": 2044,
+          "digit_ratio": 0.0261,
+          "nonsense_ratio": 0.023,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.83
+        }
+      },
+      {
+        "page_index": 2,
+        "text": "Contents\nExplanatory notes ... i\nIntroduction ........ we\nProfile information and indicator list\nWorld, regional and country profiles\n\nTechnical notes\nStatistical sources and references.\nRelated statistical products\n\nWorld, Regional and Country profiles\n\nWorld 3 Aruba 43\nAfrica 4 Australia 44\nNorthern Africa 5 Austria 45\nSub-Saharan Africa 6 Azerbaijan 46\nEastern Africa 7 Bahamas 47\nMiddle Africa 8 Bahrain 48\nSouthern Africa 9 Bangladesh 49\nWestern Africa 10 Barbados 50\nAmericas 11 Belarus 51\nNorthern America : Belgium 52\nLatin America and the Caribbean............. 13 Belize 53\nCaribbean 14 Benin 54\nCentral America 15 Bermuda 55\nSouth America 16 Bhutan 56\nAsia 17 Bolivia (Plurinational State of) .......... eee 57\nCentral Asia 18 Bonaire, Sint Eustatius and Saba................ 58\nEastern Asia 19 Bosnia and Herzegovina .........:seeseeeeeeeee 59\nSouth-eastern ASia oe ceeeteeeteeeeseeeeeeee 20 Botswana 60\nSouthern Asia 21 ‘Brazil 61\nWestern Asia 22 British Virgin Islands.........ccsceseeseeeeeeeeeee 62\nEurope 23 Brunei Darussalam 63\nEastern Europe 24 Bulgaria 64\nNorthern Europe 25 Burkina Faso 65\nSouthern Europe 26 Burundi 66\nWestern Europe 27 Cabo Verde 67\nOceania 28 Cambodia 68\nAustralia and New Zealand.........ccccceeeee 29 Cameroon 69\nMelanesia 30 Canada 70\nMicronesia 31 Cayman Islands 71\nPolynesia 32 Central African REpUDIIC ........eeceseeeeeeeeeeees 72\nAfghanistan 33 Chad 73\nAlbania 34 Channel Islands 74\nAlgeria 35 Chile 1S\nAmerican Samoa 36 China 76\nAndorra 37. China, Hong Kong SAR ......ecceeseeeeeeeeee 77\nAngola 3g China, Macao SAR 78\nAnguilla 39 Colombia 79\nAntigua and Barbuda... 40 Comoros 80\nArgentina 41 Congo 81\nArmenia 42 Cook Islands 82\n\nWorld Statistics Pocketbook 2023 iii",
+        "char_count": 1717,
+        "elapsed_s": 0.812,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 1.0,
+          "primary_script": "Latin",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1717,
+          "word_count": 256,
+          "alpha_char_count": 1197,
+          "digit_ratio": 0.0891,
+          "nonsense_ratio": 0.0309,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.7
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_lang": null,
+      "source": "garbled_text_layer",
+      "text_layer_chars": 9093,
+      "alpha_ratio": 0.3619,
+      "junk_ratio": 0.6108
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "اتفاقية مستوى الخدمة بين الوزارة وزارة الاقتصاد - موقعة من الطرفين.pdf",
+    "detected_langs": [
+      "ar",
+      "en"
+    ],
+    "lang_source": "filename",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "scanned",
+      "page_count": 20,
+      "pages_needing_ocr": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20
+      ],
+      "ocr_page_count": 20,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 0.949999988079071,
+      "processing_time_ms": 4
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "وزارةالاقتص اد والتوطين\n\nMINISTRY OF HUMAN RESOURCES MINISTRY OF ECONOMY\n& EMIRATISATION\n\nاتفاقية مستوى الخدمة بين\nوزارة الموارد البشرية و التوطين\n\n\"بشأن إقامة إطار للتعاون في مجالات التنسيق الإحصائيء تبادل البيانات, نظم التحكم,\nوالأعمال المرتبطة الأخرى\"\n\nتشمل هذه الاتفاقية على (19) صفحات دون الغلاف",
+        "char_count": 300,
+        "elapsed_s": 0.617,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.7787,
+          "latin_ratio": 0.2213,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 300,
+          "word_count": 44,
+          "alpha_char_count": 244,
+          "digit_ratio": 0.0067,
+          "nonsense_ratio": 0.0367,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.75
+        }
+      },
+      {
+        "page_index": 1,
+        "text": "sL_ ‏وزارة الااقست هه‎\nMINISTRY OF ECONOMY\n\nMINISTRY OF HUMAN RESOURCES\n& EMIRATISATION\n\nإنه في يوم الأثنين الموافق 8 يناير 2024« تم توقيع هذه الاتفاقية بين كل من:\n\nالبشرية\nوالتوطين:\n\nوعنوانها: المحيصنة - دبي . ‎Ags‏ الامارات العربية المتحدة\nص.ب : 5025 دبي\nهاتف : 600590000\n\nويمثلها لأغراض هذه الاتفاقية سعادة/ خليل إبراهيم الخوري, بصفته\nوكيل الوازرة لشؤون الموارد البشرية.\n\nويشارإلها فيما بعد \"بالطرف الأول \"\n\nوعنوانها: مدينة أبوظبي, دولة الإمارات العربية المتحدة\n\nص.ب: 901 أبوظبي\n\nهاتف: 0262660000\n\nالبريد الإلكتروني: ‎www.moec.gov.ae‏\n\nويمثلها لأغراض هذه الاتفاقية سعادة/ عبدالله أحمد آل ‎leo‏ بصفته\nوكيل وزاره الاقتصاد.\n\nوبشار إلها فيما بعد \"بالطرف الثاني \"\n\nويشارالهما فيما بعد منفردين ب \" الطرف”\n\nومجتمعين ب “الطرفين أو الطرفان\"",
+        "char_count": 734,
+        "elapsed_s": 0.883,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.8619,
+          "latin_ratio": 0.1381,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 734,
+          "word_count": 113,
+          "alpha_char_count": 536,
+          "digit_ratio": 0.0422,
+          "nonsense_ratio": 0.0586,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.38
+        }
+      },
+      {
+        "page_index": 2,
+        "text": "(a\n\nBt Ne anh\n/\n‏ام‎\n‏اليس ةا‎ ay gee ‏وزازة‎\n‏وزارةالاقتصطاد والتاحوط ل ين‎\nMINISTRY OF HUMAN RESOURCES MINISTRY OF ECONOMY\n\n& EMIRATISATION\n\nتمبيد\n\nانطلاقاً من الرغبة المشتركة للطرفين في التعاون وتبادل البيانات و بناء القدرات الفنية و تعزيزها ‎Ley‏ يصب باتجاه\nتحقيق الأهداف والغايات والرؤى والسياسات والخطط والبرامج الاستراتيجية لكل منهما يلبي من خلالها\nاحتياجات واضعي السياسات ومجتمع الأعمال وكافة شرائح الجميور للمتطلبات المرجوة من الخدمات و البيانات\nالتخصصية الملائمة و الموثوقة, وإيماناً من الطرفين بأهمية الشراكة الاستراتيجية في ‎Slee‏ إتاحة المعلومات\nوالبيانات الداعمة لاطلاع كل طرف بالمهام والاختصاصات الموكلة إليه على الوجه المأمول. ‎leg‏ وجه الخصوص\nفيما يتعلق بتطوير منظومة بيانات تخصصية متكاملة لسوق العمل في دولة الامارات كمنظومة موحدة تمتاز\nبالشمولية والدقة والاتساق والحداثة. وإدراكًا للطرفين لأهمية تعزيز العلاقات المشتركة وتحقيق الاستفادة\nالقصوى من البيانات والقدرات التقنية لدى كل طرفء فقد اتفقا على ‎aly)‏ هذه المذكرة على مستوى الخدمة\nلتحديد الإطار العام الذي يرسم فيه سبل التعاون والشراكة بينهما.\n\nوعليه ويكافة الصفات المعتبرة قانوناً اتفق الطرفان على تنفيذ البنود والاحكام المبينة أدناه:\n\nالمادة )1(\nلغايات تطبيق أحكام بنود هذه الاتفاقية والعمل بموجهاء يعتبر التمبيد أعلاه وأي ملحق آخر لها ‎gat‏ عليه\nالطرفان جزءً ‎١‏ لا يتجزأ منهاء ومكملاً لها .\n\nالمادة (2)\n\n\"التعريفات والمصطلحات\"\n\nمصادر البيانات: تضم هذه المصادر كافة السجلات الإدارية والبيانات الوصفية المتعلقة بالأعمال الإحصائية.\nوتشمل أيضًا الاستفسارات الطارئة والدورية في إطار موضوع معين أو مجموعة من التعداداتء وذلك لتحليل\nودراسة مجموعة مختارة من القضايا المعنية.\nالبيانات الوصفية: تتألف من المعلومات الأساسية والضرورية التي تسبل شرح ووصف ‎blll‏ وتساعد\nالمستخدمين على فهمها وتفسيرها. وتشمل هذه المعلومات المفاهيم. والتعريفات. والتصنيفاتء والمجتمع\nالمستهدفء والتغطية الجغرافية, والمرجعية ‎Ano!‏ والمنيجيات. والاستبيانات: ونطاق العملء إلخ",
+        "char_count": 1815,
+        "elapsed_s": 2.072,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.9395,
+          "latin_ratio": 0.0605,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 1
+        },
+        "garble_signals": {
+          "char_count": 1815,
+          "word_count": 266,
+          "alpha_char_count": 1480,
+          "digit_ratio": 0.0017,
+          "nonsense_ratio": 0.0342,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.79
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_lang": null,
+      "source": "no_text_layer",
+      "text_layer_chars": 0
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "القرار التنظيمي لوزارة الاقتصاد1 (2) - Copy.pdf",
+    "detected_langs": [
+      "ar",
+      "de",
+      "en"
+    ],
+    "lang_source": "text_layer",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "text_based",
+      "page_count": 35,
+      "pages_needing_ocr": [],
+      "ocr_page_count": 0,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 1.0,
+      "processing_time_ms": 6
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "الاماراتالعرييةالمتحدة د ‎io‏ 7\nد ‎ih elssall‏ 525 ل\n\nRe\n\nUNITED ARAB EMIRATES\nTHE CABINET\n\nقرار مجلس الوزراء رقم ) 68 ) لسنة 2020\nفي شأن الهيكل التنظيمي لوزارة الاقتصاد\n\nمجلس الوزراء:\n\n- بعد الاطلاع على الدستور»\n\n- وعلى القانون الاتحادي رقم (1) لسنة 1972 بشأن اختصاصات الوزارات وصلاحيات الوزراء\nوتعديلاته»\n\n- وعلى المرسوم بقانون اتحادي رقم )11( لسنة 2008 بشأن الموارد البشرية في الحكومة ‎Apes!‏\n‏وتعديلاته»\n\n- وعلى المرسوم بقانون اتحادي رقم )26( لسنة 2019 بشأن المالية العامة؛\n\n- وعلى قرار مجلس الوزراء رقم )44( لسنة 2018 في شأن الهيكل التنظيمي لوزارة الاقتصادء\n\nوتعديلاته»\n‎sling -‏ على ما عرضه وزير الاقتصادء وموافقة مجلس الوزراء »\nقرر:\nال مادة (1)\nالتعريفات\nفي تطبيق أحكام هذا ‎GLAS aad «ball‏ والعبارات التالية المعاني المبينة قرين كل منهاء ما لم ‎aks‏\n‏الدولة : الإمارات العربية المتحدة.\nالوزير : وزير الاقتصاد.\nالوزارة ‏ : وزارة الاقتصاد.\nا مادة )2(\n\nيتكون الهيكل التنظيمي للوزارة وفقاً للخريطة التنظيمية المرفقة بهذا القرارء وعلى النحو المبين في المواد",
+        "char_count": 960,
+        "elapsed_s": 1.121,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.9092,
+          "latin_ratio": 0.0908,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 960,
+          "word_count": 160,
+          "alpha_char_count": 703,
+          "digit_ratio": 0.0365,
+          "nonsense_ratio": 0.0531,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 4.94
+        }
+      },
+      {
+        "page_index": 1,
+        "text": "الاماراتالعربيةالمتحدة لآ ‎ie‏ 2\nالوذ اه 0 ‎ee‏ ل\nمجلس الوزر ‎Aaa‏\n\nRe\n\nUNITED ARAB EMIRATES\nTHE CABINET\n\nالمادة )3(\nالوزير\nالوزير هو الرئيس الأعلى للوزارة ويمارس الصلاحيات المخولة له بمقتضى القوانين الاتحادية» وله في سبيل\nذلك ممارسة الصلاحيات الآتية:\n\n1. وضع السياسة العامة والتوجه الاستراتيجي للوزارة.\n\n2. الإشراف على وضع واعتماد ‎ALAN‏ الاستراتيجية للوزارة والبرامج التنفيذية لها ومتابعة إنجازها.\n\n3. الإشراف العام على سير العمل في الوزارة واعتماد القرارات المنظمة لذلك» ومتابعة تقارير الإنجاز.\n\n4. الإشراف العام على إعداد مشروع ميزانية الوزارة ومتابعة تنفيذ الميزانية ضمن الاعتمادات المقررة\nلها.\n\n5. أي صلاحيات أو مهام ‎Wal‏ تُخول له بمقتضى القوانين واللوائح والقرارات الصادرة من مجلس\nالوزراء .\n\nال مادة ‎(A)‏\n‏الوحدات التنظيمية التابعة للوزير\n\nالوحدات التنظيمية التابعة للوزير:\n1. مكتب الوزير.\nمستشارو الوزير.\nمكتب التدقيق الداخلي.\nإدارة الاستراتيجية والمستقبل.\nإدارة الاتصال الحكومي.\n. وزير الدولة لريادة الأعمال والمشاريع الصغيرة والمتوسطة.\nوزير الدولة للتجارة الخارجية.\nوكيل الوزارة.\n\nCON ‏هن لح صن الخ‎ LW\n\nالمادة (5)\nمكتب الوزير",
+        "char_count": 1038,
+        "elapsed_s": 1.042,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.9387,
+          "latin_ratio": 0.0613,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1038,
+          "word_count": 156,
+          "alpha_char_count": 815,
+          "digit_ratio": 0.0096,
+          "nonsense_ratio": 0.0549,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.58
+        }
+      },
+      {
+        "page_index": 2,
+        "text": "به /\n\nUNITED ARAB EMIRATES (QMS) ‏الإمارات العربية المتحدة‎\nTHE CABINET [ARAN ‏مجلس الوزراء‎\nAas\n\ntiga,\n\n1. القيام بمختلف أعمال السكرتارية» وتأمين إعداد وطباعة المراسلات والتقارير الخاصة بالوزير.\n\n2. التحضير للاجتماعات والزبارات الخاصة بالوزير ومتابعة نتائجها.\n\n3. تنظيم الاتصالات والمراسلات الرسمية مع مختلف الجهات»ء والقيام بأنشطة العلاقات العامة\nوالبروتوكولات الخاصة بالوزير.\n\n4. التنسيق والمتابعة بخصوص متطلبات مجلس الوزراء .\n\n5. أية مهام أخرى ترتبط بطبيعة عمل ‎Sal)‏ أو يكلف بها من قبل الوزير.\n\n(6) Sats\n‏مستشارو الوزير‎\n‏يكون للوزير مستشارون في مجالات العمل المختلفة بالوزارة» يتولون دراسة الموضوعات المحالة إليهم من‎\n\nالوزير وإبداء الرأي بشأنها.\n\nا مادة )7(\nمكتب التدقيق الداخلي\n\nيتولى مكتب التدقيق الداخلي ممارسة المهام الآتية:\n1. إعداد الخطة السنوية للتدقيق ‎ely‏ على تفييم موضوعي لمخاطر الأنشطة والأعمال بالوزارة»ء موضحاً\nفيها مهام التدقيق والجدول الزمني المتوقع لتنفيذها.\n2. القيام بأعمال التدقيق الداخلي وفقاً للأسس والقواعد والمعايير المتعارف عليها قانونياً ومالياً وإدارياً\nللتحقق من مدى التزام الوحدات التنظيمية بتطبيق كافة النظم واللوائح المالية والإدارية المعمول بها\n3. القيام بدراسة التقارير المقدمة من الجهات الرقابية المختصة في الدولة للتحقق من مدى التزام\nالوحدات التنظيمية بالوزارة بتطبيق كافة النظم واللوائح المالية والإدارية المعمول بها في الحكومة\nالاتحادية.\n4. تقديم تقرير شامل للوزير حول نتائج التدقيق ونتائج دراسته؛» ومتابعة تقارير الجهات الرقابية الأخرى\nوتقييم كفاءة العمل في الوحدات التنظيمية في الوزارة وتقديم الاقتراحات والتوصيات المناسبة.\n5. التنسيق مع ديوان المحاسبة خلال مرحلة التخطيط ومتابعة تنفيذ التوصيات والملاحظات الواردة في\nالتقارير مع الوحدات التنظيمية المختلفة.\n. إبداء ‎Ghyll‏ والمشورة بشأن النظم قبل ويعد تطبيقها أو اقتراح معايير إضافية من أجل تحسين\nإجراءات الحوكمة وإدارة المخاطر والرقابة.",
+        "char_count": 1733,
+        "elapsed_s": 1.601,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.9595,
+          "latin_ratio": 0.0405,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1733,
+          "word_count": 253,
+          "alpha_char_count": 1400,
+          "digit_ratio": 0.0069,
+          "nonsense_ratio": 0.0317,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.81
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_langs": [
+        "ar",
+        "de"
+      ],
+      "source": "text_layer",
+      "text_layer_chars": 4172,
+      "arabic_chars": 2169,
+      "latin_chars": 103,
+      "arabic_ratio": 0.9547,
+      "has_german_markers": true
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "سياسة حوكمة و إدارة البيانات - Copy.pdf",
+    "detected_langs": [
+      "ar",
+      "en"
+    ],
+    "lang_source": "text_layer",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "text_based",
+      "page_count": 10,
+      "pages_needing_ocr": [],
+      "ocr_page_count": 0,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 1.0,
+      "processing_time_ms": 3
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "“~\n\nKin:\n\n/\niii We iy\n\n4 » Pri ‏وزارة المواردالك‎\n‏والنتوطين‎\n‎MINISTRY OF HUMAN RESOURCES\n& EMIRATISATION\n\nسياسة حوكمة وإدارة البيانات\n\n‎YOO‏ وزارة الموارد البشرية والتوطين — جميع الحقوق محفوظة للإستخدام الداخلي فقط\nإعداد: إدارة البيانات\nالإصدار: ‎١١‏ | تاريخ الإصدار: ‎7١75-07-02‏",
+        "char_count": 282,
+        "elapsed_s": 0.682,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.7389,
+          "latin_ratio": 0.2611,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 3
+        },
+        "garble_signals": {
+          "char_count": 282,
+          "word_count": 43,
+          "alpha_char_count": 200,
+          "digit_ratio": 0.039,
+          "nonsense_ratio": 0.0957,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.47
+        }
+      },
+      {
+        "page_index": 1,
+        "text": "جدول تعريف الوثيقة\n\nجدول الإعتماد\n\nAL GO)\n\nالبند\n\nعنوان الوثيقة سياسة حوكمة وادارة البيانات\nرقم ‎١,0 sho‏\n\nالتصنيف )عام .داخلي\nالحالة سارية\n\nنوع الوثيقة وثيقة رسمية معتمدة\n\nتاريخ النشر 6-3+-25-¥\n\nتاريخ المراجعة 2.-7.-75.؟\n\nالجهة المعتمدة المسمى الوظيفي\n\nإدارة البيانات\n\nإدارة معلومات سوق العمل\nإدارة الأمن السيبراني\nإدارة السياسات و الدراسات\n\nإدارة تخطيط التحول الرقمى\nقطاع التطوير الرقمى للأعمال\n\nقطاع سياسات سوق العمل\nقطاع الخدمات المساندة\n\nقطاع تنظيم و تطوير سوق العمل\nوزارة الموارد البشرية والتوطين\n\nمدير إدارة البيانات\n\nمدير إدارة معلومات سوق العمل\nمدير إدارة الأمن السيبراني\nمدير إدارة السياسات و الدراسات\n\nمدير إدارة تخطيط التحول الرقمى\nوكيل الوزارة المساعد لقطاع التطوير الرقمى للأعمال\n\nوكيل الوزارة المساعد لقطاع سياسات سوق العمل\nوكيل الوزارة المساعد لقطاع الخدمات المساندة\nوكيل الوزارة لتنظيم و تطوير سوق العمل\n\nوزير الموارد البشرية والتوطين\n\nالسيدة/ ريهام المطوع 2025-07-2\n\nالسيد/ عمران الشامسى\nالدكتور/ جاسم بو عصيبه\nالسيدة/ أسماء المدني\nالدكتور/ عبدالله النقى\nسعادة/ موسى الرئيسي\n\nتم الاعتماد\n\n2025-07-4 تم الاعتماد\nسعادة/ أحمد الناصر\n\nسعادة/ محمد صقر النعيمي\n\nسعادة/شيماء العوضي\n\nمعالى الدكتور/ عبدالرحمن العور\n\nمحم تجو مجحو سوس دجم\n\n35 7370-7-2\n\nوزارة الموارد البشرية والتوطين\n\nالإصدار الأول",
+        "char_count": 1206,
+        "elapsed_s": 1.065,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.9925,
+          "latin_ratio": 0.0075,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 1
+        },
+        "garble_signals": {
+          "char_count": 1206,
+          "word_count": 179,
+          "alpha_char_count": 933,
+          "digit_ratio": 0.0265,
+          "nonsense_ratio": 0.0655,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.58
+        }
+      },
+      {
+        "page_index": 2,
+        "text": "المصطلحات والمفاهيم\n\nل ‎Scie‏ التعريف المعتمد\n\nحوكمة البيانات\nمتعهد البيانات\nجودة البيانات\n\nالبيانات الوصفية\nالتصنيف الأمني\nللبيانات 1\n‎PDPL‏\n\nTDRA\n\nمالك البيانات\nالبيانات المرجعية\n\nالبيانات الرئيسية\nإتاحة البيانات\nتكامل البيانات\n\nالإطار المؤسسي الذي يُنظم إدارة البيانات من حيث الجودة, والأمان» والملكية» والامتثال.\nالشخص أو الجهة المسؤولة عن تنفيذ السياسات والإجراءات الخاصة بمجموعة بيانات معينة.\n\nهي المعلومات التى تصف و توضح خصائص البيانات و هيكلها و استخداماتها في الأنظمة الرقمية .\n\nحماية البيانات الشخصية من الاستخدام أو الإفصاح غير المصرح به.\n\nالقانون الإتحادى لحماية البيانات الشخصية\n\nالهيئة العامة لتنظيم الاتصالات والحكومة الرقمية\n\nالجهة أو الفرد المسؤول عن اتخاذ القرارات بشأن\n\nالبيانات التي نُستخدم لتصنيف أو ترميز البيانات الأخرى (مثل القوائم الموحدة للجنسيات أو أنواع\n\nالعقود).\n\nالبيانات الأساسية التى تصف الكيانات المحورية في العمل مثل ‎opal gall\"‏ \"المتعاملين\", \"الجهات.\"\nضمان توفر البيانات للمستخدمين المصرح لهم وقت الحاجة إليها.\n\nعملية الجمع بين البيانات من مصادر مختلفة وتقديمها بطريقة موحدة.",
+        "char_count": 1012,
+        "elapsed_s": 0.916,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.9758,
+          "latin_ratio": 0.0242,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1012,
+          "word_count": 146,
+          "alpha_char_count": 823,
+          "digit_ratio": 0.001,
+          "nonsense_ratio": 0.0474,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.83
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_langs": [
+        "ar",
+        "en"
+      ],
+      "source": "text_layer",
+      "text_layer_chars": 2986,
+      "arabic_chars": 2100,
+      "latin_chars": 8,
+      "arabic_ratio": 0.9962,
+      "has_german_markers": false
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "قرار مجلس الوزراء رقم (1) لسنة 2022 في شأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل.pdf",
+    "detected_langs": [
+      "ar",
+      "en"
+    ],
+    "lang_source": "filename",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "scanned",
+      "page_count": 21,
+      "pages_needing_ocr": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21
+      ],
+      "ocr_page_count": 21,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 0.949999988079071,
+      "processing_time_ms": 6
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "UNITED ARAB EMIRATES ‏الأسارات العربية المتحدة‎\nTHE CABINET ‏مجلس الوزراء‎\n\nقرارمجلس الوزراء رقم ( 1 ) لسنة 2022\nفي شأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم\nعلاقات العمل\nمجلس الوذراء:\n- بعد الاطلاع على الدستور,\n- وعلى القانون الاتحادي رقم )1( لسنة 1972 بشأن اختصاصات الوزارات وصلاحيات الوزراء.\nوتعديلاته:\n‎deg -‏ المرسوم بقانون اتحادي رقم )33( لسنة 2021 بشأن تنظيم علاقات العمل,\n- وعلى المرسوم بقانون اتحادي رقم )47( لسنة 2021 بشأن القواعد العامة الموحدة للعمل في دولة\nالامارات العربية المتحدة.\n— وبناءً على ما عرضه وزير الموارد البشرية والتوطين» وموافقة مجلس الوزراء.\nالمادة (1)\nالتعريفات\nتُطبق ‎old‏ التعريفات الواردة في المرسوم بقانون. على هذا القرارء وفيما عدا ذلك يكون للعبارات التالية\nالمعاني المبينة قرين كل منهاء ما لم يقضٍ سياق النص بغير ذلك.\n\nالمرسوم بقانون : المرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل.\nالأنظمة القانونية : مجموعة القرارات والأدلة والتعاميم ذات الصلة بالعمل في وزارة الموارد البشرية\nوالتوطين.\nالمادة (2)\n\nتصنيف المنشآت\nمع مراعاة أحكام البند رقم (1) من المادة رقم (70) من المرسوم بقانون فإنه:\n1. يتم تصنيف ‎CLAIM!‏ وفق معايير تتضمن النشاط الاقتصادي وحجم العمالة والتنوع الثقافي\nوالديموغرافي للعمالة ومدى الالتزام بالأنظمة القانونية ودعم تنفيذ التوجهات الحكومية المتعلقة\n2. يصدر مجلس الوزراء بناء على اقتراح الوزير القرارات اللازمة لتصنيف المنشآت والامتيازات المقدمة\nلكل فئة من هذه المنشآت بما يضمن تعزيز تنافسية سوق العمل.",
+        "char_count": 1403,
+        "elapsed_s": 1.463,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.9639,
+          "latin_ratio": 0.0361,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1403,
+          "word_count": 225,
+          "alpha_char_count": 1078,
+          "digit_ratio": 0.0292,
+          "nonsense_ratio": 0.0278,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.23
+        }
+      },
+      {
+        "page_index": 1,
+        "text": "UNITED ARAB EMIRATES ‏الأسارات العربية المتحدة‎\nTHE CABINET ‏مجلس الوزراء‎\n\n(3) Bolt!\n‏تصنيف العمال‎\n\n.1\n\nيصنف العمال الخاضعون لأحكام المرسوم بقانون إلى فئات بحسب معايير تتضمن المستويات المهارية\n\nأو التعليمية أو الإنتاجية أو المبنية أو الأجور أو حسب ‎LS‏ الإقامة.\n\nيصدر مجلس الوزراء بناء على اقتراح الوزير القرارات اللازمة لتصنيف المستويات المهارية للعمالة في\n\nسوق العمل والامتيازات المقدمة لكل مستوى بما يضمن تعزيز إنتاجية سوق العمل.\n\nالمادة (4)\nنظام تشغيل الأحداث\n\nمع مراعاة أحكام المادة رقم (5) من المرسوم بقانونء يُحظر تشغيل الأحداث في الأعمال والمهن التالية:\n\nأ. الأعمال والصناعات الخطرة أو الضارة.\n\nب. المين التي يحتمل أن تعرض صحة الأحداث أو سلامهم للخطرء بسبب طبيعة المبنة أو الظروف التي\nتؤدى فها.\n\nيحدد بقرار من الوزير بعد التنسيق مع الجهات المعنية, الأعمال الخطرة أو الشاقة أو الأعمال التي ‎Ge‏\n\nبحكم طبيعتها أضراراً بصحة أو سلامة أو أخلاق الحدث.\n\nيتعين على صاحب العمل المشغل للحدث الالتزام بالإجراءات التالية:\n\n‎i‏ أن يحتفظ بسجل خاص بالأحداث. يبين فيه اسم الحدث وعمره والاسم الكامل لمن له الولاية أو\nالوصاية عليه وبيانات التواصل ‎dae‏ ومحل إقامة الحدث ومن له الوصاية عليهء وتاريخ استخدامه\nوالعمل الذي يستخدم فيه.\n\n‏ب. التأمين على الحدث شأنه شأن العمالة العادية.\n\n‏تدريب الأحداث العاملين لديه على كيفية استخدام وسائل السلامة والصحة المهنية.\n\n‏أن يضع في مكان ظاهر في موقع ‎«eal!‏ الأحكام الخاصة بتشغيل الأحداث.\n\n‏تُستثنى المؤسسات الخيرية والتربوية والتدريبية والجهات الأخرى التي تهدف إلى التأهيل أو التدريب المي\n\n‏للأحداث من بعض أحكام المادة رقم (5) من المرسوم بقانون وأحكام هذه المادة وفق الضوابط الآتية:\n\n‏أ. أن تكون المؤسسة مسجلة لدى الجبات الحكومية المختصة بهذا الوصف.\n\n‏ب. أن يكون هدفها الفعلي والمسجلة به هو التأهيل أو التدريب ‎gl‏ أو العمل الخيري أو التربوي أو\nالأعمال التطوعية.",
+        "char_count": 1693,
+        "elapsed_s": 1.732,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.9663,
+          "latin_ratio": 0.0337,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1693,
+          "word_count": 274,
+          "alpha_char_count": 1333,
+          "digit_ratio": 0.003,
+          "nonsense_ratio": 0.0437,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.11
+        }
+      },
+      {
+        "page_index": 2,
+        "text": "UNITED ARAB EMIRATES\nTHE CABINET\n\nالأهاراتالعربية المتحدة (\nمجلس الوزراء ‎ety)‏\n‏/\n\nالمادة (5)\nأنماط العمل\n\n1. مع مراعاة أحكام المادة رقم (7) من المرسوم بقانونء يكون التعاقد مع العامل وفق أي نمط من أنماط\nالعمل المذكورة فيهاء بالإضافة إلى الأنماط الآتية:\n\nJj\n\nالعمل عن بعد: وتم تأدية العمل كله أو جزء منه خارج مقر ‎cost!‏ وبكون الاتصال ما بين\nالعامل وجهة العمل ‎Lege big ASI‏ عن التواجد فعلياً وسواء كان العمل ‎Sy‏ أو بدوام كامل.\n\n. تقاسم الوظيفة: يتم بموجبه تقسيم المهام والواجبات بين أكثر من عامل لتأدية المهام المتفق\n\nعلها مسبقاً. وبنعكس على قيمة الأجر المستحق لكل منهم بحيث يكون نسبة وتناسب. ويتم\nالتعامل ‎pre‏ وفق ضوابط العمل الجزثي.\n\nمع مراعاة ما هو منصوص عليه في المرسوم بقانون وهذا القرارء يلتزم كل من العامل وصاحب العمل\n\nبالينود الملنصوص علها في ‎ude‏ العمل وفق كل نمط من الأنماط المذكورة في البند (1) من هذه المادة.\n\nالمادة (6)\nأنواع تصاربح العمل\n\n1. مع مراعاة أحكام المادة رقم (6) من المرسوم بقانونء فإن أنواع تصاريح العمل تحدد كالآتي:\n\nAj\n\nتصريح العمل (استقدام عامل من خارج الدولة): يتيح هذا النوع من التصاريح للمنشآت\nالمسجلة ق الوزارة استقدام عامل من خارج الدولة.\n\n. تصريح عمل انتقال: وهو التصريح الذي يتم بموجبه انتقال العامل غير المواطن من وإلى منشأة\n\nمسجلة في الوزارة.\n\nتصريح لمن هم على إقامة ذويهم: وهو التصريح الذي يتم بموجبه تشغيل من هم على إقامة ذويهم\nللعمل في منشأة مسجلة في الوزارة.\n\nتصريح عمل مؤقت: وهو التصريح الذي يتم بموجبه تشغيل عامل لعملٍ تقتضي طبيعة تنفيذه\nأو إنجازه مدة محددة في إحدى المنشآت المسجلة في الوزارة.\n\nتصريح عمل مهمة: هو تصريح يمنح لإحدى المنشآت المسجلة في الوزارة الراغبة في استقدام\nعامل من الخارج لإنجاز عمل مؤقت أو مشروع معين محدد المدة.\n\nتصريح العمل الجزئي: يتيح هذا النوع من التصاريح للمنشآت المسجلة في الوزارة تشغيل عامل\nبموجب عقد عمل جزئي بحيث تقل ساعات عمله أو أيام عمله عن نظرائه ممن يعملون بدوام\nكامل. ويمكن للعامل أن يعمل لدى أكثر من صاحب عمل بعد الحصول على تصريح بذلك من\nالوزارة.",
+        "char_count": 1831,
+        "elapsed_s": 1.879,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.96,
+          "latin_ratio": 0.04,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1831,
+          "word_count": 327,
+          "alpha_char_count": 1421,
+          "digit_ratio": 0.0038,
+          "nonsense_ratio": 0.036,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 4.54
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_lang": null,
+      "source": "no_text_layer",
+      "text_layer_chars": 0
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "قرار مجلس الوزراء رقم (106) لسنة 2022 بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة.pdf",
+    "detected_langs": [
+      "ar",
+      "en"
+    ],
+    "lang_source": "filename",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "scanned",
+      "page_count": 15,
+      "pages_needing_ocr": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "ocr_page_count": 15,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 0.949999988079071,
+      "processing_time_ms": 2
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "MO\\2022\\0695 ‏وارد‎\n‎11\\12\\2022\n\nالآهارات ‎Aes pat!‏ المتحدة\n\nUNITED ARAB EMIRATES\nTHE CABINET\n\nقرارمجلس الوزراء رقم (06/ ) لسنة 2022\nبشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022\nبشأن عمال الخدمة المساعدة\n\nمجلس الوزراء:\n- بعد الاطلاع على الدستور.\n‎leg -‏ القانون الاتحادي رقم )1( لسنة 1972 بشأن اختصاصات الوزارات وصلاحيات الوزراء. وتعديلاته.\n‎leg -‏ المرسوم بقانون اتحادي رقم )33( لسنة 2021 بشأن تنظيم علاقات ‎foal!‏ ولائحته التنفيذية,\n- وعلى المرسوم بقانون اتحادي رقم )9( لسنة 2022 بشأن عمال الخدمة المساعدة.\n- وعلى قرار مجلس الوزراء رقم (22) لسنة 2019 في شأن اللائحة التنفيذية للقانون الاتحادي رقم (10)\nلسنة 2017 بشأن عمال الخدمة المساعدة.\n‎sling -‏ على ما عرضه وزير الموارد البشرية والتوطين. وموافقة مجلس الوزراء.\nالمادة (1)\nالتعريفات\nتُطبق التعريفات الواردة في المرسوم بقانون اتحادي رقم (9) لسنة 2022 المشار إليه على هذا القرارء وفيما عدا\nذلكء يُقصد بالكلمات والعبارات التالية المعاني المبينة قرين كل منهاء ما لم ‎ads‏ سياق النص بغير ذلك:\n\nالقانون : المرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة.\nالاتفاق المبدئي : الاتفاق المكتوب بين مكتب استقدام العمالة المساعدة ووكالة التوظيف في الخارج.\n\nوالذي ‎suey‏ الشروط والمؤهلات اللازم توافرها في العامل المساعد. بناءًٌ على الاتفاق\nالذي تم بين صاحب العمل ومكتب استقدام العمالة المساعدة.\nتعليق ملف : هو إجراء يتم اتخاذه من الوزارة يقتضي عدم منح تصريح استقدام عامل مساعد\nصاحب العمل لصاحب عملء لمخالفته أحكام القانون أو هذا القرار أو القرارات المنظمة ‎clog)‏ ووفق\nما تحدده الوزارة من مدد واجراءات.\n\nقرار مجلس الوزراء بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة",
+        "char_count": 1587,
+        "elapsed_s": 1.566,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.9475,
+          "latin_ratio": 0.0525,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1587,
+          "word_count": 257,
+          "alpha_char_count": 1176,
+          "digit_ratio": 0.0447,
+          "nonsense_ratio": 0.0334,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.15
+        }
+      },
+      {
+        "page_index": 1,
+        "text": "UNITED ARAB EMIRATES\nTHE CABINET\n\nالآاماراتالعربية المتحدة\nمجلس الوزراء\n\nالمادة (2)\nمهن العمالة المساعدة\nتكون مهن العمالة المساعدة التي يسري عليها أحكام القانون وهذا القرارء وفقا للجدول رقم )1( المرفق بهذا القرار.\n\nالمادة (3)\nشروط ترخيص مكاتب استقدام العمالة المساعدة\n1. يتعين توافر الشروط التالية للحصول على ترخيص مكتب استقدام عمالة مساعدة:\n\nأ. ألا ‎Og‏ الشخص في المؤسسة الفردية أو أي من الشركاء في الشخص الاعتباري. قد حكم عليه/علهم ني\nجريمة مخلة بالشرف والأمانة, أو في جريمة من جرائم الاتجار بالبشرء أو الجرائم المنصوص علها في\nالقانون. ما لم يكن قد رد ‎dull‏ اعتباره, إذا كان الحكم عليه بعقوبة مقيدة للحرية. أو بعد مضي سنة من\nتاريخ الحكم إذا كان الحكم صادراً بالغرامة.\n\nب. أن تقدم المؤسسة الفردية أو الشخص الاعتباري للوزارة ضماناً بنكياً لا تقل قيمته في جميع أوقات سريان\nالترخيص عن )500,000( خمسمائة ألف درهم . ويجب أن يُجدد تلقائياً أو أن يقدم تأميناً كبديل\nللضمان وفق الآليات التي تحددها الوزارة. ويجوز للوزارة وفق تقدير عامل الخطورة طلب زيادة قيمة\nالضمان ‎Sil‏ وللوزارة القيام بتخصيص كل أو بعض الضضمان أو التأمين. لسداد أية مبالغ تكون\nمستحقة على مكتب استقدام العمالة المساعدة. اتجاه العامل المساعد أو صاحب العمل أو الوزارة.\nوذلك لعدم قيامه بتنفيذ الالتزامات المترتبة عليه, أو لعدم التقيد بالتعليمات والقرارات الصادرة ‎(Adz,‏\n‏أو عدم سداده أي غرامة قد تفرض ‎dele‏ ويجب في جميع الأحوال على المكتب استكمال ما نقص من\nقيمة الضمان خلال (30) ثلاثين يوماً من تاريخ النقص.\n\nج. تقديم تقرير ائتماني لطالب الترخيص يعكس وضعه المالي» سواءً كان شخصاً أو مؤسسة فردية أو الشركاء\nفي الشخص الاعتباريء على أن يكون هذا التقرير صادر من الجبة المختصة.\n\nد. في حال الجمع بين نشاط التوسط لاستقدام العمالة المساعدة ونشاط التشغيل المؤقت للعمالة\nالمساعدة. يتوجب الحصول على ترخيص مستقل لكل نشاط وفق الشروط والمتطلبات والرسوم اللازمة\nلكل نشاط.\n\nه. أية شروط أخرى يصدر بها قرار من الوزير.\n\n2. يُجدد الترخيص الصادر من الوزارة لمكتب استقدام العمالة المساعدة سنوياً بشرط التأكد من استمرار توافر\nكافة الشروط المطلوبة للترخيص\n3 للوزارة أن تمتنع عن منح ترخيص مكتب استقدام العمالة المساعدة في الحالات الآتية:\n\nقرار مجلس الوزراء بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة",
+        "char_count": 2081,
+        "elapsed_s": 2.075,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.9733,
+          "latin_ratio": 0.0267,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 2081,
+          "word_count": 350,
+          "alpha_char_count": 1637,
+          "digit_ratio": 0.0091,
+          "nonsense_ratio": 0.025,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 4.92
+        }
+      },
+      {
+        "page_index": 2,
+        "text": "UNITED ARAB EMIRATES\nTHE CABINET\n\nالإماراتالعربية المتحدة\n\nأ. إذا سبق الحصول على ترخيص وتم إلغاء الترخيص أو إنهاؤه من الوزارة لأي سبب من الأسباب.\nب. تكرار مخالفة طالب الترخيص للتشريعات ‎Fists!‏ والنظم المعمول بها في الوزارة.\nج. أية حالات أخرى تقررها الوزارة.\n\n4. يصدر الوزير نظاماً لآليات ترخيص ممارسة نشاط مكتب استقدام العمالة المساعدة. في حال كان يقدم\nالمكتب خدماته عبر القنوات الرقمية.\n\n5. لا يجوز لصاحب الترخيص أن ‎dic HLL‏ أو يؤجره للغير. أو يجري أي تغيير على الشركاء بالإضافة أو\nالاستبدال. إلا بعد الحصول على موافقة الوزارة حسب الأنظمة المتيعة لديها.\n\nالمادة (4)\nالتزامات مكاتب استقدام العمالة المساعدة\nبالإضافة للالتزامات المقررة على مكاتب استقدام العمالة المساعدة الواردة في المواد أرقام (4 و5) من القانون,\nوالقرارات الصادرة عن الوزارةء فإن ‎Lple‏ الالتزام بما يأتي:\n1. يلتزم مكتب استقدام العمالة المساعدة قبل استقدام العامل المساعد إلى الدولة بما يأتي:\n\nأ. إجراء الفحص الطبي اللازم للعامل ‎relink!‏ للتأكد من لياقته الصحية للعمل الذي سيقوم به. وذلك من\nحيث قدرته البدنية والذهنية والنفسيةء وأنه لا ‎Gla‏ من أي مرض مزمنء أو ‎ted‏ وفق الحالات التي\nتحددها ‎alo!‏ الطبية المعتمدة بالدولةء أو من أية ظروف صحية تقلل من قدرته على إنجاز العمل.\n\nب. إحاطة العامل المساعد بجميع الشروط التي يطلب صاحب العمل توافرها فيه من خبرة ومؤهلات دراسية.\n\nج. التأكد من توفر شهادة خبرة في إجادة المهنة المطلوبة إن كانت من المهن التي تشترط ‎bed‏ الدولة شهادات\nمعينة كالتمريض وقيادة السيارات.\n\nد. تمكين العامل المساعد من الاطلاع على عرض العمل الذي يطابق نموذج العقد الذي سيبرم بينه وبين\nصاحب ‎eal!‏ والحصول على توقيعه بالموافقة عليه.\n\nه. توفير شهادة من الجهات المعنية في بلد العامل المساعد تفيد خلو صحيفته الجنائية من أي سوابق وأنه\nحسن السيرة والسلوكء وذلك في الحالات التي تحددها الوزارة.\n\nو. تقديم ما يفيد تعامل المكتب مع جهات معتمدة رسمياً في الدولة المستقدم منها العامل المساعد.\n\nز. تقديم ما يفيد مسؤوليته المباشرة عن سداد أية مبالغ على سبيل العمولة. لتسهيل قدوم العامل المساعد\nللدولة وإتمام التعاقد وعدم تحمل العامل المساعد لتلك المبالغ.\n\nح. أية التزامات أخرى يصدر بها قرار من الوزير.\n\nقرار مجلس الوزراء بشأن اللائحة التنفيذية للمرسوم بقانون اتحادي رقم (9) لسنة 2022 بشأن عمال الخدمة المساعدة",
+        "char_count": 2077,
+        "elapsed_s": 2.011,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.961,
+          "latin_ratio": 0.039,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 2077,
+          "word_count": 347,
+          "alpha_char_count": 1641,
+          "digit_ratio": 0.0053,
+          "nonsense_ratio": 0.0294,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 4.95
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_lang": null,
+      "source": "no_text_layer",
+      "text_layer_chars": 0
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "مرسوم بقانون اتحادي رقم (13) لسنة 2022 بشان التأمين ضد التعطل عن العمل - Copy.pdf",
+    "detected_langs": [
+      "ar",
+      "en"
+    ],
+    "lang_source": "filename",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "mixed",
+      "page_count": 4,
+      "pages_needing_ocr": [
+        2,
+        3,
+        4
+      ],
+      "ocr_page_count": 3,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 0.699999988079071,
+      "processing_time_ms": 1
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "‎MO/2022/0480‏ 5 ا\nالتاريخ : 20/09/2022 فد ‎=—s‏\n\n‎5 0 Ils: 4 Bo a\n. > - 0 is =)\n\n‎“HENNE 5‏ تعب ليجل\n\n‏مرسوم بقانون اتحادي رقم ) 13( لسنة 2022\n\n‏نحن محمد بن زايد آل نهيان رئيس دولة الإمارات العربية المتحدة.\n— بعد الاطلاع على الدستورء\n\n‎deg —‏ القانون الاتحادي رقم )1( لسنة 1972 بشأن اختصاصات الوزارات وصلاحيات الوزراء وتعديلاته.\n\n‎deg -‏ القانون الاتحادي رقم )2( لسنة 2001 في ‎GLA‏ الضمان الاجتماعيء وتعديلاته.\n\n‏— وعلى المرسوم بقانون اتحادي رقم (14) لسنة 2018 في شأن المصرف المركزي وتنظيم المنشآت والأنشطة المالية.\nوتعديلاته.\n\n‎deg -‏ القانون الاتحادي رقم (6) لسنة 2007 في شأن تنظيم أعمال التأمين. وتعديلاته.\n\n‎deg -‏ المرسوم بقانون اتحادي رقم )33( لسنة 2021 في شأن تنظيم علاقات العمل ولائحته التنفيذية.\n\n‎Eling -‏ على ما عرضه وزير الموارد البشرية والتوطين. وموأفقة مجلس الوزراء.\n\n‏أصدرنا المرسوم بقانون الآتي:\nالمادة (1)\nالتعاريف\nفي تطبيق أحكام هذا المرسوم بقانون. تكون للكلمات والعبارات التالية المعاني المبينة قرين كل منهاء ما لم يقض\nسياق النص بغير ذلك:\nالدوانة : الإمارات العربية المتحدة.\nالوزارة : (زارةالموارد البشرية والتوطين\nالوزير : وزير الموارد البشرية والتوطين\nالمصرف : مصرفالإمارات العربية المتحدة المركزي.\nالرككزي\nالنظام ‎plas)‏ : نظام يهدف إلى تعويض ‎gosh!‏ عليه بمبلغ نقدي لفترة محدودة, في حالة تعطله عن العمل\nالتأمين ضد مقابل قيمة اشتراك يتم تحصيله من العامل/ الموظف. وفق أحكام هذا المرسوم بقانون\nالتعطل عن وقرارات مجلس الوزراء المنظمة لذلك.\nالععمل)\n\n‏مرسوم بقانون اتحادي بشأن التأمين ضد التعطل عن العمل 1",
+        "char_count": 1423,
+        "elapsed_s": 1.66,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.9571,
+          "latin_ratio": 0.0429,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1423,
+          "word_count": 238,
+          "alpha_char_count": 1026,
+          "digit_ratio": 0.0401,
+          "nonsense_ratio": 0.0485,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 4.93
+        }
+      },
+      {
+        "page_index": 1,
+        "text": "ع\nعونا د\n26\n\nالمؤمن عليه\n\nالعامل/\nالموف\nالتعطل عن\nالعهععطل\nالتهقويض\nالقطاع\nالتغقفاص\n\nالقضطاع\nالحكومي\nالاتحادي\nمزود الخدمة\n\n١ Aree idl ‏ولحي مز‎ Ree\nalte ieee\n\nالعامل/ الموظف الذي يعمل في القطاع الخاص في الدولة أو في القطاع الحكومي الاتحادي.\nالمشترك في النظام ‎Lads‏ لأحكام هذا المرسوم بقانون وقرارات مجلس الوزراء المنظمة لذلك.\n\nالتعطل الناتج عن انتهاء خدمة المُؤمن عليه لدى جهة عمله وفق أحكام هذا المرسوم بقانون\nوقرارات مجلس الوزراء المنظمة لذلك.\n\n‎alll‏ الذي يستحقه المُؤمن عليه في حالة تعطله عن العمل وفقاً لأحكام هذا المرسوم بقانون\nوقرارات مجلس الوزراء المنظمة لذلك.\n\n‏الشركات والمؤسسات والمنشآت أو أي كيانات أخرى مملوكة للأفراد بالكامل أو بالاشتراك مع\nالحكومة الاتحادية أو المحلية. والشركات والمؤسسات المملوكة بالكامل للحكومة الاتحادية\nأو المحلية ما لم تنص قوانين إنشاءها على خلاف ذلك.\n\n‏أية وزارة منشأة وفق القانون الاتحادي رقم 1 لسنة 1972 بشأن اختصاصات الوزارات\nوصلاحيات الوزراء وتعديلاته. وكذلك أية هيئة أو مؤسسة أو أجهزة تنظيمية اتحادية تابعة\nللحكومة الاتحادية.\n\n‏شركات التأمين المرخصة من قبل المصرف المركزي. والمستوفاة لشروط ممارسة نشاط خدمة\nمزود التأمين ضد التعطل التي تصدر عن مجلس الوزراء بعد استطلاع رأي المصرف المركزي.\nأو أي ‎Aye‏ حكومية أخرى يُكلفها مجلس الوزراء لتقديم خدمات التأمين ضد التعطل.\n\n‏المادة )2(\n\n‏أهداف المرسوم بقانون\n\n‎sti,‏ هذا المرسوم بقانون إلى تحقيق ما يلي:-\n\n‎glee .1‏ توفر دخل لفترة محدودة للمؤمن عليه خلال فترة تعطله عن العمل لحين توفر فرص عمل بديلة وفقاً\nلأحكام هذا المرسوم بقانون.\n\n‏2. تعزيز تنافسية الكوادر الإماراتية في سوق العمل وتوفير مظلة الحماية الاجتماعية لهم ‎Ley‏ يكفل ديمومة الحياة\nالكريمة لهم ولأسرهم لحين توفر فرص عمل بديلة.\n\n‏3 جذب أفضل المواهب العالمية من العمالة الماهرة والحفاظ عليها في سوق العمل في الدولة للوصول إلى اقتصاد\n\n‎Gyre‏ تنافسي.\n\n‏مرسوم بقانون اتحادي بشأن التأمين ضد التعطل عن العمل 2",
+        "char_count": 1749,
+        "elapsed_s": 1.918,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.969,
+          "latin_ratio": 0.031,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 1
+        },
+        "garble_signals": {
+          "char_count": 1749,
+          "word_count": 285,
+          "alpha_char_count": 1382,
+          "digit_ratio": 0.0074,
+          "nonsense_ratio": 0.0475,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.08
+        }
+      },
+      {
+        "page_index": 2,
+        "text": "1 ‏ا‎ eA\n/ 2 03 ٠. 5\n\nير\n\nنطاق التطبيق\n1. تسري أحكام هذا المرسوم بقانون على كافة العاملين في القطاع الخاص والقطاع الحكومي الاتحادي في الدولة.\nوتُستثنى من ذلك الفتات التالية:-\nأ. المستثمر (صاحب المنشأة الذي يعمل بها).\nب. العمالة المساعدة.\n\n‎cd‏ العامل بعقد مؤقت.\nد. الأحداث ممن تقل أعمارهم عن )18( ثمانية عشر ‎Lae‏\n‏ه. المتقاعدون الذين يحصلون على معاش تقاعدي والتحقوا بعمل جديد.\n2. يجوزلمجلس الوزراء بناء على اقتراح الوزيرء تعديل نطاق تطبيق هذا المرسوم بقانون.\nالمادة (4)\nإنشاء نظام للتأمين ضد التعطل عن العمل\n\n‏يُنشأ بمقتضى أحكام هذا المرسوم بقانون نظام للتأمين ضد التعطل عن العمل في ‎Algal‏ هدف إلى تعويض الْمُؤْمن\n\n‏عليه بمبلغ نقدي لفترة محدودة في حالة تعطله عن ‎«foal!‏ ويُحدد مجلس الوزراء بناء على اقتراح الوزير آلية وعمل\n\n‏النظام وتطبيقه. وقيمة الاشتراك الشهري للمُؤمن ‎dale‏ ووضع أي اشتراطات أو إجراءات أو فرض أية جزاءات\n\n‏لازمة للعمل به.\n\n‏المادة (5)\nشروط استحقاق التعويض وإيقافه\n\n‏يُشترط لاستحقاق المؤمن عليه للتعويض. ما يأتي:-\n\n‏1. ألا تقل مدة اشقراك ‎Gash!‏ عليه عن (12) أثني عشر شهراً متصلة في النظام.\n\n‏2 ألا يكون قد فُصل من عمله لأسباب تأديبية ‎Lady‏ لأحكام قانون تنظيم علاقات العمل وقانون الموارد البشرية\nفي الحكومة الاتحادية. وأية تشريعات سارية ذات العلاقة.\n\n‏3. ألا تكون المطالبة بالتعويض عن طريق الغش أو الاحتيال أو إذا تبين أن المنشأة المي يعمل بها ‎gong‏\n‏وفي هذه الحالة تُطبق على المنشأة والمُؤمن عليه العقوبات والجزاءات الواردة في قانون تنظيم علاقات العمل\nوأي ‎Glas td‏ أخرى سارية في الدولة.\n\n‏4 يُوقف صرف التعويض إذا التحق العامل/ الموظف بعمل آخر أثناء فترة استحقاق التعويض.\n\n‏5. يجوزلمجلس الوزراء بناء على اقتراح الوزير تعديل شروط استحقاق التعويض.\n\n‏مرسوم بقانون اتحادي بشأن التأمين ضد التعطل عن العمل",
+        "char_count": 1624,
+        "elapsed_s": 1.78,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.9693,
+          "latin_ratio": 0.0307,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 1
+        },
+        "garble_signals": {
+          "char_count": 1624,
+          "word_count": 275,
+          "alpha_char_count": 1225,
+          "digit_ratio": 0.0117,
+          "nonsense_ratio": 0.048,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 4.85
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_lang": null,
+      "source": "garbled_text_layer",
+      "text_layer_chars": 1951,
+      "alpha_ratio": 0.183,
+      "junk_ratio": 0.7929
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "مرسوم بقانون اتحادي رقم (33) لسنة 2021 بشأن تنظيم علاقات العمل وتعديلاته.pdf",
+    "detected_langs": [
+      "ar",
+      "en"
+    ],
+    "lang_source": "text_layer",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "text_based",
+      "page_count": 100,
+      "pages_needing_ocr": [],
+      "ocr_page_count": 0,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 0.75,
+      "processing_time_ms": 20
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "ه١‎\nUNITED ARAB EMIRATES 0\nwr) ty\n\nMINISTRY OF HUMAN RESOURCES fff 1\n\n& EMIRATISATION Ad\n\nالإماراتالعربيةالمتحدة\nوزارةالمواردالبشثشغرية\nوالتتوطين\n\nمرسوم بقانون اتحادي رقم (33) لسنة 2021\n\nبقانون إتحادي رقم ( 33 ) لسنة 2021",
+        "char_count": 221,
+        "elapsed_s": 0.423,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.6049,
+          "latin_ratio": 0.3951,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 1
+        },
+        "garble_signals": {
+          "char_count": 221,
+          "word_count": 34,
+          "alpha_char_count": 161,
+          "digit_ratio": 0.0679,
+          "nonsense_ratio": 0.0679,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.38
+        }
+      },
+      {
+        "page_index": 1,
+        "text": "",
+        "char_count": 0,
+        "elapsed_s": 0.169,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 0.0,
+          "primary_script": "empty",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 0,
+          "nonsense_ratio": 0.0,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "digit_ratio": 0.0,
+          "avg_word_len": 0.0
+        }
+      },
+      {
+        "page_index": 2,
+        "text": "",
+        "char_count": 0,
+        "elapsed_s": 0.227,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.0,
+          "latin_ratio": 0.0,
+          "primary_script": "empty",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 0,
+          "nonsense_ratio": 0.0,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "digit_ratio": 0.0,
+          "avg_word_len": 0.0
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_langs": [
+        "ar"
+      ],
+      "source": "text_layer",
+      "text_layer_chars": 212,
+      "arabic_chars": 143,
+      "latin_chars": 0,
+      "arabic_ratio": 1.0,
+      "has_german_markers": false
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "وارد رقم 597 من مكتب أبوظبي التنفيذي بشأن التعقيب على مرئيات حكومة أبوظبي حول برنامج مهارات المهن الحرفية - Copy.pdf",
+    "detected_langs": [
+      "ar",
+      "en"
+    ],
+    "lang_source": "filename",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "text_based",
+      "page_count": 42,
+      "pages_needing_ocr": [],
+      "ocr_page_count": 0,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 1.0,
+      "processing_time_ms": 3
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "mo/2025/597\n5/8/2025\n\nADEO-BOK-2025-0222\n\nABU DHABI EXECUTIVE OFFICE\n\nسعادة / شيماء يوسف العوضي المخترمة\nوكيسل الوزارة لتطوير وتنظيم سوق العمل بالإناية\nوكيل الوزارة المساعد للاتصال والعلاقات الدولية\nوزارة المسوارد ‎ol protic)‏ والتوطيٍسن\n\nالسلام عليكم ورحمة الله وبركاته ‎Gee‏\n\nالموضوع: التعقيب على مرئيات حكومة أبو ظبي حول برنامج مهارات المعن الحرفية\nيهديكم مكتب أبوظي التنفيذي فائق التحية والاحترام, متمنين لكم دوام التوفيق والنجاح.\nبالإشارة إلى الموضوع ‎corel‏ وإلى كتابكم رقم ‎(MOHRE/SEN/OUE/2025/0157)‏ نرفق لكم جدول\nالملاحظات على مرئيات الوزارة بشأن الملاحظات المرسلة مسبقاً من قبلنا بشأن مقترح برنامج مهارات المهن الحرفية.\nللاستفسار والتنسسيق» يرجى التكرم بالإيعاز لمن يلزم لديكم التواصل مع إدارة التشريع الاتحادي ب الشؤون القانونية\nوالتشريعات في مكتب أبوظبي التنفيذي عبر البريد الإلكترونى: ‎federallegislation2@ecouncil.ae‏\n\nوتفضلوا بقبول فائق التقدير والاحترام,.,\n\nعبدالله خلفان الشامسي\nمدير عام الشؤون القانونية والتشريعات\nمرفق نسخة من الملاحظات المشار إليها أعلاه\n\nصادر بتاريخ : 2025/08/04\n\nهذا المستند وجميع مرفقاته (إن وجدت) من الوثائق السرية التي لا يجوز تداولها بأي شكل من الأشكال لغير المعنيين جما\nمكتب أبوظبي التنفيذي - رقم ‎ith‏ : 026688888 - ص.ب: 19 أبوظيء الإمارات العربية المتحدة ‎www.ecouncil. ae‏",
+        "char_count": 1219,
+        "elapsed_s": 1.314,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.89,
+          "latin_ratio": 0.11,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1219,
+          "word_count": 174,
+          "alpha_char_count": 934,
+          "digit_ratio": 0.0402,
+          "nonsense_ratio": 0.0361,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.96
+        }
+      },
+      {
+        "page_index": 1,
+        "text": "ABU DHABI EXECUTIVE OFFICE\n\nجدول مُلإحظات بشأن الرد على تعقيب الوزارة بخصوص مرئيات حكومة أبوظي على برنامج مهارات المبن الحرفية في دولة الإمارات العربية المتحدة\nمرئيات مكتب أبوظبي التنفيذي تعقيب وزارة الموارد البشربة والتوطين الرد على تعقيب الوزارة\nالبرنامج المقترح أشار إلى وجود مهام متشابهة ‎US‏ من مجلس ‎gil‏ ظبي صحيح ستقوم كلاً الجبتين بنفس ‎aL‏ المتعلقة بعملية التقييم\nللجودة والمطابقة. وكليات الققنية العليا في عملية التقييم والتدريبء والكدريب حيث إن بب اختلاف\"التكلفة يعود )| ‎BGS‏ المهن ‎BN‏\n‏مع اختلاف الرسوم المقترحة لكل منهماء وعليه يجب بيان الدور المنوط يتم التقيي والتدريب علها بين , 5.1 كك لكك والمطابقة\nبكلا الجبتين على وجه الدقة. : 0\nوبالتالي تؤثر ذلك على التكلفة النهائية.\n\nمن ‎sol ee‏ جميع الشهادات الممنوحة سواء من مجلس أبو ظبي\nللجودة والمطابقة أو مركز سيرت التابع لكليات التقنية العليا ستكون '\nمعتمدة من الجهات المانحة ‎Guhl lol a)‏ الحرفية وهذه الجبات حب ابو\nمعتمدة من المركز الوطني للمؤهلات. وتم تحديث وتحديد أدوار \\\n‎culpa‏ على وجه الدقة في نسخة المذكرة المحدثة.\n\n122 80-معمم\nحم",
+        "char_count": 1000,
+        "elapsed_s": 1.107,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.933,
+          "latin_ratio": 0.067,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1000,
+          "word_count": 167,
+          "alpha_char_count": 789,
+          "digit_ratio": 0.008,
+          "nonsense_ratio": 0.034,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 4.98
+        }
+      },
+      {
+        "page_index": 2,
+        "text": "خلت الدراسة من بيان الرسوم أو مقابل الخدمات التي تؤول لمجلس\nأبو ظبي للجودة والمطابقة وكليات التقنية العليا تتيجة الخدمات التي\n\nيُقترح دراسة إمكانية ربط شهادة مهارات المهن الحرفية برخص مزاولة\nالممنةء مما يعزز قيمتها وبدعم الاعتراف بها رسمياً.\n\nكما إن وجود أكثر من مزود خدمة لا يشكل ازدواجية. ‎cys‏ إنه سيتم\nتقديم برنامج متنوعة حسب متطلبات سوق العمل مما يضمن وجود\nتنوع في البرامج المقدمة لتغطية جميع ‎oll‏ المستهدفة في المرحلة\nالتجريبية للمشروع وضمان التنوع الجغرافي في الأماكن التي توفر هذا\nالنوع من البرامج. كما إن ذلك يعزز من جودة وتنافسية الخدمات\nالمقدمة.\n\nالرسوم الموضحة في العرض (للتدريبء التقييم, تشمل تكلفة\nالخدمات التي تؤول إلى الجهات المقدمة للخدمة. ولا توجد رتوم\nإضافية أو غير معلنة يتم تحصيلها ‎ols‏ هذه الأطرء ‎ao‏ الالتزام\nبالشفافية في الإعلان عن التكاليف ضمن النطاق المعتمد.\n\nتختلف معايير ومتطلبات وآليات التقييم والتدريب لكل من شهادة\nلمن الحرفية ورخص مزاولة ‎egal‏ حيث إن الشهادة المهنية الحرفية\nتستهدف تقييم المهارة العملية ورفع الكفاءة ولا تمثل ترخيصًا قانونيًا\nلمزاولها وفق اشتراطات الجهات الماتحة لرخص المزاولة. حيث تؤدي\nالجهات المعنية والمختصة بالدولة الدور التشريعي والتنظيمي في وضع\nالمعايير وإعطاء رخص مزاولة مهن في قطاعات اقتصادية مختلفة.\n\n-يُقترح إضافة معبد أبو ظبي للتعليم والتدريب المي\nكمركز تقييم للحرف. المبنية في إمارة أبو ظبيء لما\nيمتلكه من بنية تحتية متخصصة وكوادر مؤهلة ‎Lag‏\n‏يُنسجم مع المعَايير الوطنية ‎usd‏ المي.\n\n-كما يتم التأكيد على تضمين تفصيل دقيق في\nالنسخة المحدثة يوضح النسبة التي تؤول إلى مجلس\n‎gil‏ ظبي للجودة والمطابقة وذلك تعزيرًا للشفافية\nوضمانًا لوضوح التكاليف أمام الجهات المعنية.\n\n-نرى إمكانية ربط تصريح مزاولة المهنة بحضصول\nالعامل على شهادة مطابقة صادرة عن مجلس أبو\nظبي للجودة والمطابقة. لما لذلك من دور في رفع كقاءة\nالقوى العاملة وتعزيز جودة الخدمات المقدمة. كما\nنرى أن هذا الربط يسهم في ضبط سوق العمل والحد\nمن الممارسات غير المهنية» شريطة أن يتم التنسيق\nمع الجبات التنظيميةبيلختصة لضمان توافق هذا\n\n/\n\nADEO-BOK-2025-02",
+        "char_count": 1869,
+        "elapsed_s": 1.79,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.9795,
+          "latin_ratio": 0.0205,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 1869,
+          "word_count": 305,
+          "alpha_char_count": 1501,
+          "digit_ratio": 0.0032,
+          "nonsense_ratio": 0.0332,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.1
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_lang": null,
+      "source": "garbled_text_layer",
+      "text_layer_chars": 2885,
+      "alpha_ratio": 0.008,
+      "junk_ratio": 0.0998
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  },
+  {
+    "filename": "ﺣﻘﻮق اﻹﻧﺴﺎن - Copy.pdf",
+    "detected_langs": [
+      "ar",
+      "en"
+    ],
+    "lang_source": "filename",
+    "file_type": "pdf",
+    "pdf_inspector": {
+      "available": true,
+      "pdf_type": "text_based",
+      "page_count": 161,
+      "pages_needing_ocr": [],
+      "ocr_page_count": 0,
+      "has_encoding_issues": false,
+      "is_complex_layout": false,
+      "confidence": 1.0,
+      "processing_time_ms": 32
+    },
+    "tesseract_pages": [
+      {
+        "page_index": 0,
+        "text": "دليل للمؤسسات الوطنية لحقوق الإنسان",
+        "char_count": 35,
+        "elapsed_s": 0.34,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 1.0,
+          "latin_ratio": 0.0,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 35,
+          "word_count": 5,
+          "alpha_char_count": 31,
+          "digit_ratio": 0.0,
+          "nonsense_ratio": 0.0,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 6.2
+        }
+      },
+      {
+        "page_index": 1,
+        "text": "مكتب الأمم المتحدة\nمفوضية الأمم\nالملتحدة لحقوق\nالإنسان\nأيه بي\n5\n\nدليل للمؤسسات الوطنية لحقوق الإنسان\n\nنيويورك وجنيف» .”5",
+        "char_count": 120,
+        "elapsed_s": 0.361,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 1.0,
+          "latin_ratio": 0.0,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 120,
+          "word_count": 19,
+          "alpha_char_count": 95,
+          "digit_ratio": 0.0167,
+          "nonsense_ratio": 0.075,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.26
+        }
+      },
+      {
+        "page_index": 2,
+        "text": "اليس ‎eS‏ في هل ‎oe‏ في طاريقة عرض مادته ما ينطوي على ‎ee‏\n\nعام\n\nN\n\nيجوز اقتباس المواد الواردة في هذا المنشور أو ‎sole‏ طبعها ممطلق الحرية» شريطة الإشارة إلى المصدر\nوإرسال نسخة من المنشور المتضمن للمادة المعاد طبعها إلى مفوضية الأمم المتحدة السامية لحقوق الإنسان» ‎Office‏\n‎of the United Nations High Commissioner for Human Rights, Palais des Nations, 8-14 avenue de la‏\n\n.(Paix, CH-1211 Geneva 10, Switzerland\n\nHR/P/PT/12\n\nمنشورات الأمم المتحدة\nرقم المبيع ‎A.04.XIV.8‏\n‎ISBN 92-1-654013-3‏\n\nصور الغلاف: الأمم المتحدة؛ إدارة الإعلام\nمايكل موغنسن/صور ثابتة\n‎ab‏ فيجي لحقوق الإنسان\n\n(A)  GE.04-44337 130705 050106",
+        "char_count": 611,
+        "elapsed_s": 0.813,
+        "confidence": null,
+        "script": {
+          "arabic_ratio": 0.6879,
+          "latin_ratio": 0.3121,
+          "primary_script": "Arabic",
+          "has_presentation_forms": false,
+          "eastern_numeral_count": 0
+        },
+        "garble_signals": {
+          "char_count": 611,
+          "word_count": 94,
+          "alpha_char_count": 422,
+          "digit_ratio": 0.0704,
+          "nonsense_ratio": 0.0655,
+          "control_char_ratio": 0.0,
+          "replacement_char_count": 0,
+          "avg_word_len": 5.41
+        }
+      }
+    ],
+    "paddleocr_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "paddleocr_vl_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "surya_pages": [
+      {
+        "skipped": true
+      }
+    ],
+    "text_layer_lang": {
+      "detected_lang": null,
+      "source": "garbled_text_layer",
+      "text_layer_chars": 1713,
+      "alpha_ratio": 0.5096,
+      "junk_ratio": 0.4699
+    },
+    "comparison": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_vl": {
+      "note": "one or both engines skipped/errored"
+    },
+    "comparison_surya": {
+      "note": "one or both engines skipped/errored"
+    }
+  }
+]

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Push .agents/{rfcs,designs,tasks} markdown to Confluence via the `mark` CLI.
+# Push agents/{rfcs,designs,tasks} markdown to Confluence via the `mark` CLI.
 #
 # WHY: RFCs/designs/task-plans live as markdown in-repo but need a Confluence
 # mirror for non-engineering stakeholders. `mark` is opt-in per-file (it only
@@ -17,7 +17,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-AGENTS_DIR="$ROOT_DIR/.agents"
+AGENTS_DIR="$ROOT_DIR/agents"
 
 DRY_RUN=0
 LOCAL_DIFF=0
@@ -96,13 +96,13 @@ if [[ "$LOCAL_DIFF" == "1" ]]; then
   done < <(
     cd "$ROOT_DIR"
     {
-      git diff --name-only HEAD -- .agents/rfcs/ .agents/designs/ .agents/tasks/ audit/ 2>/dev/null
-      git diff --name-only --cached HEAD -- .agents/rfcs/ .agents/designs/ .agents/tasks/ audit/ 2>/dev/null
-      git ls-files --others --exclude-standard -- .agents/rfcs/ .agents/designs/ .agents/tasks/ audit/ 2>/dev/null
+      git diff --name-only HEAD -- agents/rfcs/ agents/designs/ agents/tasks/ audit/ 2>/dev/null
+      git diff --name-only --cached HEAD -- agents/rfcs/ agents/designs/ agents/tasks/ audit/ 2>/dev/null
+      git ls-files --others --exclude-standard -- agents/rfcs/ agents/designs/ agents/tasks/ audit/ 2>/dev/null
     } | grep '\.md$' | sort -u
   )
   if [[ ${#FILES[@]} -eq 0 ]]; then
-    echo "==> No local changes in .agents/{rfcs,designs,tasks}/ or audit/ — nothing to sync"
+    echo "==> No local changes in agents/{rfcs,designs,tasks}/ or audit/ — nothing to sync"
     exit 0
   fi
   echo "==> Local diff mode: ${#FILES[@]} changed file(s)"

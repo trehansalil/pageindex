@@ -1,0 +1,259 @@
+{
+  "gates": [
+    {
+      "name": "evaluate_gates",
+      "location": "src/pageindex_mcp/helpers/verdict.py:124-222",
+      "decides": "Phase 1 of compute_verdict: whether a hard-fail defect exists (zero-content fast path, then HARD_FAIL_DEFECTS membership check). If multiple hard-fail defects co-fire, uses _GATE_PRIORITY tiebreak (min priority index) to pick the reported defect.",
+      "inputs": "TreeSignals / TreeGateResult defect set, GATE_TABLE, HARD_FAIL_DEFECTS frozenset, _GATE_PRIORITY dict"
+    },
+    {
+      "name": "apply_promotions",
+      "location": "src/pageindex_mcp/helpers/verdict.py:379-466",
+      "decides": "Phase 2 of compute_verdict (only runs when evaluate_gates found no hard fail): ordered first-match-wins promotion cascade (RFC-040 D2) picking the final verdict category. image_standalone content_class short-circuits early; D1 applies an unconditional structural hard-fail unless guarded by an image-enrichment exception; D2 chain tries _try_image_enrichment -> _try_structural_pass -> _try_ocr_promotion -> _try_flat_promotion -> _try_content_class_promotion -> _try_small_doc_promotion -> MARGINAL fallback. Inner _apply_clamp gate is bypassed entirely when source_selection=True is passed by the caller.",
+      "inputs": "TreeSignals, content_class, source_selection kwarg, VerdictThresholds, per-category _try_* helper outcomes"
+    },
+    {
+      "name": "compute_verdict",
+      "location": "src/pageindex_mcp/helpers/verdict.py:469-512",
+      "decides": "Thin dispatcher: calls evaluate_gates(); if hard_fail present returns that VerdictResult, else delegates to apply_promotions(). The single authoritative entry point all verdict computation funnels through.",
+      "inputs": "TreeSignals/content_class/thresholds, forwarded unchanged to evaluate_gates/apply_promotions"
+    },
+    {
+      "name": "classify_verdict",
+      "location": "src/pageindex_mcp/helpers/verdict.py:515-536",
+      "decides": "Backward-compat wrapper: calls compute_verdict and unpacks the VerdictResult into a legacy tuple return shape for older callers. Adds no new decision logic itself, but is a second code path any future divergent edit to compute_verdict's signature must also update.",
+      "inputs": "Same as compute_verdict; unwraps VerdictResult into (verdict, defect, detail) tuple"
+    },
+    {
+      "name": "decide_ocr_strategy",
+      "location": "src/pageindex_mcp/picture_plane.py:357-430",
+      "decides": "Unified OCR-mode decision (NONE / full-page / per-picture escalation). Ordered gate sequence where order is load-bearing: (1) full_page_already_applied re-entry guard MUST run first (documented Zone-2 fix for a prior bug where image-type docs bypassed the guard) -> (2) UNIFIED_OCR_PLAN_ENABLED flag + document_type==image short-circuit forces full-page OCR -> (3) force_full_page flag -> (4) ocr_escalation_enabled + has_image_markers triggers per-picture escalation -> (5) default NONE.",
+      "inputs": "document_type, full_page_already_applied, UNIFIED_OCR_PLAN_ENABLED config flag, force_full_page, ocr_escalation_enabled, has_image_markers/PictureRegion list"
+    },
+    {
+      "name": "decide_ocr_mode",
+      "location": "src/pageindex_mcp/picture_plane.py:438-469",
+      "decides": "Thin backward-compat wrapper returning only the `.mode` field from decide_ocr_strategy's richer OcrDecision result, for legacy callers that only need the enum.",
+      "inputs": "Same as decide_ocr_strategy; discards the rest of OcrDecision"
+    },
+    {
+      "name": "_text_layer_has_content",
+      "location": "src/pageindex_mcp/converters/pictures.py:240-272",
+      "decides": "Gate that feeds upstream OCR-skip decisions: first applies a char-count floor (_PICTURE_OCR_MIN_CHARS) then calls detect_garble on the extracted text layer. If text is present, sufficiently long, and not garbled, downstream OCR escalation for that picture region is skipped.",
+      "inputs": "extracted text-layer string, _PICTURE_OCR_MIN_CHARS constant, detect_garble() result"
+    },
+    {
+      "name": "detect_garble",
+      "location": "src/pageindex_mcp/helpers/garble.py:494-572",
+      "decides": "Cross-cutting kernel gate deciding whether a text blob is garbled. RAW_MARKDOWN short-text prior-garble override (config.garble_short_text_default + len<200 forces is_garbled=True regardless of content, RFC-025 D2) -> script/presentation-forms inference -> normalization mode selection (config.garble_flat_markdown_normalize) -> delegates final verdict to garble_prongs(). Called from >=9 distinct subsystems (text-layer probe, tree validation, flat-block checks, tesseract raster recovery, image-enrichment verdict promotion, keep-best-wins OCR comparison, tree conversion, per-node/per-title checks in _garble_check_nodes).",
+      "inputs": "text, script_context (ScriptContext), GarbleConfig (garble_short_text_default, garble_flat_markdown_normalize, garble_latin_ratio, garble_nonsense_ratio, garble_node_ratio_threshold, garble_digit_floor, garble_latin_gibberish_enabled)"
+    },
+    {
+      "name": "_garble_check_nodes",
+      "location": "src/pageindex_mcp/helpers/garble.py:622-713",
+      "decides": "Recursive per-node/per-title garble counter used by tree validation. Applies detect_garble per node text and title (with per-node script-mismatch override for nodes >=50 chars, QF3/RFC-021). If the toplevel pass finds zero garbled nodes, runs a whole-tree concatenated fallback via garble_prongs to catch patterns invisible at per-node granularity (sub-digit-floor-per-node but aggregate garble).",
+      "inputs": "tree node list, script_context, GarbleConfig; recurses into node['nodes'] children"
+    },
+    {
+      "name": "save_doc_meta",
+      "location": "src/pageindex_mcp/storage/verdict.py:78-197",
+      "decides": "Sole authoritative write path for the MinIO verdict sidecar (.meta.json). Read-merge-write pattern; NO _confirm_write_visible barrier (deliberately 'eventual' consistency, contrasted with save_doc/save_flat_doc in documents.py which DO have the barrier). Documents RFC-006 rationale: this runs from an isolated converters_cli child subprocess with no registry pool, so it cannot itself dual-write to Postgres.",
+      "inputs": "doc_id, verdict fields, existing sidecar content (read-merge), SIDECAR_VERSION, _FACET_FIELDS/_META_FIELDS/_REGISTRY_FIELDS constants"
+    },
+    {
+      "name": "_upsert_registry_row",
+      "location": "src/pageindex_mcp/worker/registry_mirror.py:55-164",
+      "decides": "Postgres-authoritative registry write from the long-lived worker parent process. Guarded by settings.registry_enabled + settings.postgres_dsn. On pool-not-ready, falls back to an in-memory retry queue (_enqueue_verdict_retry). Pops force_verdict_override out of the fields dict before calling upsert_doc's CAS logic; after a successful upsert, best-effort backfills the MinIO sidecar via save_doc_meta using the Postgres 'winning' row (max-priority-wins reconciliation, RFC-037 D5).",
+      "inputs": "in-memory registry_fields, MinIO-read fallback fields, verdict_fields overlay, force_verdict_override kwarg, settings.registry_enabled, settings.postgres_dsn"
+    },
+    {
+      "name": "upsert_doc",
+      "location": "src/pageindex_mcp/registry/queries.py:130-184",
+      "decides": "Postgres CAS upsert (max-priority-wins on verdict + processed_at temporal CAS guard) via RETURNING. When force_verdict_override=True, bypasses ONLY the verdict-priority CAS guard (incoming verdict columns always win) while the processed_at CAS guard remains enforced; selects between _UPSERT_SQL and _UPSERT_OVERRIDE_SQL accordingly.",
+      "inputs": "meta dict (doc_id, verdict, pipeline_version, permanent_marginal, verdict_computed_at, etc.), force_verdict_override kwarg, Postgres connection pool"
+    },
+    {
+      "name": "reconcile_registry_drift",
+      "location": "src/pageindex_mcp/registry_backfill/reconcile.py:109-228",
+      "decides": "Recurring arq-cron gate that syncs MinIO sidecar state into Postgres unconditionally (no one-shot 'registry:complete' short-circuit, unlike run_auto_backfill). Drains the Redis verdict retry queue FIRST (Zone-4 Phase 3), before the incremental MinIO etag-diff scan, so verdicts lost during a Postgres outage are healed before being overwritten by stale MinIO reads. Best-effort: any failure logs and returns without raising.",
+      "inputs": "settings.registry_enabled/postgres_dsn, MinIO sidecar etag listing, Redis-stored reconcile etags, Redis verdict retry queue"
+    }
+  ],
+  "interactions": [
+    {
+      "from": "evaluate_gates",
+      "to": "apply_promotions",
+      "kind": "gates",
+      "detail": "compute_verdict only invokes apply_promotions when evaluate_gates finds no hard-fail defect; a hard fail short-circuits the entire promotion cascade."
+    },
+    {
+      "from": "_GATE_PRIORITY",
+      "to": "evaluate_gates",
+      "kind": "suppresses",
+      "detail": "When multiple HARD_FAIL_DEFECTS co-fire simultaneously, the priority table suppresses all but the lowest-priority-index defect from being the reported/acted-upon one."
+    },
+    {
+      "from": "source_selection kwarg",
+      "to": "apply_promotions._apply_clamp",
+      "kind": "overrides",
+      "detail": "Passing source_selection=True to apply_promotions bypasses the inner _apply_clamp gate entirely, letting an un-clamped verdict through downstream."
+    },
+    {
+      "from": "classify_verdict",
+      "to": "compute_verdict",
+      "kind": "duplicates",
+      "detail": "classify_verdict is a backward-compat tuple-returning wrapper duplicating compute_verdict's interface for legacy callers; currently a thin pass-through but any signature/behavior change to compute_verdict risks silent divergence if this wrapper isn't updated in lockstep."
+    },
+    {
+      "from": "decide_ocr_mode",
+      "to": "decide_ocr_strategy",
+      "kind": "duplicates",
+      "detail": "decide_ocr_mode duplicates decide_ocr_strategy's call surface for legacy callers that want only the OcrMode enum; same divergence risk pattern as classify_verdict/compute_verdict."
+    },
+    {
+      "from": "write_verdict",
+      "to": "save_doc_meta",
+      "kind": "duplicates",
+      "detail": "write_verdict (storage/verdict.py) is documented as a legacy/back-compat wrapper around save_doc_meta, the sole authoritative sidecar write path."
+    },
+    {
+      "from": "full_page_already_applied re-entry guard",
+      "to": "UNIFIED_OCR_PLAN_ENABLED image-type short-circuit",
+      "kind": "gates",
+      "detail": "Zone-2 fix: the re-entry guard MUST evaluate before the UNIFIED_OCR_PLAN_ENABLED+image-type override in decide_ocr_strategy's ordered gate chain; the prior bug had image-type docs bypass the guard, causing redundant full-page OCR re-triggers."
+    },
+    {
+      "from": "_text_layer_has_content",
+      "to": "decide_ocr_strategy",
+      "kind": "feeds",
+      "detail": "The text-layer probe's char-floor + detect_garble check feeds the has_image_markers/skip-OCR signal that decide_ocr_strategy's per-picture escalation gate consumes."
+    },
+    {
+      "from": "detect_garble",
+      "to": "evaluate_gates",
+      "kind": "feeds",
+      "detail": "Tree-level garble counts computed via _garble_check_nodes (which calls detect_garble per node/title) feed into TreeSignals consumed by evaluate_gates' hard-fail defect determination."
+    },
+    {
+      "from": "detect_garble",
+      "to": "_text_layer_has_content",
+      "kind": "feeds",
+      "detail": "detect_garble is the terminal check inside the picture text-layer probe gate, determining whether extracted text counts as usable (non-garbled) content."
+    },
+    {
+      "from": "config.garble_short_text_default",
+      "to": "detect_garble",
+      "kind": "overrides",
+      "detail": "When enabled and text length < 200 chars, this flag forces is_garbled=True unconditionally (RFC-025 D2), overriding whatever garble_prongs would have concluded from actual content analysis."
+    },
+    {
+      "from": "_garble_check_nodes toplevel fallback",
+      "to": "_garble_check_nodes per-node pass",
+      "kind": "overrides",
+      "detail": "When the per-node/per-title pass finds zero garbled nodes, a whole-tree concatenated fallback via garble_prongs runs and can flip the result to garbled=1, catching patterns that fall below garble_digit_floor per individual node but surface in aggregate."
+    },
+    {
+      "from": "save_doc_meta (MinIO sidecar, child subprocess)",
+      "to": "_upsert_registry_row (Postgres, worker parent)",
+      "kind": "competes",
+      "detail": "Two independent writers target overlapping verdict fields for the same doc_id from different process boundaries. Postgres is documented authoritative (max-priority-wins CAS via upsert_doc, RFC-037 D5); the MinIO sidecar is a passive archive, asymmetrically reconciled by best-effort backfill from the Postgres winning row rather than a true two-phase write."
+    },
+    {
+      "from": "force_verdict_override kwarg",
+      "to": "upsert_doc verdict-priority CAS guard",
+      "kind": "overrides",
+      "detail": "When True, bypasses ONLY the max-priority-wins verdict CAS check (incoming verdict always wins) while leaving the processed_at temporal CAS guard intact -- a partial bypass, not a full override of the upsert's consistency logic."
+    },
+    {
+      "from": "save_doc/save_flat_doc (_confirm_write_visible barrier)",
+      "to": "save_doc_meta (no barrier)",
+      "kind": "duplicates",
+      "detail": "documents.py's save_doc/save_flat_doc retain a read-after-write visibility barrier while storage/verdict.py's save_doc_meta sidecar write deliberately omits it -- an intentional but risky consistency-model split between two writers of related MinIO objects for the same doc_id."
+    },
+    {
+      "from": "reconcile_registry_drift",
+      "to": "_upsert_registry_row / save_doc_meta",
+      "kind": "feeds",
+      "detail": "The recurring arq-cron reconcile job re-diffs MinIO sidecars against Postgres and re-applies upserts, healing dual-write failures left behind by _upsert_registry_row; it first drains the Redis verdict retry queue so recovered verdicts aren't clobbered by the subsequent MinIO-vs-Postgres diff."
+    },
+    {
+      "from": "apply_promotions image_standalone short-circuit",
+      "to": "apply_promotions D2 first-match-wins chain",
+      "kind": "suppresses",
+      "detail": "When content_class == image_standalone, apply_promotions short-circuits early, suppressing evaluation of the full D2 ordered promotion chain (_try_structural_pass, _try_ocr_promotion, etc.) that would otherwise run for non-image documents."
+    }
+  ],
+  "flags": [
+    {
+      "name": "UNIFIED_OCR_PLAN_ENABLED",
+      "location": "src/pageindex_mcp/picture_plane.py",
+      "controls": "Gates whether decide_ocr_strategy forces full-page OCR for document_type == image, ahead of the force_full_page and ocr_escalation gates in the ordered chain. Backward-compatible default preserves pre-flag behavior when off."
+    },
+    {
+      "name": "settings.registry_enabled + settings.postgres_dsn",
+      "location": "src/pageindex_mcp/worker/registry_mirror.py, src/pageindex_mcp/registry_backfill/reconcile.py",
+      "controls": "Jointly gate whether the entire Postgres registry subsystem is active: _upsert_registry_row's dual-write and reconcile_registry_drift's cron sync both no-op immediately when either is unset/false."
+    },
+    {
+      "name": "config.garble_short_text_default (GarbleConfig.garble_short_text_default)",
+      "location": "src/pageindex_mcp/helpers/garble.py (GarbleConfig, detect_garble)",
+      "controls": "When True, forces is_garbled=True for any text under 200 chars in detect_garble regardless of actual content analysis (RFC-025 D2 short-text-prior-garble override)."
+    },
+    {
+      "name": "config.garble_flat_markdown_normalize (GarbleConfig.garble_flat_markdown_normalize)",
+      "location": "src/pageindex_mcp/helpers/garble.py",
+      "controls": "Selects which text-normalization strategy detect_garble applies before delegating to garble_prongs for flat markdown blobs."
+    },
+    {
+      "name": "GarbleConfig full set (garble_latin_gibberish_enabled, garble_latin_ratio, garble_nonsense_ratio, garble_node_ratio_threshold, garble_digit_floor)",
+      "location": "src/pageindex_mcp/helpers/garble.py:433-460 (GarbleConfig.from_config), sourced from PipelineConfig (src/pageindex_mcp/config.py:355-515)",
+      "controls": "Consolidated Zone-3 config snapshot replacing 7 scattered os.environ.get calls; tunes latin-gibberish ratio thresholds, nonsense ratio, per-node garble ratio threshold, and the minimum digit floor for concatenated-text garble fallback. Sourced from the frozen pipeline_config singleton, not read live from os.environ."
+    },
+    {
+      "name": "force_verdict_override",
+      "location": "src/pageindex_mcp/worker/registry_mirror.py (popped from fields dict), src/pageindex_mcp/registry/queries.py:upsert_doc",
+      "controls": "Per-call bypass of upsert_doc's verdict-priority CAS guard, letting a caller force its verdict fields to win over Postgres's existing max-priority-wins row regardless of relative priority (the processed_at CAS guard still applies)."
+    },
+    {
+      "name": "source_selection",
+      "location": "src/pageindex_mcp/helpers/verdict.py:apply_promotions",
+      "controls": "When True, bypasses the inner _apply_clamp downstream clamping gate inside the D2 promotion chain."
+    },
+    {
+      "name": "small_doc_promotion_enabled",
+      "location": "src/pageindex_mcp/config.py:387 (PipelineConfig)",
+      "controls": "Enables/disables the _try_small_doc_promotion step near the tail of apply_promotions' first-match-wins chain."
+    },
+    {
+      "name": "verdict_downgrade_enabled",
+      "location": "src/pageindex_mcp/config.py:402 (PipelineConfig)",
+      "controls": "Toggles whether verdict downgrade logic is active in the broader verdict-computation pipeline (consumed downstream of compute_verdict)."
+    },
+    {
+      "name": "text_layer_garble_check_enabled / region_aware_text_check_enabled",
+      "location": "src/pageindex_mcp/config.py:391-392 (PipelineConfig)",
+      "controls": "Toggle whether _text_layer_has_content's text-layer probe and region-aware variant run at all ahead of OCR escalation decisions."
+    },
+    {
+      "name": "pre_garble_force_ocr_enabled / d7_garble_recovery_enabled / ocr_escalation_garble / ocr_escalation_per_picture",
+      "location": "src/pageindex_mcp/config.py:373-376 (PipelineConfig)",
+      "controls": "Cluster of flags gating pre-emptive/garble-triggered OCR forcing and per-picture OCR escalation behavior, consumed by decide_ocr_strategy's downstream callers and the OCR recovery path."
+    },
+    {
+      "name": "image_standalone_pipeline_enabled / image_dominant_ocr_escalation_enabled",
+      "location": "src/pageindex_mcp/config.py:377-378 (PipelineConfig)",
+      "controls": "Gate the image_standalone short-circuit path in apply_promotions and the image-dominant OCR escalation branch respectively."
+    }
+  ],
+  "observations": [
+    "The verdict cascade (evaluate_gates -> apply_promotions) and the OCR strategy cascade (decide_ocr_strategy's ordered gate chain) both implement first-match-wins / order-load-bearing pipelines documented by RFC number in their docstrings (RFC-040 D1/D2 for verdict; a Zone-2 fix note for OCR re-entry-guard ordering) -- source-code sequence IS the specification, so any reordering during future edits is a high-risk change with no independent runtime check enforcing order.",
+    "detect_garble is a true cross-cutting kernel: called from >=9 distinct call sites spanning text-layer probing, tree validation (_garble_check_nodes), flat-block checks, Tesseract raster recovery, image-enrichment verdict promotion, keep-best-wins OCR comparison, and tree conversion. This matches the pre-existing repo audit doc audit/zones/garble-detection-cross-cutting-kernel.md and means a single behavior change ripples across every downstream gate listed above simultaneously.",
+    "Three legacy/backward-compat wrapper functions (classify_verdict wrapping compute_verdict, decide_ocr_mode wrapping decide_ocr_strategy, write_verdict wrapping save_doc_meta) are currently thin, non-diverged pass-throughs, but structurally each is 'duplicated logic that could diverge' per the task's stated focus areas -- they are a latent risk surface rather than a currently-active bug.",
+    "The dual-writer verdict-persistence architecture (MinIO sidecar via save_doc_meta from an isolated converters_cli child subprocess vs. Postgres registry via _upsert_registry_row from the long-lived worker parent) is an intentional, RFC-006-documented process-boundary split, reconciled asymmetrically: Postgres is authoritative (CAS + RETURNING, max-priority-wins per RFC-037 D5) and the MinIO sidecar is only best-effort backfilled from the Postgres winning row after each successful worker-side upsert, plus periodically healed by the reconcile_registry_drift cron job.",
+    "There is a deliberate consistency-model split within the storage layer itself: save_doc/save_flat_doc (documents.py) retain a _confirm_write_visible read-after-write barrier, while save_doc_meta (storage/verdict.py, the sidecar) explicitly does not -- meaning a reader could observe a freshly-written primary document (tree/flat JSON) whose accompanying verdict sidecar has not yet become visible, a race window that is architecturally accepted rather than closed.",
+    "force_verdict_override provides a narrow, well-scoped bypass: it overrides only the verdict-priority CAS guard in upsert_doc's SQL selection (_UPSERT_SQL vs _UPSERT_OVERRIDE_SQL) while the processed_at temporal CAS guard remains enforced in both paths -- this is a partial, not total, consistency bypass, reducing (but not eliminating) risk from that flag's use.",
+    "reconcile_registry_drift's ordering is itself load-bearing and documented: it drains the Redis verdict retry queue BEFORE running its MinIO-vs-Postgres etag diff, specifically to avoid overwriting freshly-recovered verdicts (queued during a prior Postgres outage) with stale MinIO reads -- a second example (beyond the OCR re-entry guard) of a previously-identified ordering bug class now fixed and documented in-line.",
+    "GarbleConfig (Zone-3) consolidates what were 7 scattered os.environ.get() calls into one frozen dataclass sourced from PipelineConfig -- a completed refactor that removes a class of config-drift risk (different call sites reading the same env var at different times/values), but the config surface remains large (7+ garble-specific flags in PipelineConfig alone) with no single validation gate ensuring cross-flag consistency (e.g. garble_short_text_default and garble_flat_markdown_normalize are independently toggleable and could combine in untested ways).",
+    "PipelineConfig (src/pageindex_mcp/config.py:355-515) is a large flat namespace of 40+ boolean/threshold flags spanning OCR, garble, verdict, and content-classification concerns with no visible sub-grouping into per-subsystem config objects (aside from the GarbleConfig extraction) -- this is consistent with the task's 'config flags that toggle behavior across subsystems' focus area and represents a maintainability risk as flag count grows."
+  ]
+}

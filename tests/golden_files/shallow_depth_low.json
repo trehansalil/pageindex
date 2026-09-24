@@ -1,0 +1,36 @@
+{
+  "archetype": "shallow_depth_low",
+  "description": "Document with sufficient nodes but shallow depth (depth < 2), triggering depth gate",
+  "input": {
+    "structure": [
+      {
+        "title": "Node1",
+        "text": "First section content with adequate length for garble detection to operate and character counting to produce meaningful results in verdict evaluation.",
+        "nodes": []
+      },
+      {
+        "title": "Node2",
+        "text": "Second section content providing additional text volume for proper verdict computation and gate evaluation across the pipeline.",
+        "nodes": []
+      },
+      {
+        "title": "Node3",
+        "text": "Third section completing the flat structure without nesting to trigger the depth gate while having enough nodes.",
+        "nodes": []
+      }
+    ],
+    "content_class": "text",
+    "expected_script": null
+  },
+  "expected": {
+    "garble_detected": false,
+    "gate_ok": false,
+    "gate_defect": "depth<2",
+    "verdict_in": [
+      "PASS",
+      "MARGINAL"
+    ],
+    "recovery_eligible": true,
+    "recovery_method": "_recover_image_dominant_ocr"
+  }
+}

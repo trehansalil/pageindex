@@ -1,0 +1,201 @@
+{
+  "gates": [
+    {
+      "name": "detect_garble",
+      "location": "src/pageindex_mcp/helpers/garble.py:529-614",
+      "decides": "Whether a blob of text is 'garbled' (script-aware gibberish/OCR-noise detection); core primitive underlying every garble-related gate.",
+      "inputs": "text, script_context (ScriptContext: dominant_script, had_presentation_forms, source), config (_garble_config: garble_latin_ratio, garble_nonsense_ratio, garble_digit_floor, etc.), blob_kind (BlobKind.TREE_TEXT etc.)"
+    },
+    {
+      "name": "_gate_node_garbling",
+      "location": "src/pageindex_mcp/helpers/gates.py:72-96",
+      "decides": "Gate 4 in GATE_TABLE: fires when per-node garble ratio (garbled-node-count / node_count) exceeds garble_node_ratio_threshold.",
+      "inputs": "TreeSignals.node_count, _garble_check_nodes(structure, script_context, config) which internally calls detect_garble per node"
+    },
+    {
+      "name": "validate_tree",
+      "location": "src/pageindex_mcp/helpers/tree_validation.py:333-451",
+      "decides": "Runs all 10 gates in GATE_TABLE exhaustively; picks primary defect = first firing gate in table order, EXCEPT D4 override: if a non-garble defect fires first but GARBLING/NODE_GARBLING also fired, garble-type defects win as primary so OCR recovery dispatches correctly. Returns TreeGateResult(ok, defect, all_defects, warnings).",
+      "inputs": "structure, expected_script/ScriptContext, page_count, rtl_decision; builds TreeSignals via TreeSignals.from_tree; thresholds from VerdictThresholds.from_config(pipeline_config)"
+    },
+    {
+      "name": "finalize_gate_and_route",
+      "location": "src/pageindex_mcp/helpers/types.py:358-388",
+      "decides": "Single writer of state.gate_result/ok/reason/first_defect/route, atomically derived from a validate_tree result (or legacy tuple). Calls decide_route(first_defect, flat_routing_enabled) to pick the extraction route.",
+      "inputs": "ExtractionState, vt_raw (TreeGateResult | (ok,reason) tuple), flat_routing_enabled flag"
+    },
+    {
+      "name": "apply_promotions",
+      "location": "src/pageindex_mcp/helpers/verdict.py:404-571",
+      "decides": "Zone-4 D1: unconditional structural hard-fail (max_leaf_ratio > hard_fail_max_leaf_ratio) evaluated BEFORE any promotion, with image-enrichment as the only guarded exception. D2: ordered if/elif pipeline (image_enrichment > structural_pass > cat_a(OCR) > cat_b(flat) > cat_c(content_class) > small_doc) — first match wins, but ALL paths are evaluated for telemetry (promotion_paths_matched). A content-volume floor (min_marginal_chars) gates ALL promotion/MARGINAL paths regardless of structural metrics (HR#5). No match -> MARGINAL with a diagnostic reason.",
+      "inputs": "GateOutcome (defect, signals, all_defects), content_class, image_enrichment_ratio, inspector_class, VerdictThresholds, expected_script, source_selection flag, script_context"
+    },
+    {
+      "name": "_try_image_enrichment",
+      "location": "src/pageindex_mcp/helpers/verdict.py:226-268",
+      "decides": "Image-enrichment rescue eligibility: content_class in (flat_prose, flat_mixed), image_enrichment_ratio>=0.8, node_count>=3, not effectively_garbled, promoted-text length >= min_image_promoted_chars, and a SECOND detect_garble() call on the deduped/promoted text must also pass clean. VG-7 fix: computed once and shared by both the D1 exception and D2 pipeline in apply_promotions (previously computed twice from two call sites, which could drift).",
+      "inputs": "TreeSignals, content_class, image_enrichment_ratio, VerdictThresholds, expected_script, script_context"
+    },
+    {
+      "name": "_eligible_image_dominant",
+      "location": "src/pageindex_mcp/helpers/gates.py:314-327",
+      "decides": "Image-dominant OCR recovery eligibility for DEPTH_LOW defect: requires state.ok==False, pipeline_config.image_dominant_ocr_escalation_enabled config flag, and TreeDefect.DEPTH_LOW present in ALL active defects (Zone-1 fix: checks all_defects not just first_defect, so DEPTH_LOW firing as a secondary defect still triggers recovery).",
+      "inputs": "ExtractionState.ok, pipeline_config.image_dominant_ocr_escalation_enabled, _all_defects(state)"
+    },
+    {
+      "name": "save_doc_meta",
+      "location": "src/pageindex_mcp/storage/verdict.py:78-198",
+      "decides": "Zone-5: SOLE authoritative entry point for verdict persistence. Read-merge-write onto the .meta.json sidecar (MinIO). Merges verdict/provenance/facet fields onto the existing sidecar so subset-payload callers don't drop fields. Consistency is 'eventual' (no write-visibility barrier) — contrast with save_doc/save_flat_doc which retain a read-after-write barrier. Postgres registry (_upsert_registry_row) is the actual max-priority-wins arbiter (RFC-037 D5); this sidecar just mirrors the arbitrated row.",
+      "inputs": "doc_id, meta dict (verdict, verdict_reason, max_leaf_ratio, pipeline_version, content_class, node_count, effective_config, etc.)"
+    },
+    {
+      "name": "write_verdict",
+      "location": "src/pageindex_mcp/storage/verdict.py:201-232",
+      "decides": "DEPRECATED thin wrapper retained only for legacy callers (promotion_sweep.run_sweep, preprocess_client.recompute_verdicts) — delegates entirely to save_doc_meta. No longer does the old atomic dual-write to both the processed artifact and sidecar.",
+      "inputs": "doc_id, verdict, verdict_reason, pipeline_version, verdict_computed_at, max_leaf_ratio, content_class"
+    },
+    {
+      "name": "read_registry_fields",
+      "location": "src/pageindex_mcp/storage/verdict.py:252-322",
+      "decides": "Projects registry-relevant fields from a persisted processed doc. Verdict-field source priority: (1) artifact body (.json/.flat.json) if present and non-empty [legacy pre-Zone-5 docs only], (2) sidecar (.meta.json) fallback for any verdict field still missing — for Zone-5+ docs the artifact body never carries verdict fields so this ALWAYS falls through to the sidecar.",
+      "inputs": "doc_id, content_class (selects .flat.json vs .json key); reads MinIO object + _read_existing_sidecar"
+    },
+    {
+      "name": "_upsert_registry_row",
+      "location": "src/pageindex_mcp/worker/registry_mirror.py:56-200",
+      "decides": "Worker-parent-process dual-write into Postgres registry via upsert_doc (the actual max-priority-wins verdict arbiter per RFC-037 D5), then mirrors success/failure metrics to Redis. Must run in the long-lived worker parent because the isolated converters_cli child subprocess (where save_doc_meta executes) never opens a registry pool.",
+      "inputs": "registry fields dict (from read_registry_fields or passed directly), doc_id; calls registry.queries.upsert_doc, registry.schema.get_pool, and on failure _enqueue_verdict_retry"
+    },
+    {
+      "name": "_text_layer_has_content",
+      "location": "src/pageindex_mcp/converters/pictures.py:240-275",
+      "decides": "Text-layer probe gating whether picture-level OCR is even attempted — if the PDF's native text layer already has non-garbled content for a region, picture OCR is skipped (calls detect_garble internally on the extracted text layer content).",
+      "inputs": "page/region text extraction, detect_garble()"
+    }
+  ],
+  "interactions": [
+    {
+      "from": "apply_promotions:D1_hard_fail",
+      "to": "apply_promotions:D2_promotion_pipeline",
+      "kind": "overrides",
+      "detail": "Unconditional structural hard-fail (max_leaf_ratio > hard_fail_max_leaf_ratio) is evaluated before D2's ordered promotion pipeline; only the image_enrichment path is allowed as a guarded exception to the hard-fail, all other D2 promotion paths (structural_pass, cat_a, cat_b, cat_c, small_doc) are unreachable once hard-fail fires."
+    },
+    {
+      "from": "apply_promotions:min_marginal_chars_floor",
+      "to": "apply_promotions:all_promotion_paths",
+      "kind": "gates",
+      "detail": "Content-volume floor (stripped flat_text length < th.min_marginal_chars) short-circuits straight to FAIL before any promotion/MARGINAL path is tried, regardless of otherwise-passing structural metrics — closes a documented HR#5 hysteresis gap (Zone-8)."
+    },
+    {
+      "from": "validate_tree:garble_defect_priority(D4)",
+      "to": "finalize_gate_and_route:route_decision",
+      "kind": "overrides",
+      "detail": "When GARBLING/NODE_GARBLING co-fires with a non-garble defect, validate_tree forces the garble defect to be primary_defect even if a different gate fired first in GATE_TABLE order, specifically so downstream OCR-recovery routing dispatches correctly on the garble path rather than the other co-firing defect."
+    },
+    {
+      "from": "_try_image_enrichment:detect_garble(promoted_text)",
+      "to": "validate_tree/_gate_node_garbling:detect_garble(sig.flat_text)",
+      "kind": "duplicates",
+      "detail": "detect_garble is invoked independently on two different text derivations of the same document — sig.flat_text during validate_tree's gate table, and a separately deduped/promoted text blob (_dedupe_chart_text_lines(sig.primary_text)) inside _try_image_enrichment — a second, textually-divergent garble check that could in principle disagree with the first."
+    },
+    {
+      "from": "finalize_gate_and_route",
+      "to": "_convert_to_tree / _reconvert_and_revalidate / _recover_rtl_repair",
+      "kind": "gates",
+      "detail": "Zone-3 fix: finalize_gate_and_route is now the SOLE writer of gate_result/ok/reason/first_defect/route; it replaced three call sites that previously each set a subset of these five fields independently, which had created a stale-routing race window."
+    },
+    {
+      "from": "save_doc_meta",
+      "to": "write_verdict",
+      "kind": "suppresses",
+      "detail": "Zone-5 downgraded write_verdict to a thin pass-through wrapper around save_doc_meta; it no longer performs its former atomic dual-write to both the processed artifact and the sidecar. Only legacy callers (promotion_sweep.run_sweep, preprocess_client.recompute_verdicts) still invoke write_verdict at all — trace_path found zero live in-repo callers besides tests/legacy scripts."
+    },
+    {
+      "from": "read_registry_fields:artifact_body_verdict_fields",
+      "to": "read_registry_fields:sidecar_fallback_verdict_fields",
+      "kind": "competes",
+      "detail": "Two possible sources for the same verdict fields: the processed-doc JSON body (checked first, legacy pre-Zone-5 docs only) and the .meta.json sidecar (fallback, and in practice the ONLY populated source for all Zone-5+ docs since new artifacts never embed verdict fields in the body)."
+    },
+    {
+      "from": "save_doc_meta(child subprocess)",
+      "to": "_upsert_registry_row(worker parent)",
+      "kind": "feeds",
+      "detail": "Sequential cross-process cascade: save_doc_meta runs inside the isolated converters_cli child subprocess (no registry pool available there by design) and writes the MinIO sidecar; the long-lived worker parent then calls _upsert_registry_row -> upsert_doc after the child returns to perform the actual Postgres dual-write, which registry.queries.upsert_doc treats as the final max-priority-wins arbiter per RFC-037 D5. If this ordering is violated, verdicts could persist to MinIO without ever reaching Postgres."
+    },
+    {
+      "from": "_eligible_image_dominant:image_dominant_ocr_escalation_enabled",
+      "to": "recovery.RecoveryMixin._recover_image_dominant_ocr",
+      "kind": "gates",
+      "detail": "DEPTH_LOW defect has only one recovery path (image-dominant OCR); the config flag check happens inside the eligibility gate itself so the whole recovery mechanism is skipped entirely when disabled, rather than being gated at the call site."
+    },
+    {
+      "from": "apply_promotions:source_selection_bypass",
+      "to": "apply_promotions:_clamp_pass",
+      "kind": "suppresses",
+      "detail": "Zone-8 fix: the source_selection flag bypasses _clamp_pass (which enforces bidi-degraded/depth-inadequacy caps) ONLY for the image_enrichment promotion path; every other promotion path always flows through _clamp_pass regardless of source_selection, closing a prior scope leak."
+    },
+    {
+      "from": "_text_layer_has_content:detect_garble",
+      "to": "converters/pictures.py:_recover_picture_results (picture OCR)",
+      "kind": "gates",
+      "detail": "If the native PDF text layer already has non-garbled content for a region, picture-level Tesseract/VLM OCR is skipped entirely for that region — the garble probe on extracted text is upstream of and suppresses the OCR-escalation subsystem."
+    }
+  ],
+  "flags": [
+    {
+      "name": "pipeline_config.image_dominant_ocr_escalation_enabled",
+      "location": "src/pageindex_mcp/config.py:388 (PipelineConfig)",
+      "controls": "Whether _eligible_image_dominant allows DEPTH_LOW-triggered image-dominant OCR recovery to fire at all."
+    },
+    {
+      "name": "pipeline_config.allow_agpl_fallback / agpl_structural_fallback_enabled",
+      "location": "src/pageindex_mcp/config.py:380, 416 (PipelineConfig)",
+      "controls": "Whether the AGPL-licensed pymupdf4llm converter is included in the converter fallback chain (CLAUDE.md Hard Rule 4); structural-failure fall-through to AGPL converter is gated separately from generic transient-failure fallback."
+    },
+    {
+      "name": "pipeline_config.verdict_downgrade_enabled",
+      "location": "src/pageindex_mcp/config.py:423 (PipelineConfig)",
+      "controls": "Whether verdict downgrade logic is active in the indexer wiring (per test_verdict.TestVerdictDowngradeEnabled)."
+    },
+    {
+      "name": "pipeline_config.ocr_escalation_garble / ocr_escalation_per_picture / ocr_escalation_low_content",
+      "location": "src/pageindex_mcp/config.py:382-384 (PipelineConfig)",
+      "controls": "Three independent triggers for escalating to OCR: garble-detected text, per-picture region OCR, and low-content-density documents."
+    },
+    {
+      "name": "flat_routing_enabled",
+      "location": "src/pageindex_mcp/helpers/types.py:360 (finalize_gate_and_route parameter) / decide_route",
+      "controls": "Whether a failing tree gate can route to the flat-extraction fallback path instead of a terminal reject; test_gates.TestFinalizeAtomicity.test_flat_routing_disabled_reject confirms disabling it forces REJECT."
+    },
+    {
+      "name": "converter_transient_retry_count",
+      "location": "src/pageindex_mcp/config.py:409 (PipelineConfig)",
+      "controls": "Retry budget for transient converter subprocess failures before falling through the converter chain (e.g. to AGPL fallback)."
+    },
+    {
+      "name": "remote_version_enforce",
+      "location": "src/pageindex_mcp/config.py:420 (PipelineConfig)",
+      "controls": "Whether a remote-converter version skew (RemoteVersionSkewError) is treated as fatal."
+    },
+    {
+      "name": "apply_promotions(source_selection=...)",
+      "location": "src/pageindex_mcp/helpers/verdict.py:404 (apply_promotions parameter)",
+      "controls": "Scoped bypass of the bidi/depth _clamp_pass caps, restricted to the image_enrichment promotion path only (Zone-8 fix narrowed this from a broader bypass)."
+    },
+    {
+      "name": "OPENAI_BASE_URL",
+      "location": "src/pageindex_mcp/config.py (Settings.openai_base_url)",
+      "controls": "Routing lever for PII-bearing documents to a no-training/zero-retention LLM tier (CLAUDE.md Hard Rule 3)."
+    }
+  ],
+  "observations": [
+    "Verdict persistence is a two-tier cascade with an explicit process boundary: save_doc_meta (MinIO sidecar, eventual consistency, runs in the isolated converters_cli child subprocess) happens first, then the worker parent process performs the actual authoritative Postgres write via _upsert_registry_row -> upsert_doc (RFC-037 D5's 'max-priority-wins arbiter'). This means the sidecar can transiently disagree with Postgres, and any code path that reads verdict from the sidecar without accounting for this window risks staleness — read_registry_fields explicitly documents this as the reason it falls back to the sidecar only when the artifact body is empty.",
+    "detect_garble is the single core primitive but is invoked from at least 7 distinct call sites across 3 subsystems (validate_tree's gate table via _gate_node_garbling/_garble_check_flat_blocks, _try_image_enrichment's promotion rescue, _text_layer_has_content's OCR-skip probe, _document_level_text_fallback, _attempt_tesseract_raster_recovery, _recover_picture_text) — each passing a different derived text blob and ScriptContext, which is the documented source of the VG-6/VG-7/Zone-8 'divergence' bugs the codebase has been actively fixing (per apply_promotions docstring history).",
+    "apply_promotions' docstring itself documents its own audit history in unusual detail (RFC-040 D1/D2, Zone-8 fixes, VG-6/VG-7 verdict-gate-cascade fixes) — this function has clearly been the repeated site of promotion-path divergence bugs and is treated as the canonical single source of truth for the verdict decision, consistent with CLAUDE.md Hard Rule 5 (never silently persist a low-quality tree).",
+    "finalize_gate_and_route is a deliberately-introduced 'single writer' pattern (Zone-3) collapsing what were three independent field-setting call sites into one atomic derivation — a textbook fix for a 'competing writers to the same fields' architectural smell, and a useful template for the analogous save_doc_meta/write_verdict consolidation (Zone-5) and the _try_image_enrichment dedup (VG-7).",
+    "write_verdict has zero live production callers per trace_path (only legacy promotion_sweep.run_sweep and preprocess_client.recompute_verdicts, both explicitly called out in its own docstring as deprecated-but-retained) — a candidate for eventual removal once those two scripts are migrated to call save_doc_meta directly.",
+    "The garble-gate ordering fix in validate_tree (D4: garble-type defects always win as primary when co-firing with any other gate) is a clear 'suppresses/overrides' architectural pattern: it exists specifically so downstream recovery dispatch (which branches on primary defect) reliably lands on garble-specific OCR recovery rather than a structural-only recovery path that wouldn't fix garbled text.",
+    "PipelineConfig (src/pageindex_mcp/config.py:364-577) centralizes ~45 tunable fields covering garble thresholds, OCR escalation triggers, promotion-path char floors, and AGPL/converter toggles — nearly every gate discussed above pulls its threshold or enable-flag from this single frozen(-per-job) config object via VerdictThresholds.from_config(pipeline_config), so a single reset_pipeline_config() call is the blast radius for changing verdict behavior fleet-wide.",
+    "OCR escalation has three independently-gated trigger conditions (garble, per-picture, low-content) plus a fourth structural-failure/image-dominant path (_eligible_image_dominant, DEPTH_LOW-specific) — these are separate gates rather than a unified 'should we OCR' decision, meaning a document could plausibly satisfy one trigger and not another, and the recovery mixin (client/recovery.py) has distinct handler methods per trigger (_recover_image_dominant_ocr, _recover_vlm_fallback, _execute_ocr_retry)."
+  ]
+}

@@ -1,0 +1,154 @@
+name: Quality Gates
+
+# Why this workflow exists
+# ------------------------
+# Before 2026-09-23 the repository had a complete eight-gate suite in
+# scripts/gates/ and NOTHING executed it. build-push.yml calls
+# `scripts/eval.sh --no-infra`, but only on a push to master and only as a
+# precondition to building an image, so a pull request was never gated at all.
+# The measurable consequence: `unit.max_test_file_ratio` went RED on 2026-09-02
+# (commit 040aaae, ratio 0.68) and stayed red through 2026-09-22 (0.72) while
+# the collected suite grew 1393 -> 2510. The gate worked. It was simply never
+# run where anyone would see it.
+#
+# So this workflow runs the cheap, hermetic gates on every pull request, and
+# splits them into two jobs on purpose:
+#
+#   gates-blocking   green on this tree today -> merge-blocking from day one.
+#   gates-advisory   red on this tree today   -> reported, not enforced, with a
+#                                                dated flip below.
+#
+# The split is the point. A workflow that is red on its first run gets disabled
+# within a week, and then we are back to gates nobody runs. Landing the green
+# ones as blocking means the ratchet bites immediately; landing the red ones as
+# advisory means the debt stays on screen instead of being deleted from the
+# pipeline.
+#
+# Relaxing a threshold in agents/governance/verify-gates.yaml to move a gate
+# from advisory to blocking is FORBIDDEN and requires an RFC. The only
+# legitimate way across is to fix the violations.
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: gates-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── BLOCKING ────────────────────────────────────────────────────────────────
+  # dag               green (19 pass / 0 fail, 2026-09-23)
+  # test-ratio-guard  green (ratio 0.38, threshold 0.65)
+  # test-budget       green (collected count vs tests/TEST_BUDGET.baseline)
+  # test-index-guard  green (3 pass / 0 fail, source↔test mapping in TEST_INDEX.yaml)
+  #
+  # These four are exactly the anti-regrowth machinery. If one of them goes red
+  # on a PR, the PR is adding test files or test cases faster than the budget
+  # allows, and the failure message says what to do about it.
+  gates-blocking:
+    name: gates (blocking)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # test-ratio-guard's new-file check needs `git merge-base HEAD master`;
+          # a shallow clone has no merge-base and the check silently degrades to
+          # ratio-only mode — i.e. exactly the "gate present, not enforcing"
+          # failure this workflow exists to end.
+          fetch-depth: 0
+
+      - name: Set up uv (Python 3.12)
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      # --keep-going so a PR sees every blocking failure in one run rather than
+      # discovering them one push at a time.
+      - name: Run blocking gates
+        run: |
+          bash scripts/eval.sh --keep-going \
+            --gate=dag --gate=test-ratio-guard --gate=test-budget \
+            --gate=test-index-guard
+
+  # ── ADVISORY ────────────────────────────────────────────────────────────────
+  # TODO(2026-10-07): flip `continue-on-error` to false. Owner: the branch that
+  # clears the last violation below. Tracked state at the time of writing:
+  #
+  #   static     FAIL=2  — pre-existing ruff/mypy violations on this tree.
+  #   contracts  FAIL=1  — contract IDs not yet grep-findable in tests/ after
+  #                        the 2510 -> 927 consolidation; being fixed in
+  #                        parallel on this branch.
+  #
+  # If that date passes and this job is still advisory, that is itself the
+  # signal: either finish the fixes or write the RFC. Do not extend the date by
+  # editing this comment.
+  gates-advisory:
+    name: gates (advisory until 2026-10-07)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up uv (Python 3.12)
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run advisory gates
+        id: advisory
+        continue-on-error: true
+        run: |
+          bash scripts/eval.sh --keep-going --gate=static --gate=contracts \
+            | tee advisory.log
+
+      # Surfaces the result on the PR's Summary tab so "advisory" does not mean
+      # "buried in a collapsed log nobody opens".
+      - name: Report advisory result
+        if: always()
+        run: |
+          {
+            echo "### Advisory gates — NOT merge-blocking until 2026-10-07"
+            echo
+            if [ "${{ steps.advisory.outcome }}" = "success" ]; then
+              echo "All advisory gates PASSED. Flip \`continue-on-error: false\`"
+              echo "in .github/workflows/gates.yml and delete this job's TODO."
+            else
+              echo "Advisory gates FAILED. This does not block the merge yet."
+              echo "Fix the violations — do NOT relax a threshold in"
+              echo "\`agents/governance/verify-gates.yaml\`; that needs an RFC."
+            fi
+            echo
+            echo '```'
+            sed -n '/Gate Summary/,$p' advisory.log 2>/dev/null || echo "(no summary captured)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── NOT RUN HERE ────────────────────────────────────────────────────────────
+  # unit          runs the full pytest suite with coverage; slow, and its
+  #               per-module coverage thresholds (client/storage 90, worker 85)
+  #               are unverified on this tree. Add it as a third job once the
+  #               advisory pair is green, so one red job does not train people
+  #               to ignore all of them.
+  # build         covered by build-push.yml on master.
+  # supply-chain  pip-audit; belongs on a schedule, not on every PR.
+  # integration   needs MinIO + Redis.
+  # e2e           needs MinIO + Redis + server + worker.

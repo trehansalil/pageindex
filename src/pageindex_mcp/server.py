@@ -3,8 +3,11 @@
 import asyncio
 import contextlib
 import logging
+import secrets
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
+from fastmcp.server.dependencies import get_http_headers
 from starlette.routing import Route
 
 from . import queue_metrics
@@ -15,11 +18,9 @@ from .config import settings
 from .metrics import metrics_response, registry_metrics_sync_loop
 from .upload_app import create_upload_app
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+from .obs import configure as configure_obs
+
+configure_obs()
 
 mcp = FastMCP("pageindex-local")
 
@@ -31,6 +32,52 @@ mcp.tool()(_tools.find_relevant_documents)
 mcp.tool()(_tools.get_document)
 mcp.tool()(_tools.get_document_structure)
 mcp.tool()(_tools.get_page_content)
+
+# ---------------------------------------------------------------------------
+# Zone-5 / HR2: delete_document — exposes storage.delete_doc so the right-to-
+# erasure cascade is reachable in production (CLAUDE.md Hard Rule 2).
+# Gated behind the same UPLOAD_API_KEY as the upload endpoints.
+#
+# The bearer middleware in auth.py authenticates the MCP transport, not this
+# tool: a bearer holder (or any caller when MCP_ALLOW_UNAUTHENTICATED=true)
+# would otherwise reach a destructive, irreversible cascade. The check below
+# is enforced at the tool boundary and fails closed when no HTTP request is in
+# scope (e.g. stdio transport), where an X-API-Key cannot be presented at all.
+# ---------------------------------------------------------------------------
+
+
+def _require_upload_api_key() -> None:
+    configured = settings.upload_api_key
+    if not configured:
+        raise ToolError("Upload API key not configured; delete_document is unavailable")
+
+    headers = get_http_headers()
+    provided = headers.get("x-api-key", "")
+    if not provided or not secrets.compare_digest(provided, configured):
+        raise ToolError("Invalid or missing X-API-Key")
+
+
+@mcp.tool()
+async def delete_document(doc_id: str) -> dict:
+    """HR2 right-to-erasure: cascade-delete a document and all derived stores.
+
+    Purges uploads/, processed/*.json, processed/*.meta.json, Redis cache,
+    reconcile-etag, hash-cache, Postgres registry row, and preloaded/ raw
+    object — in that order per CLAUDE.md Hard Rule 2.
+
+    Returns ``{"errors": [...]}`` — every individual store failure is reported,
+    never raised (partial-failure visibility).
+
+    **Authentication**: requires a valid ``X-API-Key`` header carrying
+    UPLOAD_API_KEY (same credential as /upload/files). Enforced here at the
+    tool boundary, independently of MCP bearer auth.
+    """
+    _require_upload_api_key()
+
+    from .storage import delete_doc
+
+    return await delete_doc(doc_id)
+
 
 # ---------------------------------------------------------------------------
 # Build the ASGI app (importable by gunicorn as pageindex_mcp.server:app)
@@ -47,16 +94,23 @@ _inner_lifespan = starlette_app.router.lifespan_context
 
 @contextlib.asynccontextmanager
 async def _lifespan_with_scrape(app, _inner=_inner_lifespan):
-    # RFC-011 D6 / ISS-33: refuse to start if PII corpus is routed through
-    # a non-ZDR endpoint (HR3 enforcement).
-    if settings.pii_corpus:
-        from .config import _is_zdr_allowlisted
+    # RFC-011 D6 / ISS-33, extended by RFC-039 D1: refuse to start if PII
+    # corpus is routed through a non-ZDR endpoint (HR3 enforcement).
+    from .config import validate_hr3_compliance
 
-        if not _is_zdr_allowlisted(settings.openai_base_url):
-            raise RuntimeError(
-                f"PII_CORPUS=true but openai_base_url={settings.openai_base_url!r} "
-                "is not on the ZDR allow-list (HR3)"
-            )
+    validate_hr3_compliance(settings)
+
+    # Zone-5: validate cross-module feature wiring contracts at startup.
+    # Failures raise AssertionError, refusing to start the server.
+    from .helpers import validate_feature_wirings
+
+    try:
+        validate_feature_wirings()
+    except AssertionError:
+        logging.getLogger(__name__).error(
+            "Feature wiring validation failed at server startup — refusing to start"
+        )
+        raise
 
     redis = await get_async_redis()
     scrape_task = asyncio.create_task(queue_metrics.queue_depth_scrape_loop(redis))

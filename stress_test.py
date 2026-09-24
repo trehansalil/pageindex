@@ -20,15 +20,12 @@ Usage:
 import argparse
 import asyncio
 import json
+import os
 import random
 import signal
-import sys
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Optional
-
-import os
 
 import aiohttp
 from dotenv import load_dotenv
@@ -145,7 +142,7 @@ class MetricCollector:
     def __init__(self):
         self.metrics = ServerMetrics()
         self._running = False
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
         self.history: list[ServerMetrics] = []
         self._error_logged = False
 
@@ -225,8 +222,8 @@ class MCPSession:
     def __init__(self, http_session: aiohttp.ClientSession, base_url: str):
         self.http = http_session
         self.url = f"{base_url}{MCP_PATH}"
-        self.session_id: Optional[str] = None
-        self.affinity_cookie: Optional[str] = None
+        self.session_id: str | None = None
+        self.affinity_cookie: str | None = None
         self._req_counter = 0
 
     def _next_id(self) -> str:
@@ -243,7 +240,7 @@ class MCPSession:
             h["Mcp-Session-Id"] = self.session_id
         return h
 
-    def _cookies(self) -> Optional[dict]:
+    def _cookies(self) -> dict | None:
         if self.affinity_cookie:
             return {"mcp_affinity": self.affinity_cookie}
         return None
@@ -351,10 +348,10 @@ class BaseStressTest:
         self.args = args
         self.collector = MetricCollector()
         self.results: list[StepResult] = []
-        self.stop_reason: Optional[str] = None
+        self.stop_reason: str | None = None
         self._stop = False
 
-    def _check_thresholds(self) -> Optional[str]:
+    def _check_thresholds(self) -> str | None:
         cpu_abs = self.collector.get_cpu_percent_absolute()
         mem_pct = self.collector.metrics.mem_percent
 
@@ -388,7 +385,7 @@ class BaseStressTest:
         latencies: list[float],
         status_codes: dict[int, int],
         duration: float,
-    ) -> Optional[StepResult]:
+    ) -> StepResult | None:
         if not latencies:
             return None
 
@@ -530,7 +527,7 @@ class Phase1ConnectionTest(BaseStressTest):
         self,
         http_session: aiohttp.ClientSession,
         concurrency: int,
-    ) -> Optional[StepResult]:
+    ) -> StepResult | None:
         latencies: list[float] = []
         status_codes: dict[int, int] = defaultdict(int)
         step_start = time.monotonic()
@@ -580,7 +577,7 @@ class Phase1ConnectionTest(BaseStressTest):
     async def run(self) -> int:
         """Run Phase 1. Returns recommended concurrency."""
         args = self.args
-        print(f"Phase 1: Connection Capacity Test")
+        print("Phase 1: Connection Capacity Test")
         print(f"  Target:          {BASE_URL}{MCP_PATH}")
         print(f"  Concurrency:     {args.start} -> {args.max_concurrency} (step {args.step})")
         print(f"  Step duration:   {args.step_duration}s (+ {args.warmup}s warmup)")
@@ -628,7 +625,7 @@ class Phase1ConnectionTest(BaseStressTest):
                 concurrency += args.step
 
                 if not self._stop and concurrency <= args.max_concurrency:
-                    print(f"  Cooldown 5s before next level...", flush=True)
+                    print("  Cooldown 5s before next level...", flush=True)
                     await asyncio.sleep(5)
 
         await self.collector.stop()
@@ -714,7 +711,7 @@ class Phase2ToolTest(BaseStressTest):
         self,
         sessions: list[MCPSession],
         concurrency: int,
-    ) -> Optional[StepResult]:
+    ) -> StepResult | None:
         latencies: list[float] = []
         status_codes: dict[int, int] = defaultdict(int)
         step_start = time.monotonic()
@@ -790,7 +787,7 @@ class Phase2ToolTest(BaseStressTest):
         args = self.args
         concurrency = args.concurrency
 
-        print(f"Phase 2: Tool Execution Load Test")
+        print("Phase 2: Tool Execution Load Test")
         print(f"  Target:          {BASE_URL}{MCP_PATH}")
         print(f"  Sessions:        {concurrency} (pre-established)")
         print(f"  Rate ramp:       {args.start} -> {concurrency} workers (step {args.step})")
@@ -862,7 +859,7 @@ class Phase2ToolTest(BaseStressTest):
                 rate += args.step
 
                 if not self._stop and rate <= concurrency:
-                    print(f"  Cooldown 5s before next level...", flush=True)
+                    print("  Cooldown 5s before next level...", flush=True)
                     await asyncio.sleep(5)
 
         await self.collector.stop()
@@ -1019,7 +1016,7 @@ async def main():
 
         # Wait for server to cool down before starting Phase 2
         # Require 2 consecutive readings below thresholds to avoid stale metrics
-        print(f"\n  Waiting for server to cool down before Phase 2...")
+        print("\n  Waiting for server to cool down before Phase 2...")
         max_cooldown = 120  # seconds
         waited = 0
         consecutive_ok = 0
@@ -1053,7 +1050,7 @@ async def main():
                     f"CPU={cpu_m}m ({cpu_pct}%), Mem={mem_pct}%"
                 )
                 if consecutive_ok >= required_ok:
-                    print(f"  Server cooled down.")
+                    print("  Server cooled down.")
                     break
             else:
                 consecutive_ok = 0

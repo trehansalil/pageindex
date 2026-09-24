@@ -12,9 +12,11 @@ from arq import create_pool
 from arq.connections import RedisSettings
 from fastapi import Depends, FastAPI, Header, HTTPException, UploadFile
 
-from .cache import job_status_get, job_status_set
+from . import cache as _cache
+from .cache import JOB_TTL, job_status_get
 from .client import _SUPPORTED
 from .config import settings
+from .job_status import JobStatus, _set_job_status
 from .storage import upload_staging
 
 logger = logging.getLogger(__name__)
@@ -164,17 +166,62 @@ def create_upload_app() -> FastAPI:
             )
             logger.debug("Staged upload in MinIO: %s", staging_key)
 
-            await arq_pool.enqueue_job(
-                "process_document_job",
-                staging_key,
+            # Zone-verdict-persistence: open the job at PENDING through the
+            # validated state machine *before* enqueueing. Writing it after
+            # the enqueue let a fast worker reach PROCESSING first, and this
+            # write then regressed the hash to PENDING — after which the
+            # worker's own PROCESSING->DONE transition was refused and a
+            # successful job reported PENDING until its TTL expired.
+            now = datetime.now(UTC).isoformat()
+            # Module-qualified so a test patching cache.get_async_redis is
+            # honoured; a from-import would bind the real one at import time.
+            redis = await _cache.get_async_redis()
+            await _set_job_status(
+                redis,
                 job_id,
+                JobStatus.PENDING,
+                ttl=JOB_TTL,
+                filename=filename,
+                submitted_at=now,
             )
 
-            now = datetime.now(UTC).isoformat()
-            await job_status_set(
-                job_id,
-                {"status": "pending", "filename": filename, "submitted_at": now},
-            )
+            try:
+                await arq_pool.enqueue_job(
+                    "process_document_job",
+                    staging_key,
+                    job_id,
+                )
+            except Exception as exc:
+                # Nothing will ever move this job out of PENDING, so record a
+                # terminal-looking ERROR rather than leave it polling pending
+                # until the 24h TTL expires.
+                #
+                # Deliberately NOT a delete. arq can accept the job and still
+                # raise here -- a connection lost after the Redis write but
+                # before the reply -- and an absent hash admits only PENDING,
+                # so the worker's PENDING->PROCESSING write would be refused
+                # and a document that indexed fine would poll 404 forever.
+                # ERROR->PROCESSING is a permitted transition, so if the job
+                # really was enqueued the worker overwrites this and the job
+                # completes normally.
+                try:
+                    await _set_job_status(
+                        redis,
+                        job_id,
+                        JobStatus.ERROR,
+                        ttl=JOB_TTL,
+                        error=f"enqueue failed: {exc}",
+                        reason="enqueue_failed",
+                    )
+                except Exception:
+                    # A refused transition means something else already moved
+                    # the job on; never let that mask the enqueue failure.
+                    logger.warning(
+                        "Could not mark job %s as failed after enqueue error",
+                        job_id,
+                        exc_info=True,
+                    )
+                raise
 
             results.append({"job_id": job_id, "filename": filename})
             logger.info("Enqueued job %s for file %s", job_id, filename)
@@ -196,5 +243,27 @@ def create_upload_app() -> FastAPI:
             )
         logger.debug("Status poll: job=%s status=%s", job_id, data.get("status"))
         return {"job_id": job_id, **data}
+
+    @app.delete("/docs/{doc_id}")
+    async def delete_document(
+        doc_id: str,
+        _: None = Depends(require_api_key),
+    ) -> dict:
+        """HR2 right-to-erasure: cascade-delete a document and all derived stores.
+
+        Zone-5: exposes storage.delete_doc so the right-to-erasure cascade
+        is reachable in production (CLAUDE.md Hard Rule 2).
+
+        Purges uploads/, processed/*.json, processed/*.meta.json, Redis cache,
+        reconcile-etag, hash-cache, Postgres registry row, and preloaded/ —
+        in that order.
+
+        Returns ``{"doc_id": ..., "errors": [...]}`` so partial failures are
+        visible to the caller.
+        """
+        from .storage import delete_doc
+
+        result = await delete_doc(doc_id)
+        return {"doc_id": doc_id, **result}
 
     return app

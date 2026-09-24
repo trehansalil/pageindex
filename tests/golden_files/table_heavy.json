@@ -1,0 +1,45 @@
+{
+  "archetype": "table_heavy",
+  "description": "Document dominated by table blocks with header-only and data tables",
+  "input": {
+    "structure": [
+      {
+        "title": "Document",
+        "text": "",
+        "nodes": [
+          {
+            "title": "Section 1",
+            "text": "Introduction paragraph with sufficient content volume for verdict evaluation. This provides baseline text that establishes document has real content worth indexing.",
+            "nodes": []
+          },
+          {
+            "title": "Table Section",
+            "text": "| Header A | Header B | Header C |\n|---|---|---|\n| Data 1 | Data 2 | Data 3 |\n| Data 4 | Data 5 | Data 6 |",
+            "nodes": []
+          },
+          {
+            "title": "Analysis",
+            "text": "Detailed analysis section providing additional content. The document contains structured tabular data alongside prose paragraphs for a mixed content profile.",
+            "nodes": []
+          },
+          {
+            "title": "Summary",
+            "text": "Summary section with concluding remarks about the tabular analysis presented above.",
+            "nodes": []
+          }
+        ]
+      }
+    ],
+    "content_class": "text",
+    "expected_script": null
+  },
+  "expected": {
+    "garble_detected": false,
+    "gate_ok": true,
+    "gate_defect": "",
+    "verdict": "MARGINAL",
+    "verdict_reason_prefix": "leaf_concentration",
+    "recovery_eligible": false,
+    "recovery_method": null
+  }
+}

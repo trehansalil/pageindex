@@ -16,7 +16,7 @@ import tempfile
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Header
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO)
@@ -139,6 +139,17 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/version")
+async def version():
+    from pageindex_mcp.config import CURRENT_PIPELINE_VERSION
+
+    return {
+        "commit_sha": os.environ.get("BUILD_SHA", "unknown"),
+        "pipeline_version": CURRENT_PIPELINE_VERSION,
+        "build_date": os.environ.get("BUILD_TIMESTAMP", "unknown"),
+    }
+
+
 @app.post("/convert/pdf", response_model=PdfConvertResponse, dependencies=[Depends(_verify_token)])
 async def convert_pdf(req: PdfConvertRequest):
     import asyncio
@@ -147,13 +158,13 @@ async def convert_pdf(req: PdfConvertRequest):
     try:
         from pageindex_mcp.converters import pdf_to_markdown_docling
 
-        md, pic_results = await asyncio.to_thread(
+        md, pic_results, _extraction_stages = await asyncio.to_thread(
             pdf_to_markdown_docling,
             tmp_path,
             force_full_page_ocr=req.force_full_page_ocr,
             ocr_lang_override=req.ocr_lang_override,
         )
-        serialized_pics = [_serialize_picture_result(pr) for pr in pic_results]
+        serialized_pics = [_serialize_picture_result(pr) for pr in pic_results]  # type: ignore[arg-type]
         return PdfConvertResponse(
             markdown=md,
             picture_results=[PictureResultOut(**p) for p in serialized_pics],

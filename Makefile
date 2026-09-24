@@ -15,7 +15,13 @@ APP          ?=
 MINIO        ?=
 REDIS        ?=
 POSTGRES     ?=
-DOCLING      ?=
+# 2026-09-19: defaults to `local` because deployment to the Scaleway Docling
+# service is no longer working, so `remote` would exercise a stale build. With
+# PI_LOCAL_DOCLING_URL empty (env/local.env) `local` resolves DOCLING_SERVICE_URL
+# to empty, which routes conversion IN-PROCESS -- the repo's own converter code,
+# which is the point: the latest code gets tested. No container, no docker.
+# Override per-invocation with DOCLING=remote once that deployment is fixed.
+DOCLING      ?= local
 MINIO_ACCESS ?=
 
 # Only forward the ones actually set, so env_profile.sh's own defaults apply.
@@ -52,6 +58,12 @@ help:
 	@echo "  make ingest          ingest doc_store/ through the running server"
 	@echo "  make ingest-dry-run  list what would be submitted"
 	@echo "  make ingest-minio    ingest from the MinIO bucket   [PREFIX=some/folder/]"
+	@echo ""
+	@echo "Quality gates (same set the gates.yml CI workflow runs)"
+	@echo "  make gates           blocking gates: dag, test-ratio-guard, test-budget"
+	@echo "  make gates-advisory  currently-red gates: static, contracts (report only)"
+	@echo "  make gates-all       both, keep-going, non-zero if any blocking gate fails"
+	@echo "  make test-budget     just the collected-test-count ratchet"
 	@echo ""
 	@echo "Toggles: PROFILE APP MINIO REDIS POSTGRES DOCLING MINIO_ACCESS"
 	@echo "  e.g. make preflight PROFILE=local     make ingest MINIO=remote DOCLING=remote"
@@ -142,14 +154,14 @@ ingest-dry-run: env
 ingest-minio: env
 	$(INGEST) --source minio $(if $(PREFIX),--prefix $(PREFIX))
 
-# ─── Confluence sync for .agents/{rfcs,designs,tasks} ────────────────────────
+# ─── Confluence sync for agents/{rfcs,designs,tasks} ────────────────────────
 #
 # `make confluence-sync` only does work when a doc file is new or changed:
-# the stamp file .agents/.confluence-sync.stamp depends on every rfc/design/
+# the stamp file agents/.confluence-sync.stamp depends on every rfc/design/
 # tasks markdown file, so `make` skips the recipe (and the mark push) when
 # nothing changed since the last successful sync.
 
-AGENTS_DIR := .agents
+AGENTS_DIR := agents
 DOC_FILES  := $(wildcard $(AGENTS_DIR)/rfcs/*.md) $(wildcard $(AGENTS_DIR)/designs/*.md) $(wildcard $(AGENTS_DIR)/tasks/*.md) $(wildcard audit/CORPUS_REINGESTION_AUDIT_RUN-*.md)
 STAMP      := $(AGENTS_DIR)/.confluence-sync.stamp
 
@@ -178,3 +190,95 @@ confluence-local-sync: scripts/confluence_sync.sh scripts/confluence_scaffold.py
 confluence-force-sync: scripts/confluence_sync.sh scripts/confluence_scaffold.py
 	scripts/confluence_sync.sh
 	@touch $(STAMP)
+
+# ─── Sync .claude skills/workflows to server ────────────────────────────────
+SERVER ?= hetzner_server
+REMOTE_CLAUDE_DIR ?= /mnt/HC_Volume_106759881/pageindex_deployment/.claude/
+
+.PHONY: sync-claude
+sync-claude:
+	# --chmod normalises modes: rsync -a otherwise preserves the source machine's
+	# 0600/uid-501 bits, leaving the files unwritable (and sometimes unreadable) on the server.
+	rsync -avz --chmod=Du+rwx,go+rx,Fu+rw,go+r .claude/ $(SERVER):$(REMOTE_CLAUDE_DIR)
+
+# ─── Capped test runs ───────────────────────────────────────────────────────
+# On 2026-09-17 an unbounded background `uv run pytest -q` grew to 9.7 GiB
+# (4.1 GiB resident + 5.8 GiB swap) on this 7.6 GiB host, exhausted the whole
+# 8 GiB swapfile (free swap bottomed out at 108 kB) and drove the kernel into
+# a 44-minute thrash. The OOM killer then took traefik, the webhook and
+# postgres twice — because kubelet assigns pods oom_score_adj 992-1000 while a
+# plain dev process sits at 0, so the kernel sacrificed the cluster and never
+# touched the process actually responsible. The host could not self-recover.
+#
+# `make test` runs the suite inside its own cgroup scope:
+#   MemoryMax      — a runaway dies in its own scope; the host never notices.
+#   MemorySwapMax=0 — no swap for tests, so a leak fails fast and loudly
+#                     instead of thrashing the box for three quarters of an hour.
+#   oom_score_adj  — written directly into /proc/self before exec (systemd's
+#                    OOMScoreAdjust= is a *service* property and is rejected on
+#                    a --scope), and inherited by every child. Makes THIS the
+#                    kernel's preferred victim ahead of k3s.
+#                    Pod scores are set by kubelet per QoS class and are reset
+#                    on restart, so raising the dev process's score is the
+#                    durable half of that trade, not lowering the pods'.
+TEST_MEM_MAX ?= 3G
+PYTEST_ARGS ?= -q
+
+.PHONY: test test-uncapped
+test:
+	@command -v systemd-run >/dev/null 2>&1 && systemd-run --scope --quiet --collect true >/dev/null 2>&1 || { echo "systemd scope unavailable; use 'make test-uncapped' and watch memory yourself"; exit 1; }
+	systemd-run --scope --quiet --collect \
+		-p MemoryMax=$(TEST_MEM_MAX) -p MemorySwapMax=0 \
+		sh -c 'echo 900 > /proc/self/oom_score_adj; exec timeout 1800 uv run pytest $(PYTEST_ARGS)'
+
+# Escape hatch. Only for a host with no systemd, and never in the background.
+test-uncapped:
+	bash scripts/lib/with-timeout.sh 1800 uv run pytest $(PYTEST_ARGS)
+
+# ─── Quality gates ──────────────────────────────────────────────────────────
+# The gates were a suite of scripts nothing ever executed: before 2026-09-23 no
+# workflow, hook or make target ran them, which is why `unit.max_test_file_ratio`
+# could sit RED for 20 days (2026-09-02 → HEAD) while the collected suite grew
+# 1393 → 2510 and nobody noticed. `make gates` is the local half of the fix;
+# .github/workflows/gates.yml is the CI half, and runs exactly this split.
+#
+# BLOCKING  — green on this tree today, so a red result is a regression YOU
+#             introduced. Keep it that way.
+# ADVISORY  — static has pre-existing ruff/mypy violations and contracts has
+#             outstanding FAILs on this branch. Reported, not enforced, until
+#             2026-10-07 (see gates.yml). Thresholds are NOT to be relaxed to
+#             close that gap — that needs an RFC.
+#
+# Every gate runs inside the same memory-capped scope as `make test`: the unit
+# gate shells out to a full pytest run and the budget gate collects the suite,
+# and an uncapped pytest is what OOM-killed this host on 2026-09-17 (see the
+# banner above `make test`).
+GATES_BLOCKING ?= --gate=dag --gate=test-ratio-guard --gate=test-budget
+GATES_ADVISORY ?= --gate=static --gate=contracts
+
+# Run a command inside the capped scope, or plainly if systemd is unavailable.
+# $(1) = the command line.
+define capped
+	@if command -v systemd-run >/dev/null 2>&1 && systemd-run --scope --quiet --collect true >/dev/null 2>&1; then \
+		systemd-run --scope --quiet --collect \
+			-p MemoryMax=$(TEST_MEM_MAX) -p MemorySwapMax=0 \
+			sh -c 'echo 900 > /proc/self/oom_score_adj; exec timeout 1800 $(1)'; \
+	else \
+		echo "systemd-run unavailable — running under timeout only, watch memory yourself"; \
+		bash scripts/lib/with-timeout.sh 1800 $(1); \
+	fi
+endef
+
+.PHONY: gates gates-advisory gates-all test-budget
+gates:
+	$(call capped,bash scripts/eval.sh --keep-going $(GATES_BLOCKING))
+
+# Never fails the caller: these are the known-red ones, reported so the gap
+# stays visible instead of being silently deleted from the pipeline.
+gates-advisory:
+	-$(call capped,bash scripts/eval.sh --keep-going $(GATES_ADVISORY))
+
+gates-all: gates-advisory gates
+
+test-budget:
+	@bash scripts/gates/test_budget.sh

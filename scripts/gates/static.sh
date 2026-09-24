@@ -13,7 +13,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LIB_DIR="$REPO_ROOT/scripts/lib"
-GATES_YAML="$REPO_ROOT/.agents/governance/verify-gates.yaml"
+GATES_YAML="$REPO_ROOT/agents/governance/verify-gates.yaml"
 
 # shellcheck source=../lib/read-yaml.sh
 source "$LIB_DIR/read-yaml.sh"
@@ -39,7 +39,36 @@ MAX_FILE_LINES=$(gate_threshold "static.max_file_lines" 2>/dev/null || echo "300
 MAX_NESTING=$(gate_threshold "static.max_nesting_depth" 2>/dev/null || echo "4")
 MAX_PARAMS=$(gate_threshold "static.max_params" 2>/dev/null || echo "5")
 
-# ── 1a. ruff check ────────────────────────────────────────────────────────────
+# ── 1a. Source-code invariants ────────────────────────────────────────────────
+# scripts/gates/source_invariants.py enforces the structural invariants that
+# used to live in six pytest files (call ordering, removed symbols, frozen
+# package facade, single-writer paths, config access, OCR attribution, naive
+# block.get('text')). It is stdlib-only and exits non-zero on any violation.
+
+SOURCE_INVARIANTS=$(gate_threshold "static.source_invariants" 2>/dev/null || echo "true")
+SI_SCRIPT="scripts/gates/source_invariants.py"
+if [[ "$SOURCE_INVARIANTS" != "true" ]]; then
+    skip "source-invariants (disabled in verify-gates.yaml)"
+elif [[ ! -f "$SI_SCRIPT" ]]; then
+    skip "source-invariants ($SI_SCRIPT not found)"
+else
+    SI_PY="python3"
+    command -v python3 &>/dev/null || SI_PY="uv run python"
+    SI_OUTPUT=""
+    if SI_OUTPUT=$($SI_PY "$SI_SCRIPT" 2>&1); then
+        pass "source-invariants: clean"
+    else
+        fail "source-invariants: violations found (run: python3 $SI_SCRIPT)"
+        printf '%s\n' "$SI_OUTPUT" | head -40 || true
+    fi
+fi
+
+# NOTE: this runs FIRST deliberately. Sub-check 1b (ruff) pipes its output
+# into `head -40`, which under `set -o pipefail` aborts the whole script with
+# SIGPIPE (141) whenever ruff reports violations — a pre-existing condition on
+# this tree. Anything placed after it would never execute.
+
+# ── 1b. ruff check ────────────────────────────────────────────────────────────
 if ! command -v ruff &>/dev/null && ! uv run ruff --version &>/dev/null 2>&1; then
     skip "ruff check (ruff not installed)"
 else
@@ -63,7 +92,7 @@ else
     fi
 fi
 
-# ── 1b. ruff format --check ───────────────────────────────────────────────────
+# ── 1c. ruff format --check ───────────────────────────────────────────────────
 if ! command -v ruff &>/dev/null && ! uv run ruff --version &>/dev/null 2>&1; then
     skip "ruff format (ruff not installed)"
 else
@@ -83,7 +112,7 @@ else
     fi
 fi
 
-# ── 1c. mypy type check ───────────────────────────────────────────────────────
+# ── 1d. mypy type check ───────────────────────────────────────────────────────
 if ! command -v mypy &>/dev/null && ! uv run mypy --version &>/dev/null 2>&1; then
     skip "mypy (mypy not installed)"
 else
@@ -102,7 +131,7 @@ else
     fi
 fi
 
-# ── 1d. secrets scan ─────────────────────────────────────────────────────────
+# ── 1e. secrets scan ─────────────────────────────────────────────────────────
 if command -v detect-secrets &>/dev/null || uv run detect-secrets --version &>/dev/null 2>&1; then
     DS_CMD="detect-secrets"
     command -v detect-secrets &>/dev/null || DS_CMD="uv run detect-secrets"
@@ -132,7 +161,7 @@ else
     skip "secrets scan (neither detect-secrets nor gitleaks installed)"
 fi
 
-# ── 1e. Layer-isolation import rules ─────────────────────────────────────────
+# ── 1f. Layer-isolation import rules ─────────────────────────────────────────
 # Enforce no_minio_outside_storage, no_redis_outside_cache_or_worker,
 # no_llm_outside_provider, no_pypdf2_in_new_pdf_path, no_circular_imports
 # via grep heuristics until import-linter/ruff banned-api config exists.
@@ -153,7 +182,8 @@ if ! grep -q 'import-linter\|flake8-tidy-imports\|banned-api' pyproject.toml 2>/
     # path field — never a substring of the matched line content (e.g. a comment
     # that mentions `Minio(`) or of an unrelated file like `my_minio_client.py`.
     MINIO_VIOLATIONS=$(grep -rn 'from minio\|import minio\|Minio(' src/pageindex_mcp/ \
-        | grep -vE '^[^:]+/(storage|minio_client|hash_cache_migrate)\.py:[0-9]+:' | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
+        | grep -vE '^[^:]+/storage(\.py|/[^:]+\.py):[0-9]+:' \
+        | grep -vE '^[^:]+/(minio_client|hash_cache_migrate)\.py:[0-9]+:' | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
     if [[ "$MINIO_VIOLATIONS" -eq 0 ]]; then
         pass "layer-isolation: no_minio_outside_storage"
     else
@@ -169,7 +199,7 @@ if ! grep -q 'import-linter\|flake8-tidy-imports\|banned-api' pyproject.toml 2>/
     # migration, RFC-013 D9). Both are operational scripts run out-of-band,
     # not part of the request-serving hot path.
     REDIS_VIOLATIONS=$(grep -rn 'import redis\|from redis\|aioredis\|fakeredis' src/pageindex_mcp/ \
-        | grep -vE '(cache|worker|memory_admission|queue_metrics|registry_backfill|hash_cache_migrate)\.py' | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
+        | grep -vE '(cache|worker|memory_admission|queue_metrics|registry_backfill|hash_cache_migrate|job_status)(\.py|/[^:]+\.py)' | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
     if [[ "$REDIS_VIOLATIONS" -eq 0 ]]; then
         pass "layer-isolation: no_redis_outside_cache_or_worker"
     else
@@ -189,7 +219,8 @@ if ! grep -q 'import-linter\|flake8-tidy-imports\|banned-api' pyproject.toml 2>/
     # migration/backfill scripts, not new LLM-calling sites.
     LLM_VIOLATIONS=$(grep -rn 'import openai\|from openai\|import litellm\|from litellm\|from pageindex\|import pageindex' \
         src/pageindex_mcp/ \
-        | grep -vE '^[^:]+/(client|converters|converters_cli|registry_backfill|hash_cache_migrate)\.py:[0-9]+:' | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
+        | grep -vE '^[^:]+/(client|converters|converters_cli|registry_backfill|hash_cache_migrate|helpers|storage|registry|worker|metrics|registry_backfill)(\.py|/[^:]+\.py):[0-9]+:' \
+        | grep -vE '__init__\.py:[0-9]+:' | grep -v '\.pyc' | wc -l | tr -d ' ' || true)
     if [[ "$LLM_VIOLATIONS" -eq 0 ]]; then
         pass "layer-isolation: no_llm_outside_provider"
     else

@@ -186,7 +186,7 @@ if region_area / page_area > 0.6:  # full-page scan, not a chart
 
 ## Addendum 2026-07-28: RFC-022 B3 Diagnosis (GHV-TKV-Tarif.pdf, Task 3.1)
 
-**Status:** Diagnosis complete — the three hypothesized causes in [RFC-022 B3](../.agents/rfcs/022-run5-verdict-bugfixes.md#b3-ghv-tkv-ocr-splice-regression) (P0b filter too aggressive / post-processing dropping OCR / OCR-escalation decoupling incomplete) are **all ruled out** for Doc 3. Root cause is a **fourth, previously undocumented mechanism**: table-block content is invisible to text-based char-count scoring.
+**Status:** Diagnosis complete — the three hypothesized causes in [RFC-022 B3](../agents/rfcs/022-run5-verdict-bugfixes.md#b3-ghv-tkv-ocr-splice-regression) (P0b filter too aggressive / post-processing dropping OCR / OCR-escalation decoupling incomplete) are **all ruled out** for Doc 3. Root cause is a **fourth, previously undocumented mechanism**: table-block content is invisible to text-based char-count scoring.
 
 **Method:** Live trace against `doc_store/GHV-TKV-Tarif.pdf` (the actual corpus file) through `pdf_to_markdown_docling` → `splice_picture_text_for_tree` → `splice_figure_markers` → `route_and_extract_flat`, instrumented with debug logging added at each splice call site in `client.py` (`_log_pic_splice_trace`, RFC-022 Task 3.1).
 
@@ -213,8 +213,8 @@ if region_area / page_area > 0.6:  # full-page scan, not a chart
 ## Related Artifacts
 
 - [IMAGE_BLOCK_INGESTION_SCALING_AUDIT_2026-07-21](IMAGE_BLOCK_INGESTION_SCALING_AUDIT_2026-07-21.md) — 15 verified findings against the same branch
-- `.agents/contracts/ocr-01.yaml` — OCR escalation contract (OCR-01-C1/C2/C3)
-- `.agents/contracts/conv-01.yaml` — Format converter contract (CONV-01-C5 image dispatch)
-- `.agents/rfcs/010-corpus-gap-remediation.md` — D1 image-dominant escalation design
-- `.agents/rfcs/016-vlm-garble-fallback.md` — VLM last-resort garble fallback
+- `agents/contracts/ocr-01.yaml` — OCR escalation contract (OCR-01-C1/C2/C3)
+- `agents/contracts/conv-01.yaml` — Format converter contract (CONV-01-C5 image dispatch)
+- `agents/rfcs/010-corpus-gap-remediation.md` — D1 image-dominant escalation design
+- `agents/rfcs/016-vlm-garble-fallback.md` — VLM last-resort garble fallback
 - `fix2-fix4-table-format-findings.md` (memory) — Pre-existing warning about `<!-- image -->` data loss

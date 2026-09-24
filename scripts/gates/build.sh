@@ -15,13 +15,13 @@
 #   not fit the "fast" no-infra prefix budget, so it is decoupled from this gate.
 #
 # Needs infra: no
-# Reads thresholds from .agents/governance/verify-gates.yaml via read-yaml.sh.
+# Reads thresholds from agents/governance/verify-gates.yaml via read-yaml.sh.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LIB_DIR="$REPO_ROOT/scripts/lib"
-GATES_YAML="$REPO_ROOT/.agents/governance/verify-gates.yaml"
+GATES_YAML="$REPO_ROOT/agents/governance/verify-gates.yaml"
 
 # shellcheck source=../lib/read-yaml.sh
 source "$LIB_DIR/read-yaml.sh"
@@ -33,7 +33,6 @@ MESSAGES=()
 
 pass()  { PASS=$((PASS+1));  MESSAGES+=("  [PASS]  $*"); }
 fail()  { FAIL=$((FAIL+1));  MESSAGES+=("  [FAIL]  $*"); }
-skip()  { SKIP=$((SKIP+1));  MESSAGES+=("  [SKIP]  $* (not yet configured)"); }
 
 echo "=== Gate 5: build ==="
 

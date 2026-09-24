@@ -101,6 +101,7 @@ jobs:
               --cache-from type=gha \
               --cache-to type=gha,mode=max,ignore-error=true \
               --secret id=hf_token,env=HF_TOKEN \
+              --build-arg BUILD_SHA=${{ github.sha }} \
               -t ${{ env.IMAGE_NAME }}:sha-${{ github.sha }} \
               -t ${{ env.IMAGE_NAME }}:latest \
               .

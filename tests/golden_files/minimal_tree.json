@@ -1,0 +1,40 @@
+{
+  "archetype": "minimal_tree",
+  "description": "Minimal well-formed tree just meeting the structural thresholds (3+ nodes, depth 2+)",
+  "input": {
+    "structure": [
+      {
+        "title": "Root",
+        "text": "",
+        "nodes": [
+          {
+            "title": "Chapter 1",
+            "text": "First chapter content with adequate text volume for the minimum marginal character threshold to be satisfied during verdict evaluation.",
+            "nodes": []
+          },
+          {
+            "title": "Chapter 2",
+            "text": "Second chapter providing additional content that contributes to the overall character count and structural quality of the document tree.",
+            "nodes": []
+          },
+          {
+            "title": "Chapter 3",
+            "text": "Third chapter rounding out the minimal tree structure with enough nodes and depth to satisfy the gate requirements for a passing verdict.",
+            "nodes": []
+          }
+        ]
+      }
+    ],
+    "content_class": "text",
+    "expected_script": null
+  },
+  "expected": {
+    "garble_detected": false,
+    "gate_ok": true,
+    "gate_defect": "",
+    "verdict": "MARGINAL",
+    "verdict_reason_prefix": "leaf_concentration",
+    "recovery_eligible": false,
+    "recovery_method": null
+  }
+}

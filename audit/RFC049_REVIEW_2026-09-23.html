@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RFC-049 Review — Iteration 1</title>
+<style>
+:root{--bg:#fff;--fg:#1d1d1f;--muted:#6b6b73;--line:#e3e3e8;--ok:#1a7f37;--warn:#9a6700;--chip:#f3f3f6}
+@media (prefers-color-scheme:dark){:root{--bg:#141417;--fg:#e8e8ec;--muted:#9a9aa4;--line:#2c2c33;--ok:#4ac26b;--warn:#d29922;--chip:#1f1f25}}
+body{background:var(--bg);color:var(--fg);font:15px/1.55 -apple-system,system-ui,sans-serif;max-width:960px;margin:0 auto;padding:24px 16px}
+h1{font-size:1.5rem;margin:0 0 4px}h2{font-size:1.15rem;margin:28px 0 8px;border-bottom:1px solid var(--line);padding-bottom:4px}
+.sub{color:var(--muted);margin-bottom:16px}
+table{width:100%;border-collapse:collapse;font-size:.9rem;margin:8px 0}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600}
+code{background:var(--chip);padding:1px 5px;border-radius:4px;font-size:.85em}
+.ok{color:var(--ok);font-weight:600}.warn{color:var(--warn);font-weight:600}
+.wrap{overflow-x:auto}
+</style>
+</head>
+<body>
+<h1>RFC-049 Contract Drift Remediation — Review, Iteration 1</h1>
+<div class="sub">2026-09-23 · branch <code>ICR-97-rfc49-contract-drift-remediation</code> · /rfc-iterate (validator: opus · feasibility: sonnet · lead analyst: fable)</div>
+
+<h2>Verdict</h2>
+<p>No fabricated claims. The substance of all six decisions was confirmed against the code. The corrections were factual drift, mislocated references and stale status wording. Most line numbers in <code>client/indexer.py</code> had shifted by about 130 lines after the RFC-048 commits. The companion design and tasks files were corrupt stubs (about 13 lines of flattened JSON) and have been regenerated.</p>
+<p>Live gate: <code>bash scripts/gates/contracts.sh</code> → <code>PASS=64 FAIL=2</code> (LANG-01-C2, OCR-01-C3). There are 61 contract IDs, 59 of them passing; 5 of the PASS lines are module-coverage checks rather than contract IDs.</p>
+
+<h2>User decisions recorded</h2>
+<div class="wrap"><table>
+<tr><th>Question</th><th>Decision</th><th>Effect on artifacts</th></tr>
+<tr><td>D2: HR5 vs tree-route persist-with-FAIL</td><td class="ok">Option C: reject + quarantine</td><td>A post-recovery <code>force_route=Route.REJECT</code> in <code>index()</code>. Before <code>LowQualityTreeError</code> is raised, the tree and verdict are written to MinIO <code>quarantine/</code>; the flat guard gets the same write. The HR2 cascade gains <code>_erase_quarantine</code>. New clauses OCR-01-C4 and ERASE-01-C4. About 1.5–2 days.</td></tr>
+<tr><td>NODE_GARBLING scope</td><td class="ok">Same treatment as GARBLING</td><td>It shares <code>_ReasonPolicy.RETRY_OCR</code> in <code>GATES</code>; now included in R4 AC1 and P10.</td></tr>
+<tr><td>Probe tests (not in VCS)</td><td>Re-derive at D2 execution</td><td>Task 7.1: written red, to the contract text, before implementation.</td></tr>
+<tr><td>FLAT-03-C2 already labelled with a stale trigger</td><td>Keep label, document exception</td><td>R1 Clarification: a label is barred when the contract's <em>effect</em> is contradicted; a stale trigger that is listed as drift may keep its label. D4(a) is subsumed by D2-C.</td></tr>
+</table></div>
+
+<h2>Findings applied</h2>
+<div class="wrap"><table>
+<tr><th>#</th><th>Finding</th><th>Status</th></tr>
+<tr><td>1</td><td>D2 line references were stale: case arm <code>indexer.py:2557→2693</code>, flat guard <code>:2488→2622-2624</code>, flag <code>:1644→1778</code>, short-circuit <code>:1745→1879</code>, choice map <code>:2500→2634</code>; the <code>types.py</code> branch is at <code>:372-373</code></td><td class="ok">Corrected</td></tr>
+<tr><td>2</td><td>Changing <code>REASON_POLICY</code> or <code>decide_route</code> would affect about 19 <code>finalize_gate_and_route</code> callers, including mid-retry recovery, so the override must run after the recovery loop</td><td class="ok">Built into the Option C mechanism</td></tr>
+<tr><td>3</td><td>Attaching a diagnostic payload to the error is not feasible cheaply: <code>LowQualityTreeError(reason)</code> has no payload field, and the worker's subprocess boundary drops exception attributes</td><td class="ok">Replaced by a quarantine write inside the child process</td></tr>
+<tr><td>4</td><td><code>_execute_ocr_retry</code> swallows retry exceptions, so all three OCR-01-C3 triggers reduce to one post-loop check</td><td class="ok">Corrected</td></tr>
+<tr><td>5</td><td>NODE_GARBLING was omitted from the RFC</td><td class="ok">Added</td></tr>
+<tr><td>6</td><td>D1: the prose said "three sites" but there are four raises; <code>ocr_langs.py:399</code> is unreachable; "NEVER fails hard" lives in <code>lang-01.yaml:9-11</code>, not the source; the D6/ISS-34 tag is in the test docstring</td><td class="ok">Corrected</td></tr>
+<tr><td>7</td><td>The D5 fix was described as uncommitted, but it is committed as <code>e2ecd4b</code>; <code>_erase_figures</code> is at <code>:415</code>, not <code>:405</code></td><td class="ok">Corrected</td></tr>
+<tr><td>8</td><td>D6: the grep is at <code>contracts.sh:142</code>. The pycache inventory was wrong (there are 133 .pyc files). A simulated hardened grep yields the identical FAIL set, and the non-.py test files contain zero contract IDs</td><td class="ok">Evidence replaced</td></tr>
+<tr><td>9</td><td>D5 had no requirement, and there was no AC for amend-then-label ordering or for editorial drift</td><td class="ok">R3 and R1 AC4–AC5 added</td></tr>
+<tr><td>10</td><td>Dangling wikilinks <code>[[contracts-gate-greps-bytecode]]</code> and <code>[[test-suite-reduction-2026-09]]</code></td><td class="ok">Replaced (<code>91e7249</code>, inline)</td></tr>
+<tr><td>11</td><td>Traceability said "not yet generated", and <code>governs:</code> was empty</td><td class="ok">Fixed</td></tr>
+<tr><td>12</td><td>ARCHITECTURE.md's MinIO layout and Tree Quality Gate sections were missing from the plan</td><td class="ok">Added as task 7.8</td></tr>
+</table></div>
+
+<h2>Open items</h2>
+<div class="wrap"><table>
+<tr><th>Item</th><th>Owner</th></tr>
+<tr><td>The CLAUDE.md HR2 purge list must gain <code>quarantine/</code> (task 7.9)</td><td class="warn">Human approval required</td></tr>
+<tr><td>Q4: quarantine retention/TTL, and whether HR3's ZDR routing applies</td><td class="warn">Open</td></tr>
+<tr><td>Risk 6: <code>quarantine/</code> is a new PII-bearing store</td><td>Covered by R4 AC4 / P12</td></tr>
+<tr><td>The D2 heading still reads "Requires explicit approval". Design and tasks anchors depend on it, so do not rename it without updating those links</td><td>Note</td></tr>
+</table></div>
+
+<h2>Artifacts</h2>
+<div class="wrap"><table>
+<tr><th>File</th><th>Change</th></tr>
+<tr><td><code>agents/rfcs/049-contract-drift-remediation.md</code></td><td>+171/−54, 60 dated amendment markers, status → review, R3/R4 added, Option C section</td></tr>
+<tr><td><code>agents/designs/design-rfc049-contract-drift-remediation.md</code></td><td>Regenerated, 452 lines: AD1–AD6, service contracts 1–11, P1–P12, 3 mermaid diagrams</td></tr>
+<tr><td><code>agents/tasks/tasks-rfc049-contract-drift-remediation.md</code></td><td>Regenerated, 309 lines: waves 0–3, Checkpoint A (PASS=65 FAIL=1), Checkpoint B (PASS=68 FAIL=0), dependency-graph JSON</td></tr>
+</table></div>
+</body>
+</html>
