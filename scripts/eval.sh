@@ -50,7 +50,7 @@ for arg in "$@"; do
             echo "  --built-only     Pass --built-only to contracts.sh."
             echo "  --gate=<name>    Run only the named gate(s)."
             echo ""
-            echo "Gates (in order): static unit contracts dag build supply-chain test-ratio-guard test-budget integration e2e"
+            echo "Gates (in order): static unit contracts dag build supply-chain test-ratio-guard test-budget test-index-guard integration e2e"
             exit 0
             ;;
         *)
@@ -62,7 +62,7 @@ done
 
 # ── Gate definitions (name, script, needs_infra) ──────────────────────────────
 # Declared in §7 order: gates 1–6 no-infra, 7–8 infra.
-declare -a GATE_NAMES=(static unit contracts dag build supply-chain test-ratio-guard test-budget integration e2e)
+declare -a GATE_NAMES=(static unit contracts dag build supply-chain test-ratio-guard test-budget test-index-guard integration e2e)
 declare -A GATE_NEEDS_INFRA=(
     [static]=false
     [unit]=false
@@ -72,6 +72,7 @@ declare -A GATE_NEEDS_INFRA=(
     [supply-chain]=false
     [test-ratio-guard]=false
     [test-budget]=false
+    [test-index-guard]=false
     [integration]=true
     [e2e]=true
 )
@@ -84,6 +85,7 @@ declare -A GATE_SCRIPTS=(
     [supply-chain]="$GATES_DIR/supply-chain.sh"
     [test-ratio-guard]="$GATES_DIR/test-ratio-guard.sh"
     [test-budget]="$GATES_DIR/test_budget.sh"
+    [test-index-guard]="$GATES_DIR/test-index-guard.sh"
     [integration]="$GATES_DIR/integration.sh"
     [e2e]="$GATES_DIR/e2e.sh"
 )

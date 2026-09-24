@@ -154,14 +154,14 @@ ingest-dry-run: env
 ingest-minio: env
 	$(INGEST) --source minio $(if $(PREFIX),--prefix $(PREFIX))
 
-# ─── Confluence sync for .agents/{rfcs,designs,tasks} ────────────────────────
+# ─── Confluence sync for agents/{rfcs,designs,tasks} ────────────────────────
 #
 # `make confluence-sync` only does work when a doc file is new or changed:
-# the stamp file .agents/.confluence-sync.stamp depends on every rfc/design/
+# the stamp file agents/.confluence-sync.stamp depends on every rfc/design/
 # tasks markdown file, so `make` skips the recipe (and the mark push) when
 # nothing changed since the last successful sync.
 
-AGENTS_DIR := .agents
+AGENTS_DIR := agents
 DOC_FILES  := $(wildcard $(AGENTS_DIR)/rfcs/*.md) $(wildcard $(AGENTS_DIR)/designs/*.md) $(wildcard $(AGENTS_DIR)/tasks/*.md) $(wildcard audit/CORPUS_REINGESTION_AUDIT_RUN-*.md)
 STAMP      := $(AGENTS_DIR)/.confluence-sync.stamp
 
@@ -226,7 +226,7 @@ PYTEST_ARGS ?= -q
 
 .PHONY: test test-uncapped
 test:
-	@command -v systemd-run >/dev/null || { echo "systemd-run absent; use 'make test-uncapped' and watch memory yourself"; exit 1; }
+	@command -v systemd-run >/dev/null 2>&1 && systemd-run --scope --quiet --collect true >/dev/null 2>&1 || { echo "systemd scope unavailable; use 'make test-uncapped' and watch memory yourself"; exit 1; }
 	systemd-run --scope --quiet --collect \
 		-p MemoryMax=$(TEST_MEM_MAX) -p MemorySwapMax=0 \
 		sh -c 'echo 900 > /proc/self/oom_score_adj; exec timeout 1800 uv run pytest $(PYTEST_ARGS)'
