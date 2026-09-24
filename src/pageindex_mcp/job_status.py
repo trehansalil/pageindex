@@ -38,7 +38,17 @@ _VALID_TRANSITIONS: dict[JobStatus | None, frozenset[JobStatus]] = {
     # Only PENDING may open it, so a stray PROCESSING/DONE/ERROR write cannot
     # invent a job out of order; upload_app.py writes PENDING before enqueue.
     None: frozenset({JobStatus.PENDING}),
-    JobStatus.PENDING: frozenset({JobStatus.PROCESSING}),
+    # PENDING->ERROR exists for the one failure that happens before any worker
+    # touches the job: upload_app writes PENDING, then enqueue_job raises. The
+    # alternative -- deleting the hash -- is unsafe, because arq can accept the
+    # job and still raise (connection lost after the Redis write, before the
+    # reply). An absent hash admits only PENDING, so the worker's
+    # PENDING->PROCESSING and PROCESSING->DONE writes would both be refused and
+    # a successfully-indexed document would poll 404 forever. ERROR is not
+    # terminal and ERROR->PROCESSING is already permitted below, so marking
+    # ERROR is safe under that race: a job that really was enqueued recovers on
+    # its own.
+    JobStatus.PENDING: frozenset({JobStatus.PROCESSING, JobStatus.ERROR}),
     JobStatus.PROCESSING: frozenset({JobStatus.DONE, JobStatus.ERROR}),
     # DONE is terminal.  ERROR is not: arq records ERROR on every failed
     # attempt, so the next attempt must be able to re-enter PROCESSING or

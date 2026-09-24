@@ -191,10 +191,36 @@ def create_upload_app() -> FastAPI:
                     staging_key,
                     job_id,
                 )
-            except Exception:
-                # Nothing will ever move this job out of PENDING, so drop the
-                # hash rather than leave a job that polls as pending forever.
-                await _cache.job_status_delete(job_id)
+            except Exception as exc:
+                # Nothing will ever move this job out of PENDING, so record a
+                # terminal-looking ERROR rather than leave it polling pending
+                # until the 24h TTL expires.
+                #
+                # Deliberately NOT a delete. arq can accept the job and still
+                # raise here -- a connection lost after the Redis write but
+                # before the reply -- and an absent hash admits only PENDING,
+                # so the worker's PENDING->PROCESSING write would be refused
+                # and a document that indexed fine would poll 404 forever.
+                # ERROR->PROCESSING is a permitted transition, so if the job
+                # really was enqueued the worker overwrites this and the job
+                # completes normally.
+                try:
+                    await _set_job_status(
+                        redis,
+                        job_id,
+                        JobStatus.ERROR,
+                        ttl=JOB_TTL,
+                        error=f"enqueue failed: {exc}",
+                        reason="enqueue_failed",
+                    )
+                except Exception:
+                    # A refused transition means something else already moved
+                    # the job on; never let that mask the enqueue failure.
+                    logger.warning(
+                        "Could not mark job %s as failed after enqueue error",
+                        job_id,
+                        exc_info=True,
+                    )
                 raise
 
             results.append({"job_id": job_id, "filename": filename})

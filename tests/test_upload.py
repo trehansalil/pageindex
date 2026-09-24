@@ -10,6 +10,8 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from pageindex_mcp.cache import JOB_TTL
+from pageindex_mcp.job_status import JobStatus, _set_job_status
 from pageindex_mcp.upload_app import (
     create_upload_app,
 )
@@ -219,9 +221,16 @@ async def test_upload_mixed_invalid_no_staging(client, fake_redis, mock_arq_pool
     assert await fake_redis.keys("pageindex:job:*") == []
 
 
-async def test_enqueue_failure_no_phantom_status(client, fake_redis, mock_arq_pool):
-    """Property 1 (D8): if enqueue_job raises, no Redis status hash is created
-    for that job — no phantom "pending" entry survives a failed enqueue."""
+async def test_enqueue_failure_no_phantom_pending_status(client, fake_redis, mock_arq_pool):
+    """Property 1 (D8): if enqueue_job raises, the job does not sit at "pending"
+    until its 24h TTL expires — it is marked ERROR with a reason.
+
+    Specifically NOT "the hash is deleted". arq can accept the job and still
+    raise (connection lost after the Redis write, before the reply); an absent
+    hash admits only PENDING, so the worker's PENDING->PROCESSING write would be
+    refused and a document that indexed fine would poll 404 forever. See
+    test_enqueue_failure_marking_is_recoverable_if_arq_accepted_the_job.
+    """
     mock_arq_pool.enqueue_job.side_effect = RuntimeError("arq unavailable")
     with pytest.raises(RuntimeError):
         await client.post(
@@ -229,7 +238,41 @@ async def test_enqueue_failure_no_phantom_status(client, fake_redis, mock_arq_po
             files=[_pdf_file()],
             headers={"X-API-Key": TEST_API_KEY},
         )
-    assert await fake_redis.keys("pageindex:job:*") == []
+
+    keys = await fake_redis.keys("pageindex:job:*")
+    assert len(keys) == 1, "the failed job should still be observable, not erased"
+    status = await fake_redis.hgetall(keys[0])
+    assert status["status"] == JobStatus.ERROR.value
+    assert status["reason"] == "enqueue_failed"
+    assert "arq unavailable" in status["error"]
+
+
+async def test_enqueue_failure_marking_is_recoverable_if_arq_accepted_the_job(
+    client, fake_redis, mock_arq_pool
+):
+    """The enqueue-failure marking must not strand a job arq really did accept.
+
+    ERROR is not terminal: ERROR->PROCESSING is a permitted transition, so a
+    worker that picks the job up anyway drives it to DONE normally. This is the
+    property a delete would break, and it is why the failure path marks rather
+    than erases.
+    """
+    mock_arq_pool.enqueue_job.side_effect = RuntimeError("connection reset")
+    with pytest.raises(RuntimeError):
+        await client.post(
+            "/files",
+            files=[_pdf_file()],
+            headers={"X-API-Key": TEST_API_KEY},
+        )
+    job_id = (await fake_redis.keys("pageindex:job:*"))[0].removeprefix("pageindex:job:")
+
+    # The worker wakes up on a job it was handed after all.
+    await _set_job_status(fake_redis, job_id, JobStatus.PROCESSING, ttl=JOB_TTL)
+    await _set_job_status(fake_redis, job_id, JobStatus.DONE, ttl=JOB_TTL, doc_id="doc-1")
+
+    status = await fake_redis.hgetall(f"pageindex:job:{job_id}")
+    assert status["status"] == JobStatus.DONE.value
+    assert status["doc_id"] == "doc-1"
 
 
 # ---------------------------------------------------------------------------

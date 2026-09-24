@@ -24,9 +24,17 @@ diverges from that rule.
 
 That divergence is a recorded, accepted decision, **not a legal clearance**:
 see **ADR-006** in `ARCHITECTURE.md`. It holds only while this service stays
-what it is today — an internal-only evaluation sidecar on the
-`docker-compose` network, behind no public ingress, built and deployed by no
-workflow in `.github/workflows/`.
+what it is today — an internal-only evaluation sidecar behind no public
+ingress, built and deployed by no workflow in `.github/workflows/`.
+
+**Note the exposure this service actually has.** Unlike the other OCR
+sidecars it carries **no `profiles:` entry** in `docker-compose.yml` — the
+`ocr-spike` gate was removed deliberately for RFC-048
+(`audit/CORPUS_REINGESTION_AUDIT_RUN-21_RFC048.md:31`). A bare
+`docker compose up` therefore starts it and publishes `8207:8207` on the
+host with no opt-in, while the application itself (`profiles: ["app"]`) does
+not start. Do not bind that port to a non-loopback interface, and do not put
+it behind any ingress, without voiding ADR-006 first.
 
 **If this service is ever promoted to a deployed, externally reachable
 service, ADR-006 is void.** Swap the two call sites above to `pypdfium2`

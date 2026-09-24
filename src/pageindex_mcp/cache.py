@@ -54,18 +54,6 @@ async def job_status_set(job_id: str, mapping: dict) -> None:
     await r.expire(_job_key(job_id), JOB_TTL)
 
 
-async def job_status_delete(job_id: str) -> None:
-    """Drop the job-status hash outright.
-
-    Only for a job that will never run: ``upload_app`` writes PENDING before
-    ``enqueue_job`` so the worker cannot race an absent hash, which means a
-    failed enqueue leaves a hash nothing will ever move out of PENDING.
-    Deleting beats leaving a job that polls as pending until the TTL expires.
-    """
-    r = await get_async_redis()
-    await r.delete(_job_key(job_id))
-
-
 async def job_status_get(job_id: str) -> dict:
     """Return the job-status hash as a dict (empty dict if absent/expired)."""
     r = await get_async_redis()

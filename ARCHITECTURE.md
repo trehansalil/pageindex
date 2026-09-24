@@ -775,11 +775,14 @@ The `validate_tree` thresholds must be **calibrated before** the gate is wired a
   records **pypdfium2** (BSD-3/Apache-2) as the rasterizer *because* of HR4, and `pypdfium2>=5.8.0` is
   already a direct runtime dependency. The sidecars therefore diverge from the house rule.
 - **Decision.** Keep PyMuPDF in both sidecars and accept the exposure explicitly, on these terms:
-  (1) both are **internal-only evaluation services** — reachable on the `docker-compose` network or on
-  host loopback via the `ocr-spike` profile's published ports (`paddleocr-vl-service` `8204:8204`,
-  `surya-ocr-service` `8207:8207`), behind no public ingress, and not part of the deployed product
-  surface. Stated precisely because term (4) turns on reachability: these are host-published, not
-  network-internal only;
+  (1) both are **internal-only evaluation services** — behind no public ingress and not part of the
+  deployed product surface. Their host exposure is *not* symmetric, and term (4) turns on reachability,
+  so it is stated per service: `paddleocr-vl-service` is gated behind `profiles: ["ocr-spike"]` and
+  publishes `8204:8204` only when that profile is selected; **`surya-ocr-service` has no `profiles:`
+  entry at all** (the gate was removed deliberately in RFC-048 — `audit/CORPUS_REINGESTION_AUDIT_RUN-21_RFC048.md:31`),
+  so a bare `docker compose up` starts it and publishes `8207:8207` on the host with no opt-in. It is the
+  most easily-started AGPL surface in the compose file, and it starts by default while the application
+  itself (`profiles: ["app"]`) does not;
   (2) **neither is built or deployed by any workflow** in `.github/workflows/`;
   (3) the AGPL §13 network-source obligation this incurs is the **same obligation ADR-001 already booked**
   for the main application's `pymupdf` dependency — this is more surface on an outstanding obligation, not
@@ -792,7 +795,10 @@ The `validate_tree` thresholds must be **calibrated before** the gate is wired a
   ADR records *that the decision was taken and on what terms*; it is not sign-off by counsel, and **R10
   stays open**. Raised by `cubic-dev-ai` on PR #24 (thread `SGdb`).
 - **Consequences.** Two further components fall under the unresolved AGPL §13 obligation tracked as R10.
-  The exit remains cheap and is pinned in term (4) above. Each sidecar's README carries this note so the
+  The exit remains cheap and is pinned in term (4) above. Restoring `profiles: ["ocr-spike"]` on
+  `surya-ocr-service` would make term (1) symmetric and shrink the accepted surface at no cost to the
+  RFC-048 workflow, which selects the profile explicitly; it is deliberately left as a separate change
+  rather than folded into this ADR. Each sidecar's README carries this note so the
   constraint travels with the service rather than living only here.
 
 

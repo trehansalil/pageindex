@@ -44,8 +44,17 @@ def upload_staging(job_id: str, filename: str, data: bytes) -> str:
         try:
             _minio_ops._confirm_write_visible(mc, settings.minio_bucket, key)
         except Exception:
+            # Route the cleanup through delete_staging rather than calling
+            # remove_object directly, so this delete and any failure of it are
+            # counted in MINIO_OPS{operation=delete}, MINIO_DURATION and
+            # STAGING_DELETE_FAILURES like every other staging delete. A bare
+            # remove_object would make the whole barrier-failure path invisible
+            # to the storage metrics.
             try:
-                mc.remove_object(settings.minio_bucket, key)
+                if not delete_staging(key):
+                    logger.warning(
+                        "Unqueued staging object left behind after barrier failure: %s", key
+                    )
             except Exception:
                 logger.warning(
                     "Failed to clean up unqueued staging object: %s", key, exc_info=True
