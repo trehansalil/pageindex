@@ -1,14 +1,33 @@
 name: Deploy Docling Service to Scaleway
 
+# DISABLED 2026-09-24 -- manual dispatch only, no automatic deploys.
+#
+# Why: the push trigger below had its `branches: [master]` filter commented
+# out, so it fired on EVERY branch. Any PR touching src/pageindex_mcp/,
+# pyproject.toml or uv.lock built and deployed straight at the live Scaleway
+# container and surfaced `build-deploy` as a red check on the PR (e.g. #24).
+#
+# It cannot succeed as configured: the registry login fails with
+#   Error response from daemon: Get "https://rg.nl-ams.scw.cloud/v2/":
+#   HTTP 404 {"message":"resource is not found","resource":"api_key",
+#             "resource_id":"4047baca-..."}
+# -- the API key behind `secrets.SCW_SECRET_KEY` no longer exists in Scaleway.
+# A revoked credential, not a runner or permissions problem, so re-running it
+# will never go green.
+#
+# To re-enable: rotate SCW_ACCESS_KEY / SCW_SECRET_KEY in the repo secrets,
+# then uncomment the `push:` block AND leave `branches: [master]` uncommented
+# inside it, so a deploy is only ever triggered by a merge to master and never
+# by a push to a feature branch.
 on:
-  push:
-    # branches: [master]
-    paths:
-      - 'services/docling-service/**'
-      - 'src/pageindex_mcp/**'
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - '.github/workflows/deploy-docling-service.yml'
+  # push:
+  #   branches: [master]
+  #   paths:
+  #     - 'services/docling-service/**'
+  #     - 'src/pageindex_mcp/**'
+  #     - 'pyproject.toml'
+  #     - 'uv.lock'
+  #     - '.github/workflows/deploy-docling-service.yml'
   workflow_dispatch:
 
 env:
