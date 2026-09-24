@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RFC-050 &amp; RFC-051 Iteration 5 Review Report</title>
+<style>
+body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; color: #1a1a1a; }
+h1 { border-bottom: 3px solid #7c3aed; padding-bottom: 0.5rem; }
+h2 { color: #7c3aed; margin-top: 2rem; }
+h3 { color: #6d28d9; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d1d5db; padding: 0.5rem 0.75rem; text-align: left; vertical-align: top; }
+th { background: #f5f3ff; font-weight: 600; }
+tr:nth-child(even) { background: #f9fafb; }
+.critical { color: #dc2626; font-weight: 600; }
+.fixed { color: #16a34a; font-weight: 600; }
+.open { color: #b45309; font-weight: 600; }
+.tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.85rem; font-weight: 500; }
+.tag-gap { background: #fee2e2; color: #991b1b; }
+.tag-scope { background: #fef3c7; color: #92400e; }
+.tag-stale { background: #e0e7ff; color: #3730a3; }
+.summary-box { background: #f0fdf4; border: 1px solid #86efac; border-radius: 8px; padding: 1rem 1.5rem; margin: 1rem 0; }
+.warn-box { background: #fffbeb; border: 1px solid #fcd34d; border-radius: 8px; padding: 1rem 1.5rem; margin: 1rem 0; }
+code { background: #f3f4f6; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+.wrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+<h1>RFC-050 &amp; RFC-051 — Iteration 5 Review Report</h1>
+<p><strong>Date:</strong> 2026-09-24 &nbsp;|&nbsp; <strong>Iteration:</strong> 5 of rfc-iterate &nbsp;|&nbsp; <strong>Reviewer agents:</strong> erasure-sha256-gap, load-raw-dual-key &nbsp;|&nbsp; <strong>Coordinator verification:</strong> source checked via codebase-memory + grep</p>
+
+<div class="summary-box">
+<strong>Summary:</strong> The <code>uploads/&lt;sha256[:8]&gt;/</code> key that Iteration 4 introduced for rejected documents could not be erased, discovered or retrieved, and was prone to collisions. Rejected-document markdown now goes to <code>quarantine/&lt;sha256&gt;.extracted.md</code>, using RFC-049's full-sha256 key and its existing erasure functions, and stays unserved (HR5). The coordinator's check also showed that Iteration 4 put the flat reject point in the wrong function: it is in <code>_persist_flat_result</code>, not <code>index()</code>. Per the user, RFC-049's 30-day quarantine lifecycle TTL is <strong>superseded</strong> (new RFC-050 D6). RFC-050 effort 24-32h → 25.5-33.5h. RFC-051 is unchanged: no overlap with quarantine or erasure.
+</div>
+
+<h2>Review Agents &amp; Findings</h2>
+
+<h3>Agent 1: erasure-sha256-gap</h3>
+<div class="wrap"><table>
+<tr><th>#</th><th>Finding</th><th>Type</th><th>Resolution</th></tr>
+<tr>
+<td>F1</td>
+<td><span class="critical">The reject-path raw output is orphaned.</span> <code>_erase_uploads</code> prefix-deletes <code>uploads/{ctx.doc_id}/</code>, so it would work for any string key. But rejected documents never get a registry row, so nothing ever calls <code>delete_doc(sha256[:8])</code>. There is no discovery path and no expiry.</td>
+<td><span class="tag tag-gap">HR2 gap</span></td>
+<td><span class="fixed">FIXED</span> — the key moved to <code>quarantine/&lt;sha256&gt;.extracted.md</code>, which RFC-049's erasure paths reach.</td>
+</tr>
+<tr>
+<td>F2</td>
+<td>The key space didn't match quarantine. <code>save_quarantine</code> writes <code>quarantine/{sha256}.json</code> + <code>.meta.json</code> using the <strong>full</strong> sha256 (<code>storage/documents.py:888-942</code>). <em>Verified by coordinator.</em></td>
+<td><span class="tag tag-gap">Design inconsistency</span></td>
+<td><span class="fixed">FIXED</span> — same full-sha256 key.</td>
+</tr>
+<tr>
+<td>F3</td>
+<td>8 hex characters = 32 bits: about a 1% chance of a collision at roughly 77k documents.</td>
+<td><span class="tag tag-gap">Correctness risk</span></td>
+<td><span class="fixed">FIXED</span> — the full sha256 is used.</td>
+</tr>
+</table></div>
+
+<h3>Agent 2: load-raw-dual-key</h3>
+<div class="wrap"><table>
+<tr><th>#</th><th>Finding</th><th>Type</th><th>Resolution</th></tr>
+<tr>
+<td>F4</td>
+<td>No retrieval path. <code>load_raw(doc_id)</code> and <code>get_raw_output(doc_id)</code> take a doc_id only. The registry can look up sha256 from a doc_id but not the other way round, and rejected documents have no row. The agent recommended renaming the parameter to <code>key</code> and adding <code>list_raw_outputs()</code>.</td>
+<td><span class="tag tag-scope">API design</span></td>
+<td><span class="fixed">RESOLVED (user)</span> — <strong>persisted documents only</strong>. Serving rejected content over MCP would go against HR5. New Design Property 3a: a non-doc_id key returns not-found and nothing reads <code>quarantine/</code>. The rename and the discovery tool were rejected.</td>
+</tr>
+</table></div>
+
+<h3>Coordinator verification (source-checked)</h3>
+<div class="wrap"><table>
+<tr><th>#</th><th>Finding</th><th>Evidence</th><th>Resolution</th></tr>
+<tr>
+<td>F5</td>
+<td><span class="critical">Iteration 4 put the flat reject point in the wrong function.</span> <code>flat_garble_unrecovered</code> quarantines and returns <code>None</code> <em>inside</em> <code>_persist_flat_result</code>, before <code>_apply_picture_enrichment</code> creates the doc_id. <code>index()</code> only raises the error again later.</td>
+<td><code>client/indexer.py:1924-1933</code>; the error is raised again at <code>:2748-2761</code></td>
+<td><span class="fixed">FIXED</span> — RFC R3 AC2, Design §2 and Property 2, and Task 3.1 now name the correct function.</td>
+</tr>
+<tr>
+<td>F6</td>
+<td>The tree reject path calls <code>save_quarantine</code> only for <code>GARBLING</code>/<code>NODE_GARBLING</code>. Other reject reasons write nothing.</td>
+<td><code>client/indexer.py:2762-2787</code></td>
+<td><span class="fixed">FIXED</span> — <code>save_quarantine_extracted</code> runs for <strong>every</strong> reject reason, outside the garbling check, as a separate function (not a new <code>save_quarantine</code> argument).</td>
+</tr>
+<tr>
+<td>F7</td>
+<td>Both quarantine erasure functions delete two <em>exact</em> keys, not a prefix. A third object would be orphaned unless both are extended.</td>
+<td><code>_erase_quarantine</code> <code>storage/documents.py:612-629</code>; <code>erase_quarantine</code> <code>:945-966</code>; <code>clear_quarantine</code> <code>:969-976</code> calls <code>erase_quarantine</code></td>
+<td><span class="fixed">FIXED</span> — new Task 3.1a adds the third key to both functions; <code>clear_quarantine</code> picks it up through <code>erase_quarantine</code>.</td>
+</tr>
+<tr>
+<td>F8</td>
+<td>The 30-day quarantine TTL (RFC-049 R4 AC5 / Property 12a / Task 7.5c) was <strong>never in force</strong>. There is no lifecycle rule in <code>src/</code>, <code>scripts/</code>, <code>deploy/</code> or <code>k8s/</code>, and RFC-049 Task 7.5c records it as STILL OPEN (<code>get_bucket_lifecycle() → None</code>).</td>
+<td>grep; RFC-049 tasks, Task 7.5c note</td>
+<td><span class="fixed">SUPERSEDED (user)</span> — new RFC-050 D6. RFC-049 got superseded-by banners and inline markers.</td>
+</tr>
+<tr>
+<td>F9</td>
+<td>The RFC-050 Context said <code>save_raw</code> has "zero callers". It is actually called twice, through <code>asyncio.to_thread</code> (upload bytes, not markdown).</td>
+<td><code>client/indexer.py:2226</code>, <code>:2407</code></td>
+<td><span class="tag tag-stale">Stale</span> <span class="fixed">FIXED</span></td>
+</tr>
+<tr>
+<td>F10</td>
+<td>7 stale <code>.raw.md</code> references remained after the Iteration 2 rename to <code>.extracted.md</code>: Design AD D3, §3, Storage Layout, Erasure Note, Content-Type Fix; Tasks 3.2 and 3.3; RFC Consequences.</td>
+<td>grep</td>
+<td><span class="tag tag-stale">Stale</span> <span class="fixed">FIXED</span></td>
+</tr>
+<tr>
+<td>F11</td>
+<td>The <code>(False, Route.TREE) | (False, Route.PERSIST_FAIL)</code> branch goes on to <code>_persist_tree_result</code>, so a persist-method call site covers it. Coverage is complete with 4 call sites.</td>
+<td><code>client/indexer.py:2789-2795</code></td>
+<td>No change needed; noted in R3 AC2.</td>
+</tr>
+</table></div>
+
+<h2>User Decisions (Phase 3 GRILL)</h2>
+<div class="wrap"><table>
+<tr><th>Question</th><th>Decision</th></tr>
+<tr><td>Where should rejected-document extracted markdown be stored?</td><td><strong>Quarantine, full sha256</strong> — <code>quarantine/&lt;sha256&gt;.extracted.md</code></td></tr>
+<tr><td>Should <code>get_raw_output</code> return output for rejected documents?</td><td><strong>Persisted documents only</strong> — rejected output stays unserved (HR5)</td></tr>
+<tr><td>How to handle the missing 30-day quarantine expiry?</td><td><strong>Drop the expiry criterion entirely and supersede it wherever an RFC mentions it</strong> → RFC-050 D6</td></tr>
+</table></div>
+
+<h2>Patches Applied</h2>
+<h3>RFC-050 (<code>agents/rfcs/050-pipeline-acceleration-raw-export.md</code>) — 11 patches</h3>
+<ul>
+<li>Context: "zero callers" struck; the two real callers named (F9)</li>
+<li>Relationship to Prior RFCs: RFC-049 entry added (third quarantine object; D6 supersedes the TTL)</li>
+<li>R3 AC2: reject key → <code>quarantine/&lt;sha256&gt;.extracted.md</code>; correct reject functions; every reject reason; best-effort write</li>
+<li>R3 AC3: erasure via <code>_erase_uploads</code> (persisted) + third key in <code>_erase_quarantine</code>/<code>erase_quarantine</code> (rejected)</li>
+<li>R3 AC4: <code>get_raw_output</code> serves persisted documents only; <code>quarantine/</code> unserved (HR5)</li>
+<li>D3: reject path rewritten; effort 3h → 4h</li>
+<li><strong>D6 added (P0):</strong> supersede RFC-049's 30-day quarantine TTL, with evidence and the remaining erasure paths</li>
+<li>Sequencing: Wave 2 3h → 4.5h; total 24-32h → 25.5-33.5h</li>
+<li>Test Strategy: item 3 extended (reject + quarantine erasure); item 7 added (HR5 not-served test)</li>
+<li>Risk 5 added: quarantine retention now unbounded (mitigations + PII residual)</li>
+<li>Consequences + Traceability: <code>.raw.md</code> fixed; partial supersession of RFC-049 recorded (frontmatter <code>supersedes</code> left empty on purpose)</li>
+</ul>
+<h3>Design (<code>agents/designs/design-rfc050-…</code>) — 9 patches</h3>
+<ul>
+<li>AD D3: <code>.raw.md</code> fixed; quarantine reject key and the rejected <code>sha256[:8]</code> alternative recorded</li>
+<li>Service Contract §2: new <code>save_quarantine_extracted</code> contract, both call sites, erasure, never served</li>
+<li>§3 From-Raw: <code>.raw.md</code> → <code>.extracted.md</code></li>
+<li>§4 get_raw_output: doc_id-only scope</li>
+<li>Storage Layout: <code>.extracted.md</code> + three quarantine objects; no-TTL note</li>
+<li>Erasure Note + Content-Type Fix: <code>.raw.md</code> fixed; third quarantine key</li>
+<li>Property 2: reject call sites rewritten</li>
+<li>Property 3: quarantine erasure clause; retention not time-bounded</li>
+<li><strong>Property 3a added:</strong> Rejected Output Is Never Served</li>
+</ul>
+<h3>Tasks (<code>agents/tasks/tasks-rfc050-…</code>) — 11 patches</h3>
+<ul>
+<li>Task 3.1: reject call sites rewritten with correct <code>file:line</code></li>
+<li><strong>Task 3.1a added:</strong> <code>save_quarantine_extracted</code> + third erasure key + tests</li>
+<li>Tasks 3.2, 3.3: <code>.raw.md</code> fixed; 3.3 doc_id-only</li>
+<li>Task 3.5: reject-path test, write-failure-still-rejects test, Property 3a test</li>
+<li><strong>Task 3.6 added:</strong> D6 supersession. RFC-049 markers done this iteration; the CLAUDE.md HR5 proposal and DESIGN.md / ARCHITECTURE.md TTL text remain</li>
+<li>Checkpoint 4, Task 9.3, Final Checkpoint: persisted vs rejected checks split</li>
+<li>Notes: 6 → 7 properties; quarantine note</li>
+<li>Dependency graph Wave 2: + <code>3.1a</code>, <code>3.6</code></li>
+</ul>
+<h3>RFC-049 triad — supersession markers (8 patches)</h3>
+<ul>
+<li>Superseded-by-RFC-050-D6 banner at the top of the RFC, design and tasks files</li>
+<li>RFC: R4 AC5 TTL sentence struck; Risk 6 marked; Open Question 4 resolution withdrawn</li>
+<li>Design: Overview "Bounded in time" TTL clause struck; Property 12a TTL + noncurrent-version sentences struck</li>
+<li>Tasks: 7.5c closed as superseded, not done</li>
+</ul>
+
+<div class="warn-box">
+<strong>Still open — outside the RFC files (not edited in this iteration):</strong>
+<ul>
+<li><code>CLAUDE.md</code> HR5: "…purged by <code>delete_doc</code> and expiring within 30 days, is permitted for diagnosis." Removing "and expiring within 30 days" changes a Hard Rule, so it needs the user's approval.</li>
+<li><code>DESIGN.md:529</code>, <code>ARCHITECTURE.md:448</code>, <code>ARCHITECTURE.md:539-542</code> (<code>mc ilm … --expire-days 30</code>) still describe the TTL. Tracked in RFC-050 Task 3.6.</li>
+<li>No other RFC (001-048) mentions the quarantine TTL (checked with grep over <code>agents/</code>).</li>
+</ul>
+</div>
+
+<h2>RFC-051</h2>
+<p>No changes. The triad does not mention <code>quarantine</code>, <code>erase_*</code>, <code>save_raw</code> or <code>storage/documents.py</code>. Its only mention of <code>client/indexer.py</code> is NG3 (no split).</p>
+
+<h2>Cross-Check</h2>
+<div class="wrap"><table>
+<tr><th>RFC-050 item</th><th>Design</th><th>Task</th></tr>
+<tr><td>R3 AC2 (reject-path persistence)</td><td>§2 companion contract, Property 2</td><td>3.1, 3.1a, 3.5</td></tr>
+<tr><td>R3 AC3 (erasure)</td><td>Erasure Note, Property 3</td><td>3.1a, 3.2, 3.5</td></tr>
+<tr><td>R3 AC4 (get_raw_output, HR5)</td><td>§4 scope, Property 3a</td><td>3.3, 3.4, 3.5, 9.3</td></tr>
+<tr><td>D6 (TTL supersession)</td><td>Storage Layout note, Property 3</td><td>3.6</td></tr>
+</table></div>
+</body>
+</html>

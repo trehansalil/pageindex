@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RFC-050 &amp; RFC-051 Iteration 4 Review Report</title>
+<style>
+body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; color: #1a1a1a; }
+h1 { border-bottom: 3px solid #7c3aed; padding-bottom: 0.5rem; }
+h2 { color: #7c3aed; margin-top: 2rem; }
+h3 { color: #6d28d9; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d1d5db; padding: 0.5rem 0.75rem; text-align: left; }
+th { background: #f5f3ff; font-weight: 600; }
+tr:nth-child(even) { background: #f9fafb; }
+.critical { color: #dc2626; font-weight: 600; }
+.fixed { color: #16a34a; font-weight: 600; }
+.tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.85rem; font-weight: 500; }
+.tag-gap { background: #fee2e2; color: #991b1b; }
+.tag-scope { background: #fef3c7; color: #92400e; }
+.summary-box { background: #f0fdf4; border: 1px solid #86efac; border-radius: 8px; padding: 1rem 1.5rem; margin: 1rem 0; }
+code { background: #f3f4f6; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+</style>
+</head>
+<body>
+<h1>RFC-050 &amp; RFC-051 — Iteration 4 Review Report</h1>
+<p><strong>Date:</strong> 2026-09-24 &nbsp;|&nbsp; <strong>Iteration:</strong> 4 of rfc-iterate &nbsp;|&nbsp; <strong>Reviewer agents:</strong> rejected-doc-coverage, from-raw-feasibility</p>
+
+<div class="summary-box">
+<strong>Summary:</strong> Two focused agents found 2 significant issues: (1) rejected documents bypass persist methods entirely, leaving AC2 unsatisfied — fixed by adding save_raw on the reject path with sha256[:8] as key; (2) the from-raw path (D4) has two separate threading paths (not one) and non-trivial state reconstruction — effort revised 8-10h → 12-16h, new task 5.2a added. 9 patches applied across 3 files. RFC-051 unchanged this iteration.
+</div>
+
+<h2>Review Agents &amp; Findings</h2>
+
+<h3>Agent 1: rejected-doc-coverage</h3>
+<p>Verified whether rejected documents get raw output under the Iteration 3 design (save_raw in persist methods only).</p>
+
+<table>
+<tr><th>#</th><th>Finding</th><th>Type</th><th>Resolution</th></tr>
+<tr>
+<td>F1</td>
+<td><span class="critical">GAP: Rejected docs bypass persist methods entirely.</span> The <code>index()</code> method's <code>match (state.ok, state.route)</code> dispatch shows:
+<ul>
+<li><code>(False, Route.REJECT)</code> → <code>save_quarantine()</code> → raises <code>LowQualityTreeError</code> — never reaches persist methods</li>
+<li><code>flat_garble_unrecovered</code> → raises <code>LowQualityTreeError</code> — never reaches persist methods</li>
+</ul>
+AC2 explicitly says "even if quality gating fails (REJECT route)" but the Iteration 3 design only covers persist-method paths.</td>
+<td><span class="tag tag-gap">Design gap</span></td>
+<td><span class="fixed">FIXED</span> — Added save_raw on reject path using <code>sha256[:8]</code> as doc_id key (since real doc_id never generated for rejects). Updated AC2, D3, Property 2, Task 3.1 with 2 additional call sites.</td>
+</tr>
+</table>
+
+<h3>Agent 2: from-raw-feasibility</h3>
+<p>Traced the <code>--from-raw</code> flag through all pipeline layers to verify feasibility and effort estimate.</p>
+
+<table>
+<tr><th>#</th><th>Finding</th><th>Type</th><th>Resolution</th></tr>
+<tr>
+<td>F2</td>
+<td><span class="critical">Two separate paths, not one.</span> <code>preprocess_client.py</code> uses plain <code>sys.argv</code> and calls <code>_run_converter_subprocess</code> directly — bypasses HTTP/arq entirely (2-layer path). The HTTP/arq path is a separate 4-layer path. RFC described one 4-layer path.</td>
+<td><span class="tag tag-scope">Scope underestimate</span></td>
+<td><span class="fixed">FIXED</span> — D4, Task 5.1, Task 5.2 revised to acknowledge two separate paths. Task 5.1 scoped to CLI path only; Task 5.2 scoped to HTTP/arq path.</td>
+</tr>
+<tr>
+<td>F3</td>
+<td><span class="critical">State reconstruction complexity.</span> <code>_convert_to_tree</code> sets ~10+ state fields beyond <code>md_content</code>: <code>state.content_class</code>, <code>state.converter_name</code>, <code>state.arabic_ratio</code>, <code>state.garbled_text_layer</code>, <code>state.classification</code>, etc. From-raw can't just set <code>md_content</code> and skip everything — downstream logic depends on these fields.</td>
+<td><span class="tag tag-scope">Scope underestimate</span></td>
+<td><span class="fixed">FIXED</span> — New Task 5.2a (state reconstruction) added. D4 effort revised 8-10h → 12-16h. Design Property 4 updated with two-path + state reconstruction note.</td>
+</tr>
+<tr>
+<td>F4</td>
+<td><code>process_document_job</code> impedance mismatch: assumes input is original document (downloads from staging). For <code>--from-raw</code>, input source is stored raw markdown in MinIO — fundamentally different fetch logic.</td>
+<td><span class="tag tag-scope">Impedance mismatch</span></td>
+<td><span class="fixed">NOTED</span> in Task 5.2 description.</td>
+</tr>
+</table>
+
+<h2>Patches Applied (9 total)</h2>
+
+<table>
+<tr><th>#</th><th>File</th><th>Section</th><th>Change</th></tr>
+<tr><td>P1</td><td>rfc-050</td><td>R3 AC2</td><td>Added explicit reject-path coverage with sha256[:8] as key</td></tr>
+<tr><td>P2</td><td>rfc-050</td><td>D3</td><td>Rewritten: persist methods + reject path, .extracted.md naming</td></tr>
+<tr><td>P3</td><td>rfc-050</td><td>D4</td><td>Two separate paths acknowledged, state reconstruction noted, effort → 12-16h</td></tr>
+<tr><td>P4</td><td>rfc-050</td><td>Effort table Wave 3</td><td>Effort 8-10h → 12-16h</td></tr>
+<tr><td>P5</td><td>rfc-050</td><td>Effort Estimate text</td><td>Two-path + state reconstruction complexity noted</td></tr>
+<tr><td>P6</td><td>rfc-050</td><td>Total effort</td><td>20-24h → 24-32h</td></tr>
+<tr><td>P7</td><td>design-050</td><td>Property 2</td><td>Full coverage: persist + reject paths, 4 total call sites</td></tr>
+<tr><td>P8</td><td>design-050</td><td>Property 4</td><td>Two-path + state reconstruction note</td></tr>
+<tr><td>P9</td><td>tasks-050</td><td>Task 3.1</td><td>Added 2 reject-path call sites (sha256[:8])</td></tr>
+<tr><td>P10</td><td>tasks-050</td><td>Tasks 5.1, 5.2, 5.2a</td><td>Split into CLI path / HTTP path / state reconstruction</td></tr>
+<tr><td>P11</td><td>tasks-050</td><td>Dependency graph</td><td>Wave 4 updated with task 5.2a</td></tr>
+</table>
+
+<h2>Iteration History</h2>
+<table>
+<tr><th>Iteration</th><th>Focus</th><th>Findings</th><th>Patches</th></tr>
+<tr><td>1</td><td>Initial full review (3 agents)</td><td>~15 findings</td><td>See iter 1 report</td></tr>
+<tr><td>2</td><td>Recovery parallelization, save_raw integration, script refs</td><td>8 findings</td><td>14 patches / 6 files</td></tr>
+<tr><td>3</td><td>doc_id availability, triad cross-consistency</td><td>6 findings</td><td>9 patches / 4 files</td></tr>
+<tr><td>4</td><td>Rejected doc coverage, from-raw feasibility</td><td>4 findings</td><td>11 patches / 3 files</td></tr>
+</table>
+
+<h2>Remaining Risk Assessment</h2>
+<ul>
+<li><strong>P0 deliverables (D1-D3):</strong> Well-specified. D3 now has complete coverage (persist + reject paths). Low risk.</li>
+<li><strong>P2 deliverable D4:</strong> Complexity now properly scoped. State reconstruction (Task 5.2a) is the hardest part — may warrant a spike before committing to full implementation.</li>
+<li><strong>P2 deliverable D5:</strong> Low risk — profiling + targeted optimization, no architectural change.</li>
+<li><strong>RFC-051:</strong> Stable since Iteration 3. No changes needed this iteration.</li>
+</ul>
+
+</body>
+</html>

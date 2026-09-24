@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RFC-050 &amp; RFC-051 Iteration 7 Review Report</title>
+<style>
+body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; color: #1a1a1a; }
+h1 { border-bottom: 3px solid #7c3aed; padding-bottom: 0.5rem; }
+h2 { color: #7c3aed; margin-top: 2rem; }
+h3 { color: #6d28d9; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d1d5db; padding: 0.5rem 0.75rem; text-align: left; vertical-align: top; }
+th { background: #f5f3ff; font-weight: 600; }
+tr:nth-child(even) { background: #f9fafb; }
+.critical { color: #dc2626; font-weight: 600; }
+.fixed { color: #16a34a; font-weight: 600; }
+.open { color: #b45309; font-weight: 600; }
+.tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.85rem; font-weight: 500; }
+.tag-gap { background: #fee2e2; color: #991b1b; }
+.tag-scope { background: #fef3c7; color: #92400e; }
+.tag-stale { background: #e0e7ff; color: #3730a3; }
+.summary-box { background: #f0fdf4; border: 1px solid #86efac; border-radius: 8px; padding: 1rem 1.5rem; margin: 1rem 0; }
+.warn-box { background: #fffbeb; border: 1px solid #fcd34d; border-radius: 8px; padding: 1rem 1.5rem; margin: 1rem 0; }
+code { background: #f3f4f6; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+.wrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+<h1>RFC-050 &amp; RFC-051 — Iteration 7 Review Report (full review)</h1>
+<p><strong>Date:</strong> 2026-09-24 &nbsp;|&nbsp; <strong>Iteration:</strong> 7 of rfc-iterate &nbsp;|&nbsp; <strong>Reviewer agents:</strong> claim checker (V7), feasibility reviewer (I7), lead analyst (L7) &nbsp;|&nbsp; <strong>Amend agents:</strong> one each for the RFC-050 and RFC-051 document sets</p>
+
+<div class="summary-box">
+<strong>Summary:</strong> The Iteration 6 D4 write barrier could not work, for two reasons:
+<ul>
+<li><code>save_doc</code> and <code>save_flat_doc</code> check each write with <code>stat_object</code> (<code>_confirm_write_visible</code>, documents.py:97-108 and :162-173). A barrier that swallows writes therefore raises <code>PersistenceNotVisibleError</code>.</li>
+<li>Registry writes happen only in the parent process (preprocess_client.py:201, job.py:392), so wrapping the child's registry client does nothing.</li>
+</ul>
+RFC-051 D4 had two faults:
+<ul>
+<li>It depended on a <code>get_decision_point()</code> API that does not exist.</li>
+<li>It set a ≤50-line module cap that cannot be met.</li>
+</ul>
+Both RFCs were also missing interactions with the test-budget ratchet, the closed decision-event registry and FROZEN_SURFACE. The user's four decisions below settled all of this, and both document sets have been amended.
+</div>
+
+<h2>User decisions (GRILL)</h2>
+<table>
+<tr><th>Question</th><th>Decision</th><th>Effect</th></tr>
+<tr><td>D4 write barrier</td><td>In-memory read-your-writes overlay (recommended)</td><td>Wraps the clients returned by <code>get_minio()</code>, <code>get_cache_redis()</code> and <code>get_async_redis()</code>. Writes are kept in memory, and later reads in the same process see them, so the check after each write passes. The parent skips <code>_upsert_registry_row</code> and <code>_mirror_bridged_set</code> when replaying. Adds 1.5h.</td></tr>
+<tr><td>State sidecar priority</td><td>Keep in P0</td><td>No change to sequencing</td></tr>
+<tr><td>RFC-051 D4 shape</td><td>Data to YAML, logic stays (recommended)</td><td>Only the <code>_*_POINTS</code> literals move to YAML. All 11 public names and the file name stay the same. The line cap is struck. D4 now runs after RFC-050 Wave 2.</td></tr>
+<tr><td>RFC-045 pins</td><td>Freeze values (recommended)</td><td>A frozen-value assertion replaces the measurement-script test before the script is deleted.</td></tr>
+</table>
+
+<h2>Findings and resolution</h2>
+<div class="wrap"><table>
+<tr><th>ID</th><th>Finding</th><th>Evidence</th><th>Resolution</th></tr>
+<tr><td>V7/I7-1</td><td><span class="tag tag-gap">gap</span> Swallowing writes breaks the check after each write</td><td>documents.py:97-108, :162-173</td><td class="fixed">Replaced by the overlay (RFC-050 Task 5.2b)</td></tr>
+<tr><td>V7-2</td><td><span class="tag tag-gap">gap</span> The registry is written in the parent, not the child</td><td>registry_mirror.py:136-315; preprocess_client.py:201</td><td class="fixed">The parent skips the registry upsert and the mirror when replaying (Task 5.1). Property 4a gains parent-side spies.</td></tr>
+<tr><td>I7-3</td><td><span class="tag tag-gap">gap</span> Restoring <code>flat_garble_unrecovered</code> would skip the gate</td><td>indexer.py:2702</td><td class="fixed">Removed from the state file and put on the never-restore list</td></tr>
+<tr><td>I7-4</td><td><span class="tag tag-gap">gap</span> Image data (<code>png_bytes</code>) is missing on replay, which skews the image ratio in the flat verdict</td><td>images.py:298-302; verdict.py:36-63</td><td class="fixed">A <code>has_png</code> flag per image. Stored documents reload <code>figures/</code>; rejected documents report <code>approximate</code>.</td></tr>
+<tr><td>I7-5</td><td><span class="tag tag-gap">gap</span> The replay's input handling was undefined: the child needs an input path, the file-existence check raises, and the handshake line is missing</td><td>converters_cli; indexer.py:2491</td><td class="fixed">The temp .md becomes the input, the file check is skipped on replay, the child sends a handshake built from the state file, <code>file_bytes=b""</code>, and results are keyed on <code>--doc-id</code></td></tr>
+<tr><td>V7-6</td><td><span class="tag tag-stale">stale</span> <code>CONTENT_TYPE_MAP</code> does not exist</td><td>documents.py:838-854</td><td class="fixed">Now "replace the inline ternary with a suffix map"</td></tr>
+<tr><td>V7-7</td><td><span class="tag tag-stale">stale</span> <code>pre_classification</code> is not visible inside the persist methods</td><td>indexer.py</td><td class="fixed">Added as a <code>pre_classification=None</code> keyword on both</td></tr>
+<tr><td>I7-8</td><td><span class="tag tag-gap">gap</span> Test-budget ratchet ignored</td><td>scripts/gates/test_budget.sh:66</td><td class="fixed">Every task that adds tests now raises the baseline, and the RFC-051 deletion tasks lower it</td></tr>
+<tr><td>I7-9</td><td><span class="tag tag-gap">gap</span> The decision-event registry is closed</td><td>obs/decision_points.py:1855-1867</td><td class="fixed">DecisionPoint entries added, plus a new <code>quarantine_extracted_write</code> event</td></tr>
+<tr><td>I7-10</td><td><span class="tag tag-gap">gap</span> A <code>storage/__init__</code> re-export would break FROZEN_SURFACE</td><td>FROZEN_SURFACE = ('SIDECAR_VERSION',)</td><td class="fixed">Callers import from <code>storage.documents</code> directly</td></tr>
+<tr><td>V7-11</td><td><span class="tag tag-stale">stale</span> Setting names and the admission floor</td><td>memory_admission.py:23; lifecycle.py:50</td><td class="fixed">The setting is <code>settings.docling_service_url</code>. The floor constant sits in memory_admission.py and <code>floor</code> is passed through to <code>_has_headroom</code>. <code>resolve_max_jobs(..., remote)</code>.</td></tr>
+<tr><td>V7-12</td><td><span class="tag tag-stale">stale</span> Line references</td><td>indexer.py</td><td class="fixed">Now :2407 (tree) and :2226 (flat)</td></tr>
+<tr><td>L7-1</td><td><span class="tag tag-scope">scope</span> The baseline was measured after changes had landed</td><td>Tasks 9.1</td><td class="fixed">Task 9.1 now runs in graph wave 1b, right after 1.5</td></tr>
+<tr><td>L7-2</td><td><span class="tag tag-scope">scope</span> The ≥40% target cannot be met without D5</td><td>G1</td><td class="fixed">≥30% with P0 only, ≥40% with D5</td></tr>
+<tr><td>L7-3</td><td><span class="tag tag-scope">scope</span> A CLAUDE.md HR5 edit was still proposed</td><td>Task 3.6, D6</td><td class="fixed">Struck, per the user's rule</td></tr>
+<tr><td>L7-4</td><td><span class="tag tag-stale">stale</span> test_verdict.py helpers</td><td>obs 111166</td><td class="fixed"><code>_borderline_ratio_tree</code> and <code>_other_s3error</code> are already gone. Task 5.1 is now a check only. Do not touch test_storage.py:53, which is still in use.</td></tr>
+<tr><td>V7-13</td><td><span class="tag tag-gap">gap</span> RFC-051 D4 depended on an API that does not exist and a ≤50-line cap that cannot be met</td><td>obs/__init__.py:21</td><td class="fixed">Only the data moves to YAML. The 11 real public names are listed, with a packaging step and a new check that no <code>_*_POINTS</code> literals remain.</td></tr>
+<tr><td>I7-14</td><td><span class="tag tag-gap">gap</span> Deleting <code>hash_cache_migrate</code> is unsafe while hash_cache.py:80-94 still falls back to it</td><td>hash_cache.py:80-94</td><td class="fixed">Deletion waits until every deployment is confirmed migrated, and the fallback is removed in the same commit</td></tr>
+<tr><td>I7-15</td><td><span class="tag tag-gap">gap</span> The archive reference check covered only docs</td><td>audit/zones/*</td><td class="fixed">It now covers scripts/, tests/, .github/, the Makefile and the skills. Zone files and CORPUS_REINGESTION_AUDIT_RUN-* are never archived.</td></tr>
+<tr><td>I7-16</td><td><span class="tag tag-scope">scope</span> Cleanup was incomplete: TEST_INDEX.yaml and the compose profile</td><td>tests/TEST_INDEX.yaml:610, :624 (checked); docker-compose.yml:226-277</td><td class="fixed">Both TEST_INDEX lines are added, and the whole ocr-spike profile block is removed</td></tr>
+</table></div>
+
+<h2>Edits per file</h2>
+<h3>RFC-050</h3>
+<ul>
+<li><strong>RFC:</strong>
+  <ul>
+  <li>Context: the serial-recovery sentence is corrected.</li>
+  <li>Goals: G1 carries the 30%/40% split, and G2 names <code>get_raw_output</code> as the sixth tool.</li>
+  <li>Requirements: R3 AC5 now covers <code>has_png</code> and the excluded fields. R4 AC3 describes the overlay.</li>
+  <li>Decision summary: D4 describes the overlay, and D6 has its CLAUDE.md sentence struck.</li>
+  <li>Effort: the table, the revision trail and the Effort Estimate bullet are updated.</li>
+  <li>Test Strategy: item 7 is renumbered to 3a.</li>
+  <li>Risks: Risk 2 and Risk 6 are revised, and a new Risk 7 covers the LLM cost of a replay.</li>
+  <li>Consequences: two bullets added.</li>
+  </ul></li>
+<li><strong>Design:</strong>
+  <ul>
+  <li>Wording fixes: "coupled" becomes "related", "before tree construction" becomes "after", and <code>raw</code> becomes <code>quarantine</code>.</li>
+  <li>State-file notes are added.</li>
+  <li>§3 replay contract: the input path and handshake, the overlay, and the parent-side skip rule.</li>
+  <li>Keying on the doc ID, and the LLM cost note.</li>
+  <li>The two rejected barrier designs are recorded.</li>
+  <li>Property 4a gains parent-side spies.</li>
+  <li>New error-handling and edge-case rows.</li>
+  </ul></li>
+<li><strong>Tasks:</strong>
+  <ul>
+  <li>Tasks 1.1-1.3: settings naming and the admission floor.</li>
+  <li>Budget and registry steps: every task that adds tests raises the baseline, and 1.5 and 3.1a add DecisionPoint entries.</li>
+  <li>State file: Task 3.1b removes <code>flat_garble_unrecovered</code> and adds <code>has_png</code> and <code>pre_classification</code>.</li>
+  <li>Imports: Tasks 3.3, 3.4 and 5.2c import directly from <code>storage.documents</code>. Task 3.4 also updates DESIGN.md from five tools to six.</li>
+  <li>Task 3.6: the CLAUDE.md proposal is struck.</li>
+  <li>Replay tasks: 5.1 covers the handshake and the parent-side skips. 5.2a covers the file-check bypass and the figure reload. 5.2b is the overlay (+1.5h). 5.2d keys results on the doc ID.</li>
+  <li>Baseline: Task 9.1 moves to wave 1b.</li>
+  <li>Final check: ≥30% with P0 only, ≥40% with D5.</li>
+  <li>Dependency graph: wave 1b added, and wave 4 split into 4a and 4b.</li>
+  </ul></li>
+</ul>
+<h3>RFC-051</h3>
+<ul>
+<li><strong>RFC:</strong>
+  <ul>
+  <li>G4 is narrowed to the data only.</li>
+  <li>R1: AC3 covers the TEST_INDEX lines, the compose block and the frozen pins. New AC4 covers the hash-cache deletion condition, and new AC5 the budget ratchet.</li>
+  <li>R2: AC3 widens the reference check, and new AC4 keeps the zone files out of the archive.</li>
+  <li>R3: new AC4 runs the overlap analysis after RFC-050 Wave 2.</li>
+  <li>R4: AC2-AC6 are rewritten.</li>
+  <li>D1-D4 are amended.</li>
+  <li>Risks 5-7 and the Consequences are updated.</li>
+  </ul></li>
+<li><strong>Design:</strong>
+  <ul>
+  <li>The API sketch is replaced with the real 11-name surface. The old code block stays, marked superseded.</li>
+  <li>The real <code>DecisionPoint</code> fields are listed.</li>
+  <li>Properties 3-5 are amended, with numbering unchanged.</li>
+  <li>Three edge cases are added.</li>
+  </ul></li>
+<li><strong>Tasks:</strong>
+  <ul>
+  <li>Task 1.2: the pin freeze, compose removal, TEST_INDEX lines and hash-cache condition.</li>
+  <li>Task 3.1: the wider reference check.</li>
+  <li>Task 5.1 becomes a check only. Task 5.2 now waits on RFC-050, and Task 5.3 lowers the baseline.</li>
+  <li>Tasks 7.1-7.4: the YAML move, the 11-name snapshot and packaging.</li>
+  <li>Checkpoint 8: checks that no <code>_*_POINTS</code> literals remain.</li>
+  <li>Notes are aligned with the dependency graph.</li>
+  <li>The graph's <code>external_deps</code> mark the RFC-050 Wave 2 dependency.</li>
+  </ul></li>
+</ul>
+
+<h2>Effort revision</h2>
+<table>
+<tr><th>RFC</th><th>Iter 6</th><th>Iter 7</th><th>Driver</th></tr>
+<tr><td>RFC-050</td><td>31-35h</td><td>32.5-36.5h</td><td>Wave 3: 13-15h → 14.5-16.5h (overlay +1.5h)</td></tr>
+<tr><td>RFC-051</td><td>11-12h</td><td>12-13h</td><td>D1 2.5-3.5h (freezing the pins, the hash-cache condition), D3 2.5h, D4 5h</td></tr>
+</table>
+
+<h2>Leftover-wording check</h2>
+<p><code>registry connection</code>, <code>CONTENT_TYPE_MAP</code>, <code>≤50</code> and <code>31-35h</code> appear only in struck text or the revision trail. The <code>HR5</code> hits cite Hard Rule 5 as a compliance rule, which is valid; none is a CLAUDE.md edit. <code>get_decision_point</code> survives only in the old design code block, which cannot be struck through, and a "superseded" note follows it directly.</p>
+
+<h2>Open items</h2>
+<div class="warn-box"><ul>
+<li><span class="open">Physical position of Task 9.1:</span> the task stays under Wave 5 so the Corpus Validation tasks keep their numbers. The graph (wave 1b) and a note set when it actually runs.</li>
+<li><span class="open">Cross-RFC order:</span> RFC-051 D3 and D4 depend on RFC-050 Wave 2. For the test-budget baseline, whichever RFC lands second rebases on the other.</li>
+<li><span class="open">hash_cache_migrate:</span> deletion needs someone to confirm that every deployment has migrated. If that cannot be confirmed, the deletion is deferred.</li>
+</ul></div>
+</body>
+</html>

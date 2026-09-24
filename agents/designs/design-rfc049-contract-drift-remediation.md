@@ -22,6 +22,10 @@ governed_by:
 
 # Design Document: Contract Drift Remediation
 
+> **Partially superseded by [[RFC-050]] D6 (2026-09-24): the 30-day quarantine lifecycle TTL is withdrawn.** The "Bounded in time" TTL clause in the Overview, AD2, the storage-layout and documentation rows, and the TTL half of [Property 12a](#property-12a-quarantine-is-bounded-in-time) no longer apply. Clear-on-success and on-demand erasure remain. RFC-050 adds a third quarantine object, `quarantine/<sha256>.extracted.md`, erased by the same `_erase_quarantine` / `erase_quarantine`.
+>
+> **(Amendment 2026-09-24, RFC-050 Iter 8): the supersession above is REVERSED.** RFC-050 D6 was struck (it conflicts with Hard Rule 5). The 30-day lifecycle TTL applies again, including `.extracted.*`, and the TTL half of Property 12a holds again. It is delivered through [[RFC-050]] Task 3.6.
+
 > **v2 consolidation 2026-09-23 (iter 3).** This file is now a single authoritative text. The amendment markers and struck-through text from iterations 1 and 2 have been folded in, so everything above [Appendix Z](#appendix-z-iteration-history-verbatim-pre-v2-text) is the current design. The complete pre-v2 file (iterations 1–2, including its old frontmatter) is kept verbatim inside a fenced block in Appendix Z. Because it is fenced, its headings and anchors do not render and cannot collide with the v2 anchors. Status is `accepted` (approved for build). The frontmatter key `governs` became `governed_by`, because this design is governed *by* RFC-049. Iteration 3 adds: the corrected `vt_raw` fallback on the REJECT override, a quarantine `filenames[]` array, the HR5-critical write-failure property ([P12c](#property-12c-a-failed-quarantine-write-still-rejects-and-never-persists)), sha256 surfacing on rejection ([P12d](#property-12d-a-rejection-surfaces-the-documents-sha256)), one erasure implementation shared by the cascade and the operator path, and the complete `quarantine_write` decision-point spec.
 
 ## Traceability
@@ -56,7 +60,7 @@ Most of the work is in [D2](../rfcs/049-contract-drift-remediation.md#d2-ocr-01-
 - **Reject.** After GATES recovery, a document with `not state.ok and state.route == Route.TREE and state.first_defect in {GARBLING, NODE_GARBLING}` is forced to `Route.REJECT`. It raises `LowQualityTreeError` and never reaches `save_doc`. A document that recovery legitimately moved to `Route.FLAT` is left alone.
 - **Quarantine first.** Before the raise, the tree (or flat blocks), the verdict and garble samples are written to MinIO `quarantine/<sha256>.json` and `quarantine/<sha256>.meta.json`. The key is the content hash because a rejected document never gets a `doc_id`. The tree-route write happens in `index()`. The flat-route write happens inside `_persist_flat_result`, before its `return None`.
 - **Never served.** No MCP query tool or HTTP route reads `quarantine/`.
-- **Bounded in time.** A 30-day lifecycle TTL applies, and the copy is cleared when the same bytes later persist successfully.
+- **Bounded in time.** ~~A 30-day lifecycle TTL applies, and~~ The copy is cleared when the same bytes later persist successfully. **(Superseded in part by [[RFC-050]] D6, 2026-09-24: no lifecycle TTL.)**
 - **Erasable.** `delete_doc` reaches the copy through `ctx.sha256`. For a document that was never persisted, an operator uses `erase_quarantine(sha256)`, which the rejected job's status record now exposes.
 - **HR5 wins over inspectability.** If the quarantine write fails, the document is still rejected.
 
@@ -528,7 +532,7 @@ This holds for every `OCR-01-C3` trigger (still garbled after retry, `OCR_ESCALA
 
 ### Property 12a: Quarantine is bounded in time
 
-*For any* `sha256` with a quarantine copy, a later successful persist of the same bytes SHALL idempotently delete `quarantine/<sha256>.json` and `.meta.json`. This is intended: the diagnostic copy is dropped once the bytes are served. A clear that fails SHALL NOT fail the persist. Independently, objects under `quarantine/` SHALL expire through a 30-day MinIO lifecycle rule. If bucket versioning is on, noncurrent versions SHALL also expire through a noncurrent-version rule.
+*For any* `sha256` with a quarantine copy, a later successful persist of the same bytes SHALL idempotently delete `quarantine/<sha256>.json` and `.meta.json`. This is intended: the diagnostic copy is dropped once the bytes are served. A clear that fails SHALL NOT fail the persist. ~~Independently, objects under `quarantine/` SHALL expire through a 30-day MinIO lifecycle rule. If bucket versioning is on, noncurrent versions SHALL also expire through a noncurrent-version rule.~~ **Superseded by [[RFC-050]] D6 (2026-09-24):** no lifecycle expiry; clear-on-success is the only automatic bound.
 
 - **Validates:** [R4 AC5](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23), [RFC Open Question 4](../rfcs/049-contract-drift-remediation.md#open-questions), [RFC-049 Risk 6](../rfcs/049-contract-drift-remediation.md#risks)
 - **Tested in:** [Task 7.5a](../tasks/tasks-rfc049-contract-drift-remediation.md#75a-clear-quarantine-on-successful-persist) (clear-on-success unit test). The lifecycle and versioning rules are verified by inspection in [Task 7.5c](../tasks/tasks-rfc049-contract-drift-remediation.md#75c-configure-the-quarantine-lifecycle-ttl), not by the suite.

@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RFC-050 &amp; RFC-051 Review Report — 2026-09-24</title>
+<style>
+body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; color: #1a1a1a; }
+h1 { border-bottom: 2px solid #333; padding-bottom: 0.5rem; }
+h2 { color: #2c5282; margin-top: 2rem; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d1d5db; padding: 0.5rem 0.75rem; text-align: left; }
+th { background: #f3f4f6; font-weight: 600; }
+.high { color: #dc2626; font-weight: 700; }
+.notable { color: #d97706; font-weight: 600; }
+.minor { color: #059669; }
+.confirmed { color: #16a34a; }
+.wrong { color: #dc2626; font-weight: 700; }
+</style>
+</head>
+<body>
+<h1>RFC-050 &amp; RFC-051 Review Report</h1>
+<p><strong>Date:</strong> 2026-09-24 | <strong>Iteration:</strong> 1 | <strong>Status:</strong> Amendments applied</p>
+
+<h2>Review Agents</h2>
+<table>
+<tr><th>Agent</th><th>Role</th><th>Model</th><th>Duration</th></tr>
+<tr><td>Root-cause validator</td><td>Trace claims to file:line evidence</td><td>Opus</td><td>103s</td></tr>
+<tr><td>Implementation reviewer</td><td>Technical feasibility of deliverables</td><td>Sonnet</td><td>106s</td></tr>
+<tr><td>Lead analyst</td><td>Gap synthesis and timeline assessment</td><td>Fable</td><td>115s</td></tr>
+</table>
+
+<h2>Findings Summary</h2>
+<table>
+<tr><th>#</th><th>Severity</th><th>Finding</th><th>Resolution</th></tr>
+<tr><td>1</td><td class="high">HIGH</td><td><code>wait_for_memory</code> is in <code>memory_admission.py</code>, not <code>worker/job.py</code></td><td>Corrected in all triad files</td></tr>
+<tr><td>2</td><td class="high">HIGH</td><td>D4 must traverse 4 layers (CLI→HTTP→arq→subprocess)</td><td>Reclassified P2, effort 4h→8-10h</td></tr>
+<tr><td>3</td><td class="high">HIGH</td><td>Dead script paths wrong (not repo root)</td><td>Corrected paths in RFC-051</td></tr>
+<tr><td>4</td><td class="notable">NOTABLE</td><td><code>resolve_max_jobs</code> already exists</td><td>Updated D2 to modify existing function</td></tr>
+<tr><td>5</td><td class="notable">NOTABLE</td><td>≥40% speedup unlikely with P0-only</td><td>Split: P0 ≥30%, all ≥40%</td></tr>
+<tr><td>6</td><td class="notable">NOTABLE</td><td>Scripts may have test/FROZEN_SURFACE refs</td><td>Added verification step</td></tr>
+<tr><td>7</td><td class="notable">NOTABLE</td><td>Dead script LOC is ~2,322, not ~550</td><td>Corrected counts</td></tr>
+<tr><td>8</td><td class="minor">MINOR</td><td><code>save_raw</code> content-type wrong for .md</td><td>Added fix to design doc</td></tr>
+<tr><td>9</td><td class="minor">MINOR</td><td>Recovery methods in <code>client/recovery.py</code></td><td>Corrected glossary</td></tr>
+</table>
+
+<h2>User Decisions</h2>
+<table>
+<tr><th>Question</th><th>Decision</th></tr>
+<tr><td>D4 complexity</td><td>Keep in RFC-050, reclassify P2</td></tr>
+<tr><td>Speedup target</td><td>Split: P0 ≥30%, all ≥40%</td></tr>
+<tr><td>Dead script references</td><td>Verify first, delete only confirmed-dead</td></tr>
+<tr><td>RFC sequencing</td><td>RFC-050 first, then RFC-051</td></tr>
+</table>
+
+<h2>Claim Verification</h2>
+<table>
+<tr><th>Claim</th><th>Status</th><th>Evidence</th></tr>
+<tr><td><code>save_raw</code> at <code>storage/documents.py:838-854</code></td><td class="confirmed">CONFIRMED</td><td>Exact location, callers=0</td></tr>
+<tr><td><code>MEM_ADMISSION_FLOOR_BYTES ≈ 2.2 GiB</code></td><td class="confirmed">CONFIRMED</td><td>2,300,000,000 in memory_admission.py:23</td></tr>
+<tr><td><code>wait_for_memory</code> in worker/job.py</td><td class="wrong">WRONG</td><td>Actually in memory_admission.py:72</td></tr>
+<tr><td><code>_convert_to_tree</code> ~1122 lines</td><td class="confirmed">CONFIRMED</td><td>Lines 619-1741 = 1122</td></tr>
+<tr><td>Dead scripts at repo root</td><td class="wrong">WRONG</td><td>src/pageindex_mcp/ and scripts/</td></tr>
+<tr><td><code>obs/decision_points.py</code> ~2017 LOC</td><td class="confirmed">CONFIRMED</td><td>Exactly 2017 lines</td></tr>
+<tr><td>Test counts (77 + 36)</td><td class="confirmed">CONFIRMED</td><td>Exact match</td></tr>
+</table>
+</body>
+</html>

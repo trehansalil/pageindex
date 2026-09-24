@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RFC-050 &amp; RFC-051 Iteration 3 Review Report</title>
+<style>
+body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; color: #1a1a1a; }
+h1 { border-bottom: 3px solid #2563eb; padding-bottom: 0.5rem; }
+h2 { color: #2563eb; margin-top: 2rem; }
+h3 { color: #1e40af; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d1d5db; padding: 0.5rem 0.75rem; text-align: left; }
+th { background: #eff6ff; font-weight: 600; }
+tr:nth-child(even) { background: #f9fafb; }
+.critical { color: #dc2626; font-weight: 600; }
+.fixed { color: #16a34a; font-weight: 600; }
+.tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.85rem; font-weight: 500; }
+.tag-arch { background: #fef3c7; color: #92400e; }
+.tag-stale { background: #fee2e2; color: #991b1b; }
+.tag-gap { background: #e0e7ff; color: #3730a3; }
+code { background: #f3f4f6; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+.summary-box { background: #f0fdf4; border: 1px solid #86efac; border-radius: 8px; padding: 1rem 1.5rem; margin: 1rem 0; }
+</style>
+</head>
+<body>
+<h1>RFC-050 &amp; RFC-051 — Iteration 3 Review Report</h1>
+<p><strong>Date:</strong> 2026-09-24 &nbsp;|&nbsp; <strong>Iteration:</strong> 3 of rfc-iterate &nbsp;|&nbsp; <strong>Reviewer agents:</strong> doc-id-convergence, triad-cross-check</p>
+
+<div class="summary-box">
+<strong>Summary:</strong> Two focused review agents found 6 issues — 1 architectural correction (save_raw insertion point), 1 missing task coverage (content-type fix), and 4 stale text references from the Iteration 2 D5 redefinition. All 6 resolved in this iteration via 9 patches across 4 files.
+</div>
+
+<h2>Review Agents &amp; Findings</h2>
+
+<h3>Agent 1: doc-id-convergence</h3>
+<p>Verified whether <code>doc_id</code> is available at the <code>_convert_to_tree</code> convergence point (~L1728).</p>
+
+<table>
+<tr><th>#</th><th>Finding</th><th>Type</th><th>Resolution</th></tr>
+<tr>
+  <td>F1</td>
+  <td><span class="critical">doc_id NOT available at convergence point.</span> Generated later as <code>uuid4()</code> in <code>_persist_tree_result</code> / <code>_persist_flat_result</code>. The RFC's <code>state.result.get("doc_id", filename)</code> pattern would ALWAYS fall back to <code>filename</code>.</td>
+  <td><span class="tag tag-arch">Architecture</span></td>
+  <td><span class="fixed">FIXED</span> — Moved save_raw insertion to persist methods where doc_id exists. Updated RFC AC1, Design §2, Property 2, Task 3.1.</td>
+</tr>
+<tr>
+  <td>F2</td>
+  <td><code>save_raw</code> already wired in both persist methods for raw file bytes (<code>file_bytes</code>). The extracted markdown save is an additional call alongside the existing one.</td>
+  <td><span class="tag tag-arch">Architecture</span></td>
+  <td><span class="fixed">INCORPORATED</span> — Task 3.1 now references "after the existing save_raw call".</td>
+</tr>
+</table>
+
+<h3>Agent 2: triad-cross-check</h3>
+<p>Cross-checked all 6 triad files for consistency: deliverable↔design↔task mapping, priority labels, effort estimates, amendment dates, task numbering.</p>
+
+<table>
+<tr><th>#</th><th>Finding</th><th>Type</th><th>Resolution</th></tr>
+<tr>
+  <td>F3</td>
+  <td>Content-type fix (<code>.md → text/markdown</code>) referenced in Design §Content-Type Fix (L225) but no task covers it.</td>
+  <td><span class="tag tag-gap">Missing task</span></td>
+  <td><span class="fixed">FIXED</span> — Added as sub-bullet of Task 3.1 per user decision.</td>
+</tr>
+<tr>
+  <td>F4</td>
+  <td>RFC-051 dependency graph Wave 1 lists <code>["1.2", "2"]</code> but deletion is now task 1.3 (1.2 is "Remove active test references"). Missing task 1.3.</td>
+  <td><span class="tag tag-stale">Stale graph</span></td>
+  <td><span class="fixed">FIXED</span> — Wave 1 now <code>["1.2", "1.3", "2"]</code>.</td>
+</tr>
+<tr>
+  <td>F5</td>
+  <td>Design doc D5 Architecture Decision (L91) still describes parallelization via <code>asyncio.gather</code>, says P1, claims "no shared state" — contradicts Iteration 2 amendments.</td>
+  <td><span class="tag tag-stale">Stale text</span></td>
+  <td><span class="fixed">FIXED</span> — Rewritten to describe optimization, P2, shared mutable state.</td>
+</tr>
+<tr>
+  <td>F6</td>
+  <td>Tasks-050 Notes section: "Recovery loop parallelization (Wave 4) is the highest-risk change"</td>
+  <td><span class="tag tag-stale">Stale text</span></td>
+  <td><span class="fixed">FIXED</span> — Updated to "Recovery method optimization (Wave 4) is P2 / low-medium risk".</td>
+</tr>
+<tr>
+  <td>F7</td>
+  <td>Task 9.2: "recovery parallelization" in corpus validation description.</td>
+  <td><span class="tag tag-stale">Stale text</span></td>
+  <td><span class="fixed">FIXED</span></td>
+</tr>
+<tr>
+  <td>F8</td>
+  <td>Dependency graph Wave 6 label: "Recovery parallelization".</td>
+  <td><span class="tag tag-stale">Stale text</span></td>
+  <td><span class="fixed">FIXED</span> — Updated to "Recovery method optimization".</td>
+</tr>
+</table>
+
+<h3>Positive Confirmations</h3>
+<ul>
+<li>All deliverables (D1-D5 for RFC-050, D1-D4 for RFC-051) have corresponding design sections AND tasks — no orphans.</li>
+<li>Priority labels consistent across RFC ↔ Tasks for all deliverables.</li>
+<li>Effort estimates consistent: RFC-050 sums to 20-24h, RFC-051 to 11-12h.</li>
+<li>All amendment markers correctly dated 2026-09-24.</li>
+<li>Task numbering in RFC-051 correct after 1.2 insertion (old 1.2 → 1.3).</li>
+</ul>
+
+<h2>Patches Applied</h2>
+
+<table>
+<tr><th>#</th><th>File</th><th>Section</th><th>Change</th></tr>
+<tr><td>P1</td><td>design-rfc050</td><td>Architecture Decisions, D5</td><td>Rewritten: parallelization → optimization, P1→P2, removed "no shared state" claim</td></tr>
+<tr><td>P2</td><td>design-rfc050</td><td>Service Contract §2 (save_raw)</td><td>"Called from" updated: convergence point → persist methods</td></tr>
+<tr><td>P3</td><td>design-rfc050</td><td>Property 2</td><td>Updated to reference persist methods, doc_id availability</td></tr>
+<tr><td>P4</td><td>rfc-050</td><td>R3 AC1</td><td>Insertion point: convergence → persist methods, filename → doc_id</td></tr>
+<tr><td>P5</td><td>tasks-rfc050</td><td>Task 3.1</td><td>Rewritten for persist methods + content-type sub-bullet added</td></tr>
+<tr><td>P6</td><td>tasks-rfc050</td><td>Notes</td><td>"Recovery loop parallelization" → "Recovery method optimization"</td></tr>
+<tr><td>P7</td><td>tasks-rfc050</td><td>Task 9.2</td><td>"recovery parallelization" → "recovery method optimization"</td></tr>
+<tr><td>P8</td><td>tasks-rfc050</td><td>Dependency graph Wave 6</td><td>Label: "Recovery parallelization" → "Recovery method optimization"</td></tr>
+<tr><td>P9</td><td>tasks-rfc051</td><td>Dependency graph Wave 1</td><td>Added task 1.3, updated label</td></tr>
+</table>
+
+<h2>Iteration History</h2>
+<table>
+<tr><th>Iteration</th><th>Focus</th><th>Findings</th><th>Patches</th></tr>
+<tr><td>1</td><td>Initial full review (3 agents)</td><td>~15 findings</td><td>See <code>audit/RFC050_051_REVIEW_2026-09-24.html</code></td></tr>
+<tr><td>2</td><td>Deep dives: recovery parallelization, save_raw integration, script references</td><td>8 findings</td><td>14 patches across 6 files</td></tr>
+<tr><td>3</td><td>doc_id availability at convergence, triad cross-consistency</td><td>6 findings</td><td>9 patches across 4 files</td></tr>
+</table>
+
+</body>
+</html>

@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RFC-050 &amp; RFC-051 Iteration 6 Review Report</title>
+<style>
+body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; color: #1a1a1a; }
+h1 { border-bottom: 3px solid #7c3aed; padding-bottom: 0.5rem; }
+h2 { color: #7c3aed; margin-top: 2rem; }
+h3 { color: #6d28d9; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d1d5db; padding: 0.5rem 0.75rem; text-align: left; vertical-align: top; }
+th { background: #f5f3ff; font-weight: 600; }
+tr:nth-child(even) { background: #f9fafb; }
+.critical { color: #dc2626; font-weight: 600; }
+.fixed { color: #16a34a; font-weight: 600; }
+.open { color: #b45309; font-weight: 600; }
+.tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.85rem; font-weight: 500; }
+.tag-gap { background: #fee2e2; color: #991b1b; }
+.tag-scope { background: #fef3c7; color: #92400e; }
+.tag-stale { background: #e0e7ff; color: #3730a3; }
+.summary-box { background: #f0fdf4; border: 1px solid #86efac; border-radius: 8px; padding: 1rem 1.5rem; margin: 1rem 0; }
+.warn-box { background: #fffbeb; border: 1px solid #fcd34d; border-radius: 8px; padding: 1rem 1.5rem; margin: 1rem 0; }
+code { background: #f3f4f6; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+.wrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+<h1>RFC-050 &amp; RFC-051 — Iteration 6 Review Report (focus: D4 <code>--from-raw</code>)</h1>
+<p><strong>Date:</strong> 2026-09-24 &nbsp;|&nbsp; <strong>Iteration:</strong> 6 of rfc-iterate &nbsp;|&nbsp; <strong>Reviewer agents:</strong> D4 claim validator, D4 feasibility reviewer, D4 lead analyst &nbsp;|&nbsp; <strong>Coordinator verification:</strong> source checked via codebase-memory</p>
+
+<div class="summary-box">
+<strong>Summary:</strong> D4 as written could not be built. The cached <code>.extracted.md</code> has already been through normalization and recovery, so "re-run all normalization stages" would apply them twice, and two of the three stages need the PDF. R4 AC1's precondition, "hash unchanged", is exactly the case <code>index()</code> dedups away. A re-persist would mint a second <code>doc_id</code>. The HTTP upload route has no way to name a cached document. The state-reconstruction task listed four fields that do not exist.
+<br><br>
+Per the user, D4 is now a <strong>command-line dry-run replay</strong> for stored documents and rejected (quarantined) ones:
+<ul>
+<li>It keeps a <strong>state file for both</strong> stored and quarantined documents.</li>
+<li><strong>Recovery is on for stored documents</strong>, with <code>--no-recovery</code> to skip it.</li>
+<li>It <strong>writes nothing</strong>, enforced by a write barrier.</li>
+</ul>
+The coordinator found that the verdict is computed <em>inside</em> the save methods, so a dry run has to block writes rather than return early. The same check found a P0 bug in D3: <code>state.md_content</code> can be <code>None</code>.
+<br><br>
+G1 no longer counts D4, and Task 1.5 adds an extraction / tree-build timing split. RFC-050's effort estimate rises from 25.5-33.5h to 31-35h. RFC-051 is unchanged: its D4 is an unrelated deliverable (decision-points YAML).
+</div>
+
+<h2>User Decisions (GRILL)</h2>
+<div class="wrap"><table>
+<tr><th>Question</th><th>Choice</th><th>Effect</th></tr>
+<tr><td>How much of D4 to keep</td><td><strong>Command-line dry run</strong> (recommended)</td><td>New R4 AC1-AC7. HTTP/arq and re-persist become NG5; replaying normalization stages becomes NG6. Task 5.2 superseded.</td></tr>
+<tr><td>Where replay state comes from</td><td><strong>Save a state file for both stores</strong></td><td>New R3 AC5 and Task 3.1b (Wave 2). Each rejected document gets a fourth quarantine key, <code>quarantine/&lt;sha256&gt;.extracted.state.json</code>.</td></tr>
+<tr><td>Recovery during a replay</td><td><strong>On for stored docs</strong>, <code>--no-recovery</code> to skip</td><td>R4 AC4 and Task 5.2d. The original is fetched from <code>uploads/&lt;doc_id&gt;/</code>. Rejected documents replay with recovery off.</td></tr>
+<tr><td>Timing split for G1</td><td><strong>Add it</strong> (recommended)</td><td>New Task 1.5 (<code>pageindex_ingest_stage_seconds{stage}</code>). G1's "all deliverables" is now P0 + D5.</td></tr>
+</table></div>
+
+<h2>Review Agents &amp; Findings</h2>
+
+<h3>Agent 1: D4 claim validator</h3>
+<div class="wrap"><table>
+<tr><th>#</th><th>Finding</th><th>Type</th><th>Resolution</th></tr>
+<tr><td>V-1/V-2</td><td>The "CLI 2-layer / HTTP 4-layer" split is wrong. Both paths meet at <code>_run_converter_subprocess</code> (<code>worker/subprocess_mgr.py:243</code>) → <code>converters_cli</code> → <code>index()</code>. Design AD D4 still said the CLI goes through HTTP, and still gave 8-10h.</td><td><span class="tag tag-stale">Stale / wrong</span></td><td><span class="fixed">FIXED</span> — the RFC D4, design AD D4 and Task 5.1 were rewritten.</td></tr>
+<tr><td>V-4</td><td>Design §3 showed <code>_process_one(path, *, from_raw)</code>. The real signature is <code>_process_one(sem, file, run_id)</code> (<code>preprocess_client.py:154</code>). <em>Verified by coordinator.</em></td><td><span class="tag tag-stale">Wrong signature</span></td><td><span class="fixed">FIXED</span> — §3 marked superseded; new replay contract.</td></tr>
+<tr><td>V-5</td><td>R4 AC1's "hash unchanged" is exactly the case in which <code>index()</code> returns early via <code>hash_cache_get</code> (<code>client/indexer.py:2521</code>). <em>Verified.</em></td><td><span class="tag tag-gap">Blocker</span></td><td><span class="fixed">FIXED</span> — the replay bypasses dedup (R4 AC1, Task 5.2a).</td></tr>
+<tr><td>V-6</td><td>None of <code>state.content_class</code>, <code>converter_name</code>, <code>arabic_ratio</code> or <code>classification</code> exists. <code>ExtractionState</code> has 25 fields (<code>helpers/types.py:198-261</code>). <em>Verified.</em></td><td><span class="tag tag-gap">Fabricated names</span></td><td><span class="fixed">FIXED</span> — the real field list is in R3 AC5 and Task 3.1b.</td></tr>
+<tr><td>V-7</td><td><code>provenance.extraction_source</code> does not exist anywhere.</td><td><span class="tag tag-gap">Fabricated field</span></td><td><span class="fixed">FIXED</span> — it becomes a field in the report; a dry run stores nothing.</td></tr>
+<tr><td>V-8</td><td>The cached text comes after the stages and after recovery; re-running the stages is infeasible.</td><td><span class="tag tag-gap">Blocker</span></td><td><span class="fixed">FIXED</span> — R4 AC2 (no re-normalization), NG6, and a Glossary fix.</td></tr>
+<tr><td>V-10</td><td>A re-persist mints a new <code>uuid4</code> (<code>client/indexer.py:2304</code>, <code>images.py:205</code>), creating a duplicate document.</td><td><span class="tag tag-gap">Identity gap</span></td><td><span class="fixed">AVOIDED</span> — a dry run never persists; re-persist is NG5.</td></tr>
+<tr><td>V-12</td><td>Checkpoints 4, 6 and 8 name <code>tests/test_indexer.py</code> / <code>tests/test_preprocess.py</code>, which don't exist. <em>Verified with <code>ls tests/</code>.</em></td><td><span class="tag tag-stale">Wrong paths</span></td><td><span class="fixed">FIXED</span> — existing files used.</td></tr>
+<tr><td>V-13</td><td><code>converters_cli</code> probes the input file before <code>index()</code> (<code>converters_cli.py:139</code>).</td><td><span class="tag tag-gap">Gap</span></td><td><span class="fixed">FIXED</span> — the probe is skipped on replay, and handshake values come from the state file.</td></tr>
+</table></div>
+
+<h3>Agent 2: D4 feasibility reviewer</h3>
+<div class="wrap"><table>
+<tr><th>#</th><th>Finding</th><th>Type</th><th>Resolution</th></tr>
+<tr><td>F-1</td><td>Of the three stages, only <code>normalize_indented_headings</code> works on markdown alone. <code>document_level_text_fallback</code> and <code>splice_landscape_fallback</code> are partials over <code>pdf_path</code> (<code>converters/pipeline.py:774-784</code>). <em>Verified.</em></td><td><span class="tag tag-gap">Blocker</span></td><td><span class="fixed">FIXED</span> — NG6.</td></tr>
+<tr><td>F-2</td><td>"Identical output" can't hold: <code>_run_md_to_tree</code> generates LLM summaries and a document description.</td><td><span class="tag tag-gap">Property wrong</span></td><td><span class="fixed">FIXED</span> — Property 4 now requires structural equivalence; tests stub the LLM.</td></tr>
+<tr><td>F-3</td><td>State fields fall into three groups: those that must be stored, those that can be derived, and those that must never be restored.</td><td><span class="tag tag-scope">Design input</span></td><td><span class="fixed">ADOPTED</span> — R3 AC5, Task 3.1b.</td></tr>
+<tr><td>F-4</td><td><span class="critical">P0 bug in D3:</span> <code>state.md_content</code> is <code>None</code> in three cases: <code>.md</code>/<code>.txt</code> inputs, the LibreOffice <code>page_index</code> route, and the fallback when every converter fails. <code>.encode()</code> would raise after <code>save_doc</code>. <em>Verified at <code>client/indexer.py:1199-1231</code>.</em></td><td><span class="tag tag-gap">P0 correctness</span></td><td><span class="fixed">FIXED</span> — guard added to R3 AC1, Task 3.1 and Property 2; test added to 3.5.</td></tr>
+<tr><td>F-5</td><td>Recovery re-reads the original file.</td><td><span class="tag tag-scope">Design choice</span></td><td><span class="fixed">RESOLVED (user)</span> — on for stored docs using the fetched original; off for rejected docs.</td></tr>
+<tr><td>F-6</td><td>Dedup and <code>doc_id</code> minting defeat any re-persist.</td><td><span class="tag tag-gap">Blocker</span></td><td><span class="fixed">AVOIDED</span> — dry run.</td></tr>
+<tr><td>F-7</td><td>A <code>Form(False)</code> flag on <code>POST /upload/files</code> would force a re-upload.</td><td><span class="tag tag-gap">Wrong shape</span></td><td><span class="fixed">FIXED</span> — Task 5.2 superseded; NG5.</td></tr>
+<tr><td>F-8</td><td>Quarantine has no original bytes and no <code>doc_id</code>; replaying rejected documents is command-line only.</td><td><span class="tag tag-scope">HR5</span></td><td><span class="fixed">ADOPTED</span> — R4 AC5, Property 4b, new gate <code>check_quarantine_reader_cli_only</code>.</td></tr>
+<tr><td>F-10</td><td>Image files use a special <code>GarbleConfig</code> and a post-validation fallback that needs <code>img_bytes</code>.</td><td><span class="tag tag-gap">Gap</span></td><td><span class="fixed">FIXED</span> — the replay seam keeps the post-conversion block unchanged; Task 5.2a handles <code>img_bytes</code>.</td></tr>
+</table></div>
+
+<h3>Agent 3: D4 lead analyst</h3>
+<div class="wrap"><table>
+<tr><th>#</th><th>Finding</th><th>Type</th><th>Resolution</th></tr>
+<tr><td>Value</td><td>No stage-level timing exists. From-raw still pays for every LLM summary call. "Extraction is the most expensive stage" is unmeasured. G1 gets nothing from D4.</td><td><span class="tag tag-scope">Evidence gap</span></td><td><span class="fixed">FIXED</span> — Context amended; Task 1.5 timing split; G1 = P0 + D5.</td></tr>
+<tr><td>Overlap</td><td><code>.md</code> re-ingest, <code>recompute_verdicts</code> and <code>update_golden_files</code> already cover iterating on gates and verdicts. What D4 adds is replaying tree building without Docling, including for rejected documents.</td><td><span class="tag tag-scope">Scope</span></td><td>Informed the user's scope choice.</td></tr>
+<tr><td>L-1…L-10</td><td>Glossary vs R3 AC1 contradiction; stale AD D4; effort figures disagreeing across the three files; wrong <code>_process_one</code>; HTTP has no way to name a document; no home for <code>provenance</code>; identity; recovery policy; state list understated; G1 counted D4.</td><td><span class="tag tag-stale">Inconsistency</span></td><td><span class="fixed">FIXED</span> — all ten addressed in this pass.</td></tr>
+<tr><td>Stale D5</td><td>Design Overview, Key Principle 4, the mermaid <code>raw/</code> prefix, the "Recovery Parallelization" error-handling section and the test categories all described the parallelization that Iteration 2 removed.</td><td><span class="tag tag-stale">Stale</span></td><td><span class="fixed">FIXED</span></td></tr>
+</table></div>
+
+<h2>Coordinator Verification (new this iteration)</h2>
+<ul>
+<li><strong>The verdict lives inside the save methods.</strong> <code>compute_verdict</code> is called at <code>client/indexer.py:2316</code> (<code>_persist_tree_result</code>, <code>inspector_class=pdf_classification["pdf_type"]</code>) and <code>:2025</code> (<code>_persist_flat_result</code>, which also runs the RFC-047 Surya density fallback). Returning before the save step would skip the verdict, so the design uses a <strong>write barrier</strong> at the MinIO, Redis and registry clients in the replay child (Task 5.2b, Property 4a, Risk 6).</li>
+<li><strong>The quarantine prefix is confined to one file.</strong> <code>check_quarantine_prefix_confined</code> (<code>scripts/gates/source_invariants.py:2039-2064</code>) allows the <code>"quarantine/"</code> literal only in <code>storage/documents.py</code>. The reader goes there, and a new gate check limits its callers to <code>preprocess_client.py</code>.</li>
+<li><strong>Current quarantine keys.</strong> <code>_erase_quarantine</code> and <code>erase_quarantine</code> each remove exactly <code>.json</code> and <code>.meta.json</code> today (<code>storage/documents.py:612-629</code>, <code>:945-966</code>). After D3 there will be four keys.</li>
+<li><strong>Some PDFs build their tree without markdown.</strong> When every converter fails, the tree comes from <code>_run_page_index_retrying(file_path)</code>, an LLM pass over the PDF, and there is no markdown. Those documents can't be replayed and return <code>no_raw_cache</code>.</li>
+<li><strong><code>RtlDecision</code> is a frozen dataclass</strong> (<code>script.py:668-682</code>), so it can be serialised.</li>
+</ul>
+
+<h2>Changes by Artifact</h2>
+<h3>RFC-050</h3>
+<ul>
+<li>Context: the "extraction is the most expensive stage" claim is marked as unmeasured.</li>
+<li>Relationship to RFC-049: fourth quarantine object.</li>
+<li>G1: "all deliverables" now means P0 + D5. G4 rewritten as the dry-run replay.</li>
+<li>New non-goals NG5 (HTTP and re-persist) and NG6 (replaying normalization stages).</li>
+<li>Glossary: Raw Output redefined as post-stages; Converter Subprocess module corrected; new State Sidecar and Replay terms.</li>
+<li>R3: AC1 gets the <code>None</code> guard; AC2 and AC3 add the sidecar and the fourth key; new AC5 (sidecar field list).</li>
+<li>R4: user story and AC1-AC3 replaced by AC1-AC7.</li>
+<li>D3: now 7.5h. D4 rewritten. D6 lists the fourth object.</li>
+<li>Sequencing table and totals updated; Wave 3 effort breakdown added.</li>
+<li>Test Strategy items 3 and 4; Risk 4 amended; new Risk 6; Consequences.</li>
+</ul>
+<h3>Design</h3>
+<ul>
+<li>Overview; Key Principles 2 and 4; mermaid <code>raw/</code> label; the sequence diagram corrected.</li>
+<li>AD D4 rewritten.</li>
+<li>§2 adds the state sidecar contract and the <code>None</code> guard.</li>
+<li>§3's old sketch is superseded, and a new <em>Replay contract</em> is added.</li>
+<li>Storage layout gains two sidecar entries. Erasure Note updated.</li>
+<li>Properties 2 and 3 amended; Property 4 restated as structural equivalence; new Properties 4a (writes nothing) and 4b (quarantine reader is CLI-only).</li>
+<li>Error handling for the from-raw path; the stale D5 block fixed; testing layers, categories and scenarios updated.</li>
+</ul>
+<h3>Tasks</h3>
+<ul>
+<li>Overview updated to 9 properties.</li>
+<li>New Task 1.5 (stage timing).</li>
+<li>Task 3.1 gets the <code>None</code> guard; 3.1a gets the fourth key; new Task 3.1b (state sidecar); 3.5 gets the guard test.</li>
+<li>Task 5 header and 5.1 rewritten; 5.2 superseded; 5.2a rewritten; new 5.2b (write barrier), 5.2c (readers and HR5 gate) and 5.2d (recovery, report, diff); 5.3 rewritten.</li>
+<li>Checkpoints 4, 6 and 8 now point at real test files.</li>
+<li>Tasks 9.1 and 9.2 use the stage split. Notes and the dependency graph updated (Wave 0 +1.5, Wave 2 +3.1b, Wave 4 = 5.1/5.2a-d).</li>
+</ul>
+<h3>RFC-051</h3>
+<p>No change. Its D4 (decision-points YAML) is unrelated to RFC-050 D4.</p>
+
+<h2>Effort Revision (RFC-050)</h2>
+<div class="wrap"><table>
+<tr><th>Wave</th><th>Before (Iter 5)</th><th>After (Iter 6)</th><th>Why</th></tr>
+<tr><td>1 — D1 + D2</td><td>2h</td><td>3h</td><td>+1h Task 1.5 stage timing split</td></tr>
+<tr><td>2 — D3 + D6</td><td>4.5h</td><td>8h</td><td>+3h state sidecar at 4 sites and the fourth quarantine key; +0.5h <code>None</code> guard</td></tr>
+<tr><td>3 — D4</td><td>12-16h</td><td>13-15h</td><td>HTTP and re-persist dropped, offset by the reject-side sidecar, recovery and the write barrier</td></tr>
+<tr><td>4 — D5</td><td>4-6h</td><td>4-6h</td><td>—</td></tr>
+<tr><td>5 — Validation</td><td>3h</td><td>3h</td><td>—</td></tr>
+<tr><td><strong>Total</strong></td><td><strong>25.5-33.5h</strong></td><td><strong>31-35h</strong></td><td></td></tr>
+</table></div>
+
+<div class="warn-box">
+<strong>Open items for implementation (not verified in this iteration):</strong>
+<ul>
+<li>The names of the Redis client and registry connection factories that the write barrier wraps. Task 5.2b locates them; the MinIO one is <code>_minio_ops.get_minio()</code>.</li>
+<li>Which flat-route consumers read <code>pic_results[].png_bytes</code>. The replay skips byte-dependent enrichment (Task 5.2a).</li>
+<li>Whether <code>pre_classification</code> is in scope at each save and reject site (Task 3.1b threads it where missing).</li>
+<li>Task 3.1b (the state sidecar, 3h) sits in <strong>P0</strong> Wave 2 by decision. If D4 is later cut, it goes too.</li>
+<li>New tests should go in existing files per <code>tests/TEST_INDEX.yaml</code> and <code>tests/TEST_BUDGET.baseline</code>.</li>
+</ul>
+</div>
+</body>
+</html>

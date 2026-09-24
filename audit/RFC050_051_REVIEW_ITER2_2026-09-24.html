@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RFC-050 & RFC-051 Review — Iteration 2</title>
+<style>
+body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; color: #1a1a1a; }
+h1 { border-bottom: 2px solid #2563eb; padding-bottom: 0.5rem; }
+h2 { color: #2563eb; margin-top: 2rem; }
+h3 { color: #4b5563; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #d1d5db; padding: 0.5rem 0.75rem; text-align: left; }
+th { background: #f3f4f6; }
+.critical { background: #fef2f2; border-left: 4px solid #dc2626; padding: 0.75rem; margin: 1rem 0; }
+.resolved { background: #f0fdf4; border-left: 4px solid #16a34a; padding: 0.75rem; margin: 1rem 0; }
+.info { background: #eff6ff; border-left: 4px solid #2563eb; padding: 0.75rem; margin: 1rem 0; }
+code { background: #f3f4f6; padding: 0.15rem 0.3rem; border-radius: 3px; font-size: 0.9em; }
+</style>
+</head>
+<body>
+<h1>RFC-050 & RFC-051 — Iteration 2 Review Report</h1>
+<p><strong>Date:</strong> 2026-09-24 &nbsp;|&nbsp; <strong>Iteration:</strong> 2 of rfc-iterate cycle</p>
+
+<h2>Review Agents</h2>
+<table>
+<tr><th>Agent</th><th>Focus</th><th>Duration</th><th>Tool Calls</th></tr>
+<tr><td>recovery-deep-dive</td><td>D5 recovery method independence analysis</td><td>79s</td><td>8</td></tr>
+<tr><td>save-raw-integration-point</td><td>D3 exact insertion point and variable names</td><td>116s</td><td>11</td></tr>
+<tr><td>script-reference-check</td><td>RFC-051 dead script live reference verification</td><td>69s</td><td>8</td></tr>
+</table>
+
+<h2>Findings</h2>
+
+<h3>Finding 1 (CRITICAL): D5 Recovery Parallelization Is Architecturally Infeasible</h3>
+<div class="critical">
+<p><strong>Source:</strong> recovery-deep-dive agent</p>
+<p><strong>Issue:</strong> All 8 recovery methods in <code>RecoveryMixin</code> (<code>client/recovery.py</code>) mutate the same shared <code>ExtractionState</code> object. The GateSpec dispatch loop in <code>index()</code> (L2613-2660) iterates in severity order — each method's eligibility depends on state left by prior methods (e.g., if garble OCR fires and sets <code>state.ok = True</code>, subsequent methods skip). Sequential ordering is a <strong>correctness invariant</strong>, not a performance bottleneck.</p>
+<p><strong>Evidence:</strong> 8 methods analyzed: <code>_recover_garble_ocr</code>, <code>_recover_low_content_ocr</code>, <code>_recover_image_dominant_ocr</code>, <code>_recover_rtl_repair</code>, <code>_recover_rtl_flat_compare</code>, <code>_recover_vlm_fallback</code>, <code>_recover_flat_prefer</code>, <code>_recover_landscape_reroute</code>. All write to <code>state.result</code>, <code>state.ok</code>, <code>state.route</code>, <code>state.first_defect</code> via shared <code>finalize_gate_and_route</code>.</p>
+</div>
+<div class="resolved">
+<p><strong>Resolution:</strong> User chose to redefine D5 as "optimize individual methods" (profile slowest, reduce redundant reconversions, cache intermediate results). Reclassified P1→P2. Effort revised 6h→4-6h. All 3 triad files amended.</p>
+</div>
+
+<h3>Finding 2 (CRITICAL): D3 save_raw Insertion Point Is Architecturally Wrong</h3>
+<div class="critical">
+<p><strong>Source:</strong> save-raw-integration-point agent</p>
+<p><strong>Issue:</strong> RFC stated "AFTER successful PDF extraction AND before <code>_run_stages</code>" but <code>_run_stages</code> runs <strong>inside</strong> each converter function (e.g., <code>pdf_to_markdown_docling</code> at pipeline.py:714), NOT in <code>_convert_to_tree</code>. By the time <code>state.md_content</code> is set in <code>_convert_to_tree</code>, stages have already run.</p>
+<p><strong>Evidence:</strong> <code>_run_stages</code> called at pipeline.py:714 inside <code>pdf_to_markdown_docling</code>. <code>state.md_content</code> set at multiple convergence points (L1213, L1244, L1255, L1430, L1551, L1562, L1712, L1716). Additional concern: <code>doc_id</code> may not be available at the convergence point — available via <code>state.result.get("doc_id", filename)</code>.</p>
+</div>
+<div class="resolved">
+<p><strong>Resolution:</strong> User chose "post-stages at convergence point" (~L1728, before <code>prepare_tree</code>/<code>validate_tree</code>). Single insertion point covers all 6+ converter paths. All 3 triad files amended with corrected insertion point and <code>doc_id</code> access pattern.</p>
+</div>
+
+<h3>Finding 3 (HIGH): RFC-051 Scripts Have Active Test References</h3>
+<div class="critical">
+<p><strong>Source:</strong> script-reference-check agent</p>
+<p><strong>Issue:</strong> 2 of 4 "dead" scripts have active test coverage that would break on deletion:</p>
+<ul>
+<li><code>scripts/ocr_spike_eval.py</code>: <code>tests/test_ocr_fallback.py</code> (6 lines), <code>tests/TEST_INDEX.yaml</code>, <code>docker-compose.yml</code></li>
+<li><code>scripts/facade_surface_measure.py</code>: <code>tests/test_source_invariants.py</code> (import + invariant test for RFC-045 pins)</li>
+</ul>
+</div>
+<div class="resolved">
+<p><strong>Resolution:</strong> User chose "delete scripts + remove test coverage". New task 1.2 added to RFC-051 tasks with explicit file:line references for all cleanup targets. D1 effort revised 1h→2-3h. Total RFC-051 effort revised 10h→11-12h.</p>
+</div>
+
+<h3>Finding 4 (NOTABLE): hash_cache_migrate.py Has Gate Whitelist Entries</h3>
+<div class="info">
+<p><strong>Source:</strong> script-reference-check agent</p>
+<p><strong>Issue:</strong> <code>src/pageindex_mcp/hash_cache_migrate.py</code> has zero Python callers but 6 grep whitelist entries in <code>scripts/gates/static.sh</code> (lines 175, 186, 198, 202, 216, 222). Deletion is safe but leaves dead whitelist comments.</p>
+</div>
+<div class="resolved">
+<p><strong>Resolution:</strong> Cleanup included in new task 1.2 — remove whitelist entries in same commit as script deletion.</p>
+</div>
+
+<h2>Amendments Applied</h2>
+<table>
+<tr><th>File</th><th>Patches</th><th>Summary</th></tr>
+<tr><td>agents/rfcs/050-*.md</td><td>8</td><td>R5 redefined, D3 insertion point corrected, D5 reclassified P2, effort/risk updated</td></tr>
+<tr><td>agents/designs/design-rfc050-*.md</td><td>3</td><td>Property 2 + 5 updated, save_raw service contract corrected</td></tr>
+<tr><td>agents/tasks/tasks-rfc050-*.md</td><td>2</td><td>Task 3.1 insertion point corrected, Wave 4 redefined as optimization</td></tr>
+<tr><td>agents/rfcs/051-*.md</td><td>4</td><td>R1 AC3 expanded with confirmed refs, D1 updated, effort revised</td></tr>
+<tr><td>agents/designs/design-rfc051-*.md</td><td>1</td><td>Property 1 amended with confirmed reference details</td></tr>
+<tr><td>agents/tasks/tasks-rfc051-*.md</td><td>1</td><td>New task 1.2 with explicit cleanup targets</td></tr>
+</table>
+
+<h2>Claim Verification Summary</h2>
+<table>
+<tr><th>Claim</th><th>Verified?</th><th>Method</th></tr>
+<tr><td>Recovery methods share mutable ExtractionState</td><td>YES</td><td>codebase-memory-mcp code analysis</td></tr>
+<tr><td>_run_stages runs inside converters, not _convert_to_tree</td><td>YES</td><td>codebase-memory-mcp trace_path + snippet</td></tr>
+<tr><td>state.md_content set at convergence ~L1728</td><td>YES</td><td>code snippet analysis</td></tr>
+<tr><td>doc_id available via state.result.get("doc_id")</td><td>NEEDS VERIFICATION</td><td>May not be populated at convergence point</td></tr>
+<tr><td>ocr_spike_eval.py has test refs in test_ocr_fallback.py</td><td>YES</td><td>grep -n across codebase</td></tr>
+<tr><td>facade_surface_measure.py imported by test_source_invariants.py</td><td>YES</td><td>grep -n across codebase</td></tr>
+<tr><td>hash_cache_migrate.py has static.sh whitelist entries</td><td>YES</td><td>grep -n across codebase</td></tr>
+<tr><td>table_separator_baseline.py has zero source/test refs</td><td>YES</td><td>grep -rn across codebase</td></tr>
+</table>
+
+<h2>Open Items for Next Iteration (if any)</h2>
+<ul>
+<li><code>doc_id</code> availability at <code>_convert_to_tree</code> convergence point needs implementation-time verification</li>
+<li>Content-type fix for <code>save_raw</code> (<code>.md</code> → <code>text/markdown</code>) noted in design doc but not yet a separate task</li>
+</ul>
+</body>
+</html>

@@ -22,6 +22,10 @@ governed_by:
 
 # Implementation Plan: Contract Drift Remediation
 
+> **Partially superseded by [[RFC-050]] D6 (2026-09-24):** [Task 7.5c](#75c-configure-the-quarantine-lifecycle-ttl) (30-day quarantine lifecycle TTL) is **closed as superseded, not done** — do not apply the `mc ilm` rule. TTL wording in Tasks 7.8 / 7.9 and the Notes no longer applies. All other tasks stand.
+>
+> **(Amendment 2026-09-24, RFC-050 Iter 8): REVERSED.** RFC-050 D6 was struck (it conflicts with Hard Rule 5). Task 7.5c is **reopened**, and the TTL wording in 7.8 / 7.9 and the Notes applies again. The lifecycle rule, now including `quarantine/*.extracted.*`, is implemented and tested by [[RFC-050]] Task 3.6.
+
 > **v2 consolidation 2026-09-23 (iter 3).** This file is now one authoritative plan, and everything above [Appendix Z](#appendix-z-iteration-history-verbatim-pre-v2-text) is current. The iteration-1/2 amendment markers and struck-through text are folded in, and the phases are listed **in wave order**. Task IDs and `<a id>` anchors are unchanged, so Phase 5 now appears after Phase 2, and new work gets new IDs. The complete pre-v2 file is preserved verbatim, including its old frontmatter, in a fenced block in Appendix Z, where its anchors do not render or collide. Status is `accepted` (approved for build), and `governs` became `governed_by`.
 >
 > Iteration 3 adds:
@@ -370,7 +374,7 @@ The gate counts are gate lines: 61 contract IDs plus 5 module-coverage lines mak
     - _Requirements:_ [R4 AC6](../rfcs/049-contract-drift-remediation.md#requirement-4-rejected-garbled-trees-are-quarantined-never-served-and-erasable-amendment-2026-09-23) | [CLAUDE.md HR2](../../CLAUDE.md#hard-rules)
     - _Properties:_ [Design Property 12b](../designs/design-rfc049-contract-drift-remediation.md#property-12b-the-quarantine-prefix-cannot-escape-the-hr2-guard)
 
-  - [x] <a id="75c-configure-the-quarantine-lifecycle-ttl"></a>7.5c Configure the quarantine lifecycle TTL — **operator/infra step**
+  - [ ] <a id="75c-configure-the-quarantine-lifecycle-ttl"></a>7.5c Configure the quarantine lifecycle TTL — **operator/infra step**. **(Amendment 2026-09-24, RFC-050 Iter 8): reopened, and delivered through [[RFC-050]] Task 3.6.** ~~**SUPERSEDED by [[RFC-050]] D6 (2026-09-24) — closed, not done.**~~ The rule was never applied (see STILL OPEN note below); do not apply it. Quarantine is bounded by clear-on-success (7.5a) and on-demand erasure (7.5d) only.
 
     - The repo has **no** MinIO lifecycle configuration today: there is no `set_bucket_lifecycle`, `LifecycleConfig` or `mc ilm` in `src/`, `scripts/`, `Makefile`, `docker-compose.yml`, `services/` or `docs/`.
     - **Operator step**, documented via [Task 7.8](#78-update-architecturemd):
