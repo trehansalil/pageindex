@@ -601,11 +601,19 @@ class TestWorkerJobBindsRunIdAndJobId:
                 await process_document_job(ctx, f"uploads/staging/{job_id}/report.pdf", job_id)
             return captured
 
-        generated = await _run({"redis": AsyncMock()}, "job-ctx")
+        def _redis():
+            # _set_job_status compare-and-sets through a Lua script; "OK" is
+            # the script's success return, and a bare AsyncMock reads as a
+            # refused transition.
+            r = AsyncMock()
+            r.eval = AsyncMock(return_value="OK")
+            return r
+
+        generated = await _run({"redis": _redis()}, "job-ctx")
         assert generated.get("job_id") == "job-ctx"
         assert generated.get("run_id")  # generated, non-empty
 
-        preassigned = await _run({"redis": AsyncMock(), "run_id": "run-preassigned"}, "job-ctx2")
+        preassigned = await _run({"redis": _redis(), "run_id": "run-preassigned"}, "job-ctx2")
         assert preassigned.get("run_id") == "run-preassigned"
 
         # The binding must not leak into the caller's own context afterward --
@@ -886,10 +894,13 @@ class TestIndexerBindsDocShaAndDocId:
 
 
 class TestLogConfigEnvSurface:
-    """R12.10: level, node sample, decisions on/off and content widening are
-    resolved ONCE at import, in ``obs/log_config.py`` alone, so the six
-    hot-path files can import a resolved constant instead of reading
-    ``os.environ`` per call."""
+    """R12.10: level, decisions on/off and content widening are resolved ONCE
+    at import, in ``obs/log_config.py`` alone, so the six hot-path files can
+    import a resolved constant instead of reading ``os.environ`` per call.
+
+    ``PAGEINDEX_LOG_NODE_SAMPLE`` was the fourth member of this surface until
+    RFC-049 removed it: nothing ever read ``LOG_NODE_SAMPLE``, so the variable
+    was a no-op knob that read as configurable."""
 
     def test_defaults_and_env_overrides_are_resolved_at_import(self, monkeypatch):
         import importlib
@@ -898,7 +909,6 @@ class TestLogConfigEnvSurface:
 
         env_vars = (
             "PAGEINDEX_LOG_LEVEL",
-            "PAGEINDEX_LOG_NODE_SAMPLE",
             "PAGEINDEX_LOG_DECISIONS",
             "PAGEINDEX_LOG_CONTENT",
         )
@@ -908,16 +918,13 @@ class TestLogConfigEnvSurface:
             mod = importlib.reload(log_config)
             assert mod.LOG_LEVEL == logging.INFO
             assert mod.LOG_DECISIONS_ENABLED is True
-            assert mod.LOG_NODE_SAMPLE == 0
             assert mod.LOG_CONTENT_WIDENED is False
 
             monkeypatch.setenv("PAGEINDEX_LOG_LEVEL", "debug")
-            monkeypatch.setenv("PAGEINDEX_LOG_NODE_SAMPLE", "25")
             monkeypatch.setenv("PAGEINDEX_LOG_DECISIONS", "off")
             monkeypatch.setenv("PAGEINDEX_LOG_CONTENT", "true")
             mod = importlib.reload(log_config)
             assert mod.LOG_LEVEL == logging.DEBUG
-            assert mod.LOG_NODE_SAMPLE == 25
             assert mod.LOG_DECISIONS_ENABLED is False
             assert mod.LOG_CONTENT_WIDENED is True
 
@@ -929,10 +936,10 @@ class TestLogConfigEnvSurface:
         finally:
             importlib.reload(log_config)
 
-    def test_switch_and_count_parsing_never_raise(self):
-        """Table-driven: both parsers must absorb anything an operator can put
-        in an env var, falling back to the documented default."""
-        from pageindex_mcp.obs.log_config import _parse_count, _parse_switch
+    def test_switch_parsing_never_raises(self):
+        """Table-driven: the parser must absorb anything an operator can put in
+        an env var, falling back to the documented default."""
+        from pageindex_mcp.obs.log_config import _parse_switch
 
         switch_cases = [
             ("on", True),
@@ -947,16 +954,10 @@ class TestLogConfigEnvSurface:
             ("", True),
             ("nonsense", True),
         ]
-        count_cases = [("0", 0), ("25", 25), ("-4", 0), ("abc", 0), ("", 0), (None, 0)]
-
         failures = [
             f"_parse_switch({raw!r}) -> {_parse_switch(raw, default=True)!r}, expected {exp!r}"
             for raw, exp in switch_cases
             if _parse_switch(raw, default=True) is not exp
-        ] + [
-            f"_parse_count({raw!r}) -> {_parse_count(raw, default=0)!r}, expected {exp!r}"
-            for raw, exp in count_cases
-            if _parse_count(raw, default=0) != exp
         ]
         assert not failures, "env parse mismatches:\n  " + "\n  ".join(failures)
 
@@ -1858,7 +1859,10 @@ class TestProcessDocumentJobStamping:
         from pageindex_mcp.worker import registry_mirror as _registry_mirror
 
         hset_calls = []
-        _store: dict = {}
+        # upload_app opens every job at PENDING before enqueueing; the worker's
+        # first write is PROCESSING, which the state machine accepts only from
+        # PENDING (or ERROR on a retry). Seed the precondition.
+        _store: dict = {"pageindex:job:job-1": {"status": "pending"}}
 
         class FakeRedis:
             async def hset(self, key, mapping):
@@ -1870,6 +1874,25 @@ class TestProcessDocumentJobStamping:
 
             async def expire(self, key, ttl):
                 pass
+
+            async def eval(self, script, numkeys, key, *argv):
+                """Emulate job_status._CAS_SCRIPT.
+
+                Status writes go through a Lua compare-and-set now, not a bare
+                HSET, so the stamped fields this test asserts on arrive here.
+                """
+                new_status, _ttl, n = argv[0], argv[1], int(argv[2])
+                allowed = argv[3 : 3 + n]
+                flat = argv[3 + n :]
+                current = _store.get(key, {}).get("status", "")
+                if current not in allowed:
+                    return current
+                mapping = {"status": new_status}
+                for i in range(0, len(flat), 2):
+                    mapping[flat[i]] = flat[i + 1]
+                hset_calls.append(mapping)
+                _store.setdefault(key, {}).update(mapping)
+                return "OK"
 
         async def fake_get_async_redis():
             return FakeRedis()

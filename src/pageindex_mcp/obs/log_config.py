@@ -28,7 +28,6 @@ from .constants import (
     ENV_LOG_CONTENT,
     ENV_LOG_DECISIONS,
     ENV_LOG_LEVEL,
-    ENV_LOG_NODE_SAMPLE,
     HANDLER_MARKER,
 )
 from .filter import ContextFilter
@@ -53,27 +52,14 @@ def _parse_switch(raw: str | None, *, default: bool) -> bool:
     return default
 
 
-def _parse_count(raw: str | None, *, default: int) -> int:
-    """A non-negative integer env var. Unparseable or negative -> *default*.
-    Same reasoning as ``_parse_switch``: never raise out of module import."""
-    if raw is None:
-        return default
-    try:
-        value = int(raw.strip())
-    except (ValueError, AttributeError):
-        return default
-    return value if value >= 0 else default
-
-
 _LOG_LEVEL_NAME = os.environ.get(ENV_LOG_LEVEL, DEFAULT_LOG_LEVEL_NAME).upper()
 
 #: Root level for the handler ``configure()`` installs.
-LOG_LEVEL: int = getattr(logging, _LOG_LEVEL_NAME, logging.INFO)
-
-#: How many per-node records a capped, repeating decision point may emit for
-#: one document. 0 (the default) means "no per-node sampling" -- the capped
-#: DEBUG points in ``garble.py`` stay silent unless this is raised.
-LOG_NODE_SAMPLE: int = _parse_count(os.environ.get(ENV_LOG_NODE_SAMPLE), default=0)
+#  ``getattr(logging, ...)`` also resolves non-level attributes: a stray
+#  PAGEINDEX_LOG_LEVEL=BASIC_FORMAT returned a str, and ``root.setLevel()``
+#  then raised out of ``configure()`` instead of taking the documented INFO
+#  fallback. The name mapping only contains actual levels.
+LOG_LEVEL: int = logging.getLevelNamesMapping().get(_LOG_LEVEL_NAME, logging.INFO)
 
 #: Kill switch for the decision layer alone. Off silences every
 #: ``decision()`` call; ordinary log records are unaffected. On by default --

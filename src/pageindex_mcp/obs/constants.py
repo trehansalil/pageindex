@@ -61,9 +61,14 @@ ENV_LOG_CONTEXT = "PAGEINDEX_LOG_CONTEXT"
 #: else in ``src/``. Deliberately NOT registered in ``PipelineConfig.from_env``:
 #: see ``log_config.py``'s docstring for why that would be self-defeating.
 ENV_LOG_LEVEL = "PAGEINDEX_LOG_LEVEL"
-ENV_LOG_NODE_SAMPLE = "PAGEINDEX_LOG_NODE_SAMPLE"
 ENV_LOG_DECISIONS = "PAGEINDEX_LOG_DECISIONS"
 ENV_LOG_CONTENT = "PAGEINDEX_LOG_CONTENT"
+
+#: REMOVED (RFC-049, 2026-09-24): ``PAGEINDEX_LOG_NODE_SAMPLE``. It resolved
+#: to ``log_config.LOG_NODE_SAMPLE`` and nothing ever read that constant --
+#: ``garble.py``'s per-node caps are the hardcoded ``_GARBLE_PRONG_EVAL_CAP``
+#: and ``_GARBLE_VERDICT_CAP``. Setting the variable did nothing, which is
+#: worse than not offering it. Do not re-add without a consumer.
 
 #: Default level when ``PAGEINDEX_LOG_LEVEL`` is unset or unrecognised.
 DEFAULT_LOG_LEVEL_NAME = "INFO"
