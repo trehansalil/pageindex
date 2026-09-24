@@ -799,6 +799,111 @@ def test_query_path_not_found_never_lists_minio():
 
 
 # ===========================================================================
+# get_document(include=...)  (RFC-050 D3, slimmed — raw-markdown sidecar)
+# ===========================================================================
+
+
+class TestGetDocumentIncludeParam:
+    """include="" is byte-identical to the pre-existing behaviour; include=
+    "raw" adds raw_markdown; any other value is the tool's usual error shape.
+    """
+
+    _TREE_DOC = {
+        "doc_id": "d1",
+        "doc_name": "report.pdf",
+        "structure": [{"title": "A", "node_id": "node_001", "start_index": 1, "end_index": 2}],
+    }
+
+    def test_include_param_matrix(self):
+        flat_doc = {"doc_id": "d2", "doc_name": "flat.pdf", "content_class": "flat_prose"}
+        fake_flat_view = {
+            "doc_name": "flat.pdf",
+            "content_class": "flat_prose",
+            "blocks": [],
+            "row_records": [],
+        }
+        failures = []
+
+        # Default: include="" is byte-identical to omitting it, no raw field.
+        with patch("pageindex_mcp.tools.documents.get_doc", return_value=self._TREE_DOC):
+            explicit_default = documents.get_document("d1", include="")
+            omitted = documents.get_document("d1")
+            invalid = json.loads(documents.get_document("d1", include="bogus"))
+        if explicit_default != omitted or "raw_markdown" in explicit_default:
+            failures.append("default: not byte-identical to no include")
+        # Invalid value -> the tool's usual error shape.
+        if "error" not in invalid or "raw_markdown" in invalid:
+            failures.append(f"invalid: unexpected body {invalid!r}")
+
+        cases = [
+            # name, doc, sidecar, expected raw_markdown, expect note
+            ("raw, tree, sidecar present", self._TREE_DOC, "# extracted", "# extracted", False),
+            ("raw, tree, sidecar absent", self._TREE_DOC, None, None, True),
+            ("raw, flat, sidecar present", flat_doc, "flat markdown", "flat markdown", False),
+        ]
+        for name, doc, sidecar, expected, expect_note in cases:
+            with (
+                patch("pageindex_mcp.tools.documents.get_doc", return_value=doc),
+                patch("pageindex_mcp.tools.documents.flat_doc_view", lambda d: fake_flat_view),
+                patch("pageindex_mcp.storage.documents.load_extracted_md", return_value=sidecar),
+            ):
+                body = json.loads(documents.get_document(doc["doc_id"], include="raw"))
+            if body.get("raw_markdown", "<missing>") != expected:
+                failures.append(f"{name}: raw_markdown={body.get('raw_markdown', '<missing>')!r}")
+            if bool(body.get("raw_markdown_note")) is not expect_note:
+                failures.append(f"{name}: raw_markdown_note={body.get('raw_markdown_note')!r}")
+        assert not failures, failures
+
+
+# ===========================================================================
+# storage.documents.load_extracted_md  (RFC-050 D3, slimmed)
+# ===========================================================================
+
+
+class TestLoadExtractedMd:
+    """The loader only ever reads uploads/<doc_id>/*, never quarantine/, and
+    rejects malformed doc_ids without touching MinIO."""
+
+    def test_loader_reads_uploads_only_and_validates_doc_id(self):
+        from pageindex_mcp.storage.documents import load_extracted_md
+
+        # Path-traversal doc_id -> None without touching MinIO.
+        with patch("pageindex_mcp.storage.documents._minio_ops.get_minio") as mock_get_minio:
+            assert load_extracted_md("../../etc/passwd") is None
+        mock_get_minio.assert_not_called()
+
+        # Only uploads/<doc_id>/ is listed and read, never quarantine/.
+        mock_mc = MagicMock()
+
+        def _list_objects(bucket, prefix, recursive=True):
+            assert prefix.startswith("uploads/"), f"loader listed non-uploads prefix: {prefix}"
+            assert "quarantine" not in prefix
+            obj = MagicMock()
+            obj.object_name = f"{prefix}report.pdf.extracted.md"
+            return iter([obj])
+
+        mock_mc.list_objects.side_effect = _list_objects
+        resp = MagicMock()
+        resp.read.return_value = b"raw text"
+        mock_mc.get_object.return_value = resp
+
+        with patch("pageindex_mcp.storage.documents._minio_ops.get_minio", return_value=mock_mc):
+            assert load_extracted_md("doc-123") == "raw text"
+        mock_mc.get_object.assert_called_once()
+        called_key = mock_mc.get_object.call_args.args[1]
+        assert called_key.startswith("uploads/doc-123/")
+        assert "quarantine" not in called_key
+
+        # No .extracted.md object under the prefix -> None.
+        mock_mc = MagicMock()
+        obj = MagicMock()
+        obj.object_name = "uploads/doc-123/report.pdf"
+        mock_mc.list_objects.return_value = iter([obj])
+        with patch("pageindex_mcp.storage.documents._minio_ops.get_minio", return_value=mock_mc):
+            assert load_extracted_md("doc-123") is None
+
+
+# ===========================================================================
 # Erasure cascade: validate_erasure_manifest + delete_doc logging
 # ===========================================================================
 
@@ -978,6 +1083,169 @@ class TestDeleteDocLogMessages:
         assert len(result["errors"]) > 0
         assert result["partial_purge"] is True
         assert [r.message for r in caplog.records if "partial failure" in r.message]
+
+
+# ===========================================================================
+# _persist_tree_result / _persist_flat_result raw-markdown sidecar
+# (RFC-050 D3, slimmed)
+# ===========================================================================
+
+
+def _make_persist_state(*, md_content):
+    from pageindex_mcp.helpers import ExtractionState, Route, TreeDefect
+
+    return ExtractionState(
+        result={"structure": [], "doc_description": ""},
+        ok=True,
+        reason="",
+        gate_result=None,
+        first_defect=TreeDefect.NODE_COUNT_LOW,
+        route=Route.TREE,
+        md_content=md_content,
+        tmp_md_path=None,
+        pic_results=[],
+        used_converter=None,
+        total_chars=0,
+        extraction_stages_captured=[],
+    )
+
+
+class TestPersistTreeResultRawMarkdownSidecar:
+    @pytest.mark.asyncio
+    async def test_extracted_md_sidecar_written_skipped_and_best_effort(self, caplog):
+        """Writes <name>.extracted.md when md_content is set, skips it when
+        None, and a failing sidecar write never breaks the persist."""
+
+        def _fail_sidecar(doc_id, filename, data):
+            if filename.endswith(".extracted.md"):
+                raise RuntimeError("minio down")
+
+        async def _run(md_content, save_raw_side_effect=None):
+            state = _make_persist_state(md_content=md_content)
+            client = CustomPageIndexClient.__new__(CustomPageIndexClient)
+            with (
+                patch.object(_idx, "save_doc"),
+                patch.object(_idx, "save_doc_meta"),
+                patch.object(_idx, "save_raw", side_effect=save_raw_side_effect) as mock_save_raw,
+                patch.object(_idx, "hash_cache_set"),
+                patch.object(_idx, "compute_verdict") as mock_verdict,
+            ):
+                mock_verdict.return_value.verdict = "PASS"
+                mock_verdict.return_value.reason = "ok"
+                mock_verdict.return_value.promotion_paths_matched = []
+                doc_id = await client._persist_tree_result(
+                    state, "report.pdf", ".pdf", None, "deadbeef" * 8, b"bytes", None, {}, None
+                )
+            return doc_id, mock_save_raw
+
+        # md_content set -> raw upload + sidecar.
+        doc_id, mock_save_raw = await _run("# extracted body")
+        assert mock_save_raw.call_count == 2
+        raw_call, md_call = mock_save_raw.call_args_list
+        assert raw_call.args == (doc_id, "report.pdf", b"bytes")
+        assert md_call.args == (doc_id, "report.pdf.extracted.md", b"# extracted body")
+
+        # md_content None -> raw upload only.
+        _doc_id, mock_save_raw = await _run(None)
+        assert mock_save_raw.call_count == 1
+
+        # Sidecar write failure -> persist still returns a doc_id, with a warning.
+        with caplog.at_level(logging.WARNING, logger="pageindex_mcp.client.indexer"):
+            doc_id, _ = await _run("# extracted body", _fail_sidecar)
+        assert isinstance(doc_id, str) and doc_id
+        assert any("extracted.md sidecar" in r.message for r in caplog.records)
+
+
+class TestPersistFlatResultRawMarkdownSidecar:
+    """Same contract, driven through the flat persist path."""
+
+    def _make_flat_state(self, *, md_content, tmp_md_path=None):
+        from pageindex_mcp.helpers import ExtractionState, Route, TreeDefect
+
+        return ExtractionState(
+            result={"structure": []},
+            ok=True,
+            reason="",
+            gate_result=None,
+            first_defect=TreeDefect.NODE_COUNT_LOW,
+            route=Route.FLAT,
+            md_content=md_content,
+            tmp_md_path=tmp_md_path,
+            pic_results=[],
+            used_converter=None,
+            total_chars=0,
+            extraction_stages_captured=[],
+        )
+
+    async def _run(self, monkeypatch, state, save_raw_side_effect=None):
+        monkeypatch.setattr(_idx, "route_and_extract_flat", lambda md: ("flat_prose", []))
+        monkeypatch.setattr(_idx, "_garble_check_flat_blocks", lambda blocks, **kw: None)
+        monkeypatch.setattr(
+            _idx,
+            "_apply_picture_enrichment",
+            AsyncMock(return_value=("doc-flat-1", "flat_prose", [], 0.0)),
+        )
+        mock_verdict = MagicMock()
+        mock_verdict.return_value.verdict = "PASS"
+        mock_verdict.return_value.reason = "ok"
+        mock_verdict.return_value.promotion_paths_matched = []
+        monkeypatch.setattr(_idx, "compute_verdict", mock_verdict)
+        monkeypatch.setattr(_idx, "_generate_flat_doc_description", lambda md, **kw: "desc")
+        monkeypatch.setattr(_idx, "save_flat_doc", MagicMock())
+        monkeypatch.setattr(_idx, "save_doc_meta", MagicMock())
+        mock_save_raw = MagicMock(side_effect=save_raw_side_effect)
+        monkeypatch.setattr(_idx, "save_raw", mock_save_raw)
+        monkeypatch.setattr(_idx, "hash_cache_set", MagicMock())
+        monkeypatch.setattr(_idx, "clear_quarantine", MagicMock())
+        monkeypatch.setattr(_idx, "FLAT_DOCS_TOTAL", MagicMock())
+
+        client = CustomPageIndexClient.__new__(CustomPageIndexClient)
+        doc_id = await client._persist_flat_result(
+            state,
+            "/tmp/report.pdf",
+            "report.pdf",
+            ".pdf",
+            None,
+            "deadbeef" * 8,
+            b"bytes",
+            None,
+            {},
+            None,
+        )
+        return doc_id, mock_save_raw
+
+    @pytest.mark.asyncio
+    async def test_extracted_md_sidecar_written_skipped_and_best_effort(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        # md_content set -> raw upload + sidecar.
+        state = self._make_flat_state(md_content="# flat extracted body")
+        doc_id, mock_save_raw = await self._run(monkeypatch, state)
+        assert mock_save_raw.call_count == 2
+        raw_call, md_call = mock_save_raw.call_args_list
+        assert raw_call.args == (doc_id, "report.pdf", b"bytes")
+        assert md_call.args == (doc_id, "report.pdf.extracted.md", b"# flat extracted body")
+
+        # md_content is None but tmp_md_path resolves real markdown, so persist
+        # still succeeds -- it should just skip the extracted.md sidecar write.
+        tmp_md = tmp_path / "converted.md"
+        tmp_md.write_text("body text from tmp_md_path", encoding="utf-8")
+        state = self._make_flat_state(md_content=None, tmp_md_path=str(tmp_md))
+        doc_id, mock_save_raw = await self._run(monkeypatch, state)
+        assert isinstance(doc_id, str) and doc_id
+        assert mock_save_raw.call_count == 1
+        assert mock_save_raw.call_args.args == (doc_id, "report.pdf", b"bytes")
+
+        # Sidecar write failure -> persist still returns a doc_id, with a warning.
+        def _fail_sidecar(doc_id, filename, data):
+            if filename.endswith(".extracted.md"):
+                raise RuntimeError("minio down")
+
+        state = self._make_flat_state(md_content="# flat extracted body")
+        with caplog.at_level(logging.WARNING, logger="pageindex_mcp.client.indexer"):
+            doc_id, _ = await self._run(monkeypatch, state, _fail_sidecar)
+        assert isinstance(doc_id, str) and doc_id
+        assert any("extracted.md sidecar" in r.message for r in caplog.records)
 
 
 # ===========================================================================

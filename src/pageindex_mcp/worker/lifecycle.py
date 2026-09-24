@@ -8,7 +8,7 @@ import redis.asyncio as aioredis
 from arq import cron, func
 from arq.connections import RedisSettings
 
-from ..config import settings, validate_hr3_compliance
+from ..config import docling_offload_configured, settings, validate_hr3_compliance
 from ..obs import configure as configure_obs
 from .constants import MAX_EFFECTIVE_TIMEOUT, REAP_GRACE
 from .job import JOB_TIMEOUT, MAX_TRIES, process_document_job, reap_stale_jobs
@@ -30,20 +30,44 @@ logger = logging.getLogger(__name__)
 # accident.
 MAX_JOBS_CEILING = 4
 MAX_JOBS_DEFAULT = 1
+# RFC-050 D2: default concurrency when PAGEINDEX_WORKER_MAX_JOBS is unset AND
+# the in-cluster Docling service (DOCLING_SERVICE_URL) is configured — the
+# worker offloads conversion instead of holding a multi-GiB local Docling
+# process, so 2 parallel jobs is safe without an operator override.
+MAX_JOBS_SERVICE_DEFAULT = 2
 
 
-def resolve_max_jobs(raw: str | None) -> int:
+def resolve_max_jobs(raw: str | None, *, service_configured: bool | None = None) -> int:
     """Clamp a raw PAGEINDEX_WORKER_MAX_JOBS value into [1, MAX_JOBS_CEILING].
 
     A free function rather than an inline expression so the clamp is testable
     without ``importlib.reload``-ing this module — reloading rebinds the
     exception classes other test modules have already imported, so their
     ``pytest.raises`` identity checks silently stop matching.
+
+    RFC-050 D2: when the env var is genuinely unset (``raw is None``, not an
+    explicit-but-invalid value) and the in-cluster Docling service is
+    configured, the worker is I/O-bound rather than holding a multi-GiB local
+    Docling conversion, so ``MAX_JOBS_SERVICE_DEFAULT`` parallel jobs is safe
+    even without an operator override. An explicit ``raw`` value — valid or
+    not — always takes precedence over this service-aware default.
     """
+    if service_configured is None:
+        service_configured = docling_offload_configured(settings)
     try:
-        parsed = int(raw) if raw is not None else MAX_JOBS_DEFAULT
+        if raw is None:
+            parsed = MAX_JOBS_SERVICE_DEFAULT if service_configured else MAX_JOBS_DEFAULT
+        else:
+            parsed = int(raw)
     except (TypeError, ValueError):
         return MAX_JOBS_DEFAULT
+    if parsed > MAX_JOBS_CEILING:
+        logger.warning(
+            "PAGEINDEX_WORKER_MAX_JOBS=%s exceeds ceiling %s; clamping to %s",
+            parsed,
+            MAX_JOBS_CEILING,
+            MAX_JOBS_CEILING,
+        )
     return min(MAX_JOBS_CEILING, max(1, parsed))
 
 
@@ -54,6 +78,27 @@ async def startup(ctx: dict) -> None:
     # RFC-046 D12 (task 12.2 + 12.9): install the JSON stderr handler for
     # this worker process.
     configure_obs()
+
+    # RFC-050 D1/D2: log the resolved admission floor, concurrency mode, and
+    # whether cgroup memory accounting is active, once at worker startup —
+    # the only place an operator can see which profile (local vs in-cluster
+    # Docling service) actually took effect.
+    from ..memory_admission import cgroup_accounting_active, resolve_admission_floor
+
+    offload = docling_offload_configured(settings)
+    if settings.docling_service_url and not offload:
+        logger.warning(
+            "worker startup: DOCLING_SERVICE_URL is set but Docling offload is NOT "
+            "configured (no docling converter entry in this worker); staying in "
+            "local mode (local admission floor, local MAX_JOBS default)"
+        )
+    logger.info(
+        "worker startup: mode=%s max_jobs=%d admission_floor_bytes=%d cgroup_accounting=%s",
+        "service" if offload else "local",
+        MAX_JOBS,
+        resolve_admission_floor(offload),
+        cgroup_accounting_active(),
+    )
 
     # RFC-039 D1: HR3 boot gate — refuse to start when pii_corpus=True and any
     # egress endpoint (openai_base_url, LLM_FALLBACK_BASE_URL, docling_service_url)

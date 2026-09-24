@@ -27,7 +27,7 @@ from ..metrics import (
 )
 from ..obs import bind_log_context
 from ..storage import delete_staging, download_staging
-from .constants import JOB_TIMEOUT, REAP_GRACE
+from .constants import CHILD_GRACE_SECONDS, JOB_TIMEOUT, REAP_GRACE
 from .errors import (
     _CHILD_ERROR_REGISTRY,
     _DEFAULT_CHILD_CLASSIFICATION,
@@ -107,6 +107,10 @@ async def process_document_job(  # noqa: C901, PLR0915
     to a local temp directory, runs conversion in an isolated child process,
     then cleans up both.
     """
+    # RFC-050: arq's job_timeout clock is already running. The memory-admission
+    # and ingest-lock waits spend it too, so the child gets what is left (less
+    # CHILD_GRACE_SECONDS) and still times out before arq cancels the job.
+    deadline = time.monotonic() + JOB_TIMEOUT - CHILD_GRACE_SECONDS
     run_id = ctx.get("run_id") or str(uuid.uuid4())
     # Extract filename from staging key: uploads/staging/<job_id>/<filename>
     # Derived before the bind, not thirteen lines into it: doc_name is the one
@@ -220,6 +224,7 @@ async def process_document_job(  # noqa: C901, PLR0915
                     staging_key=staging_key,
                     job_start_config=job_start_config,
                     on_effective_timeout=_persist_effective_timeout,
+                    deadline=deadline,
                 )
             except ConverterOOMError as exc:
                 await _set_job_status(

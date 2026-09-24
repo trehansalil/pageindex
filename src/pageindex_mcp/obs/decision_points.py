@@ -125,6 +125,7 @@ _X_PIPELINE = "pageindex_mcp.converters.pipeline"
 _X_OCRLANGS = "pageindex_mcp.converters.ocr_langs"
 _X_PRECLASSIFY = "pageindex_mcp.converters.preclassify"
 _S_DOCUMENTS = "pageindex_mcp.storage.documents"
+_W_SUBPROC = "pageindex_mcp.worker.subprocess_mgr"
 
 
 # ---------------------------------------------------------------------------
@@ -668,6 +669,19 @@ _INDEXER_POINTS: tuple[DecisionPoint, ...] = (
         choices=("skip_unchanged_reuse_doc_id", "reprocess"),
         attrs=("sha256_matched", "existing_doc_found"),
         note="When it skips, the entire pipeline is bypassed -- high-value record.",
+    ),
+    _p(
+        event="stage_duration",
+        phase=Phase.PERSIST,
+        module=_C_INDEXER,
+        function="_emit_stage_timings",
+        choices=("extraction", "tree_build", "recovery"),
+        attrs=("duration_ms",),
+        cap=3,
+        always_emits=False,
+        note="RFC-050 Task 1.5: one record per stage per non-deduped document, "
+        "emitted when index() exits (success, reject or error). Stages are "
+        "disjoint: tree_build is excluded from the extraction/recovery wall time.",
     ),
     _p(
         event="config_drift_detected",
@@ -1852,6 +1866,32 @@ _PIPELINE_POINTS: tuple[DecisionPoint, ...] = (
 
 
 # ---------------------------------------------------------------------------
+# worker/subprocess_mgr.py -- per-file ingest lock (parent side)
+# ---------------------------------------------------------------------------
+_WORKER_POINTS: tuple[DecisionPoint, ...] = (
+    _p(
+        event="ingest_dedup_lock",
+        phase=Phase.CONVERT,
+        module=_W_SUBPROC,
+        function="_run_converter_subprocess",
+        choices=(
+            "acquired",
+            "acquired_after_wait",
+            "wait_timeout_proceed_unlocked",
+            "redis_unavailable_proceed_unlocked",
+        ),
+        attrs=("waited_ms",),
+        note="RFC-050 D7 (HR2): per-file Redis lock held by the worker PARENT "
+        "around the converter child, so the child's hash-cache dedup check and "
+        "hash_cache_set run under it and a killed child cannot strand it. A "
+        "waiter's child re-runs the dedup check, so a concurrent duplicate "
+        "dedup-skips instead of minting an orphan doc_id. The two *_unlocked "
+        "choices are fail-open degradations.",
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
 # storage/documents.py -- quarantine persistence
 # ---------------------------------------------------------------------------
 _STORAGE_POINTS: tuple[DecisionPoint, ...] = (
@@ -1882,6 +1922,7 @@ DECISION_POINTS: tuple[DecisionPoint, ...] = (
     + _PRECLASSIFY_POINTS
     + _PIPELINE_POINTS
     + _STORAGE_POINTS
+    + _WORKER_POINTS
 )
 
 

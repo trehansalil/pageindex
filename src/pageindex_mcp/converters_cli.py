@@ -78,6 +78,15 @@ def _peak_rss_kib() -> int:
     return raw
 
 
+def _add_stage_timings(payload: dict, client) -> None:
+    """RFC-050 Task 1.5: carry ``{stage: seconds}`` to the worker parent,
+    which owns the Prometheus registry (this child's metrics die with it).
+    Omitted when index() never got past the dedup check."""
+    timings = getattr(client, "last_stage_timings", None)
+    if timings:
+        payload["stage_timings"] = timings
+
+
 async def main() -> int:  # noqa: PLR0915
     """Run the CLI. Returns exit code (0 = success, 1 = failure)."""
     # Redirect sys.stdout to stderr BEFORE argparse so any usage/help/error
@@ -149,6 +158,7 @@ async def main() -> int:  # noqa: PLR0915
                 handshake_payload["pre_classification"] = pre_classification
             _emit(handshake_payload)
 
+            client = None
             try:
                 # Heavy import deferred to here so baseline RSS in the parent process
                 # (before any conversion) is not polluted by pageindex/litellm imports.
@@ -216,6 +226,7 @@ async def main() -> int:  # noqa: PLR0915
                 last_registry_fields = getattr(client, "last_registry_fields", None)
                 if last_registry_fields:
                     payload["registry_fields"] = last_registry_fields
+                _add_stage_timings(payload, client)
                 _emit(payload)
                 return 0
 
@@ -226,6 +237,9 @@ async def main() -> int:  # noqa: PLR0915
                     "error": type(exc).__name__,
                     "message": str(exc),
                 }
+                # Rejects are exceptions too: their stage split is part of the
+                # corpus timing profile (RFC-050 Task 1.5).
+                _add_stage_timings(payload, client)
                 _emit(payload)
                 logging.getLogger(__name__).exception("converters_cli failed: %s", exc)
                 return 1

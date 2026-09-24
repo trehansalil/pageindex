@@ -571,7 +571,12 @@ async def test_early_deadline_persisted_before_subprocess_completes(mock_redis):
     mock_redis.hset = AsyncMock(side_effect=fake_hset)
 
     async def fake_run_converter_subprocess(
-        pdf_path, *, staging_key=None, job_start_config=None, on_effective_timeout=None
+        pdf_path,
+        *,
+        staging_key=None,
+        job_start_config=None,
+        on_effective_timeout=None,
+        deadline=None,
     ):
         if on_effective_timeout is not None:
             await on_effective_timeout(20_000.0)
@@ -628,6 +633,21 @@ async def test_handshake_parse_failure_preserves_conservative_deadline():
 
     assert surfaced == [CHILD_TIMEOUT]
     assert result["_effective_timeout"] == CHILD_TIMEOUT
+
+    # RFC-050: an arq job deadline clamps the child timeout to what is left
+    # of it at spawn; an exhausted one fails as a timeout without spawning.
+    proc.stdout = _ReadlineFeed([b"not valid json garbage\n", stdout])
+    spawn = AsyncMock(return_value=proc)
+    with (
+        patch("pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec", spawn),
+        patch("pageindex_mcp.worker.subprocess_mgr.CONVERTER_PEAK_RSS_KIB"),
+    ):
+        result = await _run_converter_subprocess("/tmp/x.pdf", deadline=time.monotonic() + 100)
+        assert 90 < result["_effective_timeout"] <= 100
+        spawn.reset_mock()
+        with pytest.raises(TimeoutError):
+            await _run_converter_subprocess("/tmp/x.pdf", deadline=time.monotonic() + 0.5)
+        spawn.assert_not_called()
 
 
 # ── RFC-046 D11 (task 3.10): timeout bound ordering property ─────────────────
@@ -726,9 +746,11 @@ def test_production_uses_the_extracted_function():
 
     from pageindex_mcp.worker import subprocess_mgr
 
-    source = inspect.getsource(subprocess_mgr._run_converter_subprocess)
+    # RFC-050 D7: _run_converter_subprocess now wraps _run_converter_child in
+    # the parent-held ingest lock; the budget is computed in the child runner.
+    source = inspect.getsource(subprocess_mgr._run_converter_child)
     assert "effective_child_timeout(" in source, (
-        "_run_converter_subprocess must call effective_child_timeout() rather "
+        "_run_converter_child must call effective_child_timeout() rather "
         "than computing the budget inline"
     )
 
@@ -906,6 +928,63 @@ def test_worker_02_c1_c5_max_jobs_is_one_and_reads_the_clamped_value():
     assert WorkerSettings.max_jobs == 1
     assert WorkerSettings.max_jobs == MAX_JOBS
     assert 1 <= WorkerSettings.max_jobs <= MAX_JOBS_CEILING
+
+
+def test_rfc050_d2_resolve_max_jobs_matrix(monkeypatch):
+    """RFC-050 D2: PAGEINDEX_WORKER_MAX_JOBS unset defaults to 1 normally, but
+    to 2 when the in-cluster Docling service is configured; any explicit env
+    value (valid or not, within or beyond the ceiling) takes precedence over
+    that service-aware default, and the [1, MAX_JOBS_CEILING] clamp is
+    unchanged. Without an explicit `service_configured`, the function falls
+    back to config.docling_offload_configured() (the admission-floor predicate).
+    """
+    import dataclasses
+    import importlib.util
+
+    from pageindex_mcp.worker import lifecycle as lc
+
+    cases = [
+        # name, raw, service_configured, expected
+        ("unset, local -> memory-safe default", None, False, 1),
+        ("unset, service -> service default", None, True, 2),
+        ("explicit wins over local default", "1", False, 1),
+        ("explicit wins over service default", "1", True, 1),
+        ("explicit non-default value wins regardless of service", "3", False, 3),
+        ("above ceiling clamps to 4 (local)", "10", False, 4),
+        ("above ceiling clamps to 4 (service)", "10", True, 4),
+        ("invalid value falls back to memory-safe default", "not-a-number", True, 1),
+    ]
+    failures = []
+    for name, raw, service_configured, expected in cases:
+        got = lc.resolve_max_jobs(raw, service_configured=service_configured)
+        if got != expected:
+            failures.append(f"{name}: got {got!r}, expected {expected!r}")
+
+    # Unspecified -> real settings. Settings is a frozen dataclass, so the
+    # module-level `settings` reference itself is swapped.
+    monkeypatch.setattr(lc, "settings", dataclasses.replace(lc.settings, docling_service_url=None))
+    if lc.resolve_max_jobs(None) != 1:
+        failures.append("settings: no URL must give 1")
+    monkeypatch.setattr(
+        lc,
+        "settings",
+        dataclasses.replace(lc.settings, docling_service_url="http://docling-service:8080"),
+    )
+    if lc.resolve_max_jobs(None) != 2:
+        failures.append("settings: URL + docling must give 2")
+
+    # URL set but no docling converter entry: the indexer never offloads
+    # (use_remote needs the supports_ocr docling entry), so the default stays 1.
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda n, *a: None if n == "docling" else real_find_spec(n, *a),
+    )
+    if lc.resolve_max_jobs(None) != 1:
+        failures.append("settings: URL without docling must give 1")
+
+    assert not failures, failures
 
 
 # ── processing_started_at stamp (WORKER-02-C2) ───────────────────────────────

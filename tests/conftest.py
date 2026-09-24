@@ -61,6 +61,21 @@ def _instant_memory_gate():
 
 
 @pytest.fixture(autouse=True)
+def _isolated_ingest_lock_redis():
+    """RFC-050 D7: the parent-held ingest lock in ``_run_converter_subprocess``
+    must never reach the real (possibly remote) Redis from a test. Each test
+    gets a private fakeredis; tests needing their own client patch over it."""
+    import fakeredis
+
+    fr = fakeredis.FakeRedis(server=fakeredis.FakeServer(), decode_responses=True)
+    try:
+        with patch("pageindex_mcp.storage.ingest_lock._default_redis", lambda: fr):
+            yield
+    except (ImportError, AttributeError):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_verdict_thresholds_cache():
     """Clear the VerdictThresholds cache before each test.
 

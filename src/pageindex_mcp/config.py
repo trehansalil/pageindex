@@ -355,6 +355,28 @@ def _load_settings() -> Settings:
     )
 
 
+def docling_offload_configured(settings_obj: "Settings | None" = None) -> bool:
+    """RFC-050 D1/D2: will this worker offload Docling conversion?
+
+    The config-level half of ``client/indexer.py``'s ``use_remote``
+    (``docling_service_url and staging_key``, only for a chain entry with
+    ``supports_ocr`` -- i.e. the ``docling`` entry, present only when docling
+    is importable). The per-document half, the staging key, is always present
+    on the arq path (``upload_app`` stages every upload) and so is not a
+    config precondition. Single source of truth for the service-mode admission
+    floor and the service-aware MAX_JOBS default.
+    """
+    import importlib.util
+
+    s = settings_obj if settings_obj is not None else settings
+    if not getattr(s, "docling_service_url", None):
+        return False
+    try:
+        return importlib.util.find_spec("docling") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 # Module-level singleton — all other modules do `from .config import settings`
 settings: Settings = _load_settings()
 

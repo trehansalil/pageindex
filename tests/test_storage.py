@@ -36,6 +36,7 @@ from pageindex_mcp.storage import (
     upload_staging,
     wipe_processed,
 )
+from pageindex_mcp.storage.documents import ensure_quarantine_lifecycle
 
 # --- from test_storage.py ---
 
@@ -832,6 +833,30 @@ async def test_delete_doc_unknown_doc_name_skips_hash_cache_and_preloaded(mock_m
     mock_hc.assert_not_called()
 
 
+async def test_delete_doc_recovers_doc_name_past_extracted_md_sidecar(mock_minio):
+    """RFC-050 D3 / HR2: when only the <name>.extracted.md sidecar is under
+    uploads/<doc_id>/ (the original upload save failed), the recovered
+    doc_name is <name>, not the sidecar's name -- else the hash-cache and
+    preloaded/ purges miss."""
+    mock_minio.get_object.side_effect = _nosuchkey()
+    sidecar = MagicMock(object_name="uploads/sidecar01/katzen.pdf.extracted.md")
+    mock_minio.list_objects.side_effect = lambda _b, prefix="", **_k: (
+        [sidecar] if prefix.startswith("uploads/") else []
+    )
+
+    with (
+        patch("pageindex_mcp.cache.doc_cache_delete"),
+        patch("pageindex_mcp.storage.reconcile_etag.reconcile_etag_delete"),
+        patch("pageindex_mcp.storage.hash_cache.hash_cache_delete") as mock_hc,
+    ):
+        await delete_doc("sidecar01")
+
+    mock_hc.assert_called_once_with("katzen.pdf")
+    removed = [c.args[1] for c in mock_minio.remove_object.call_args_list]
+    assert "uploads/sidecar01/katzen.pdf.extracted.md" in removed
+    assert "preloaded/katzen.pdf" in removed
+
+
 # --- from test_minio_path_prefix.py ---
 
 
@@ -1398,7 +1423,10 @@ async def test_wait_for_memory_admission_matrix(tmp_path, monkeypatch):
         monkeypatch.setattr(ma, "read_meminfo_available_bytes", reader)
         monkeypatch.setattr(ma, "MEM_ADMISSION_POLL_S", poll)
         monkeypatch.setattr(ma, "MEM_ADMISSION_MAX_WAIT_S", max_wait)
-        got = await ma.wait_for_memory(fakeredis.aioredis.FakeRedis())
+        # Explicit floor: the default now resolves from settings.docling_service_url
+        # (RFC-050 D1), which must not make this matrix's outcomes depend on the
+        # runtime environment's .env.
+        got = await ma.wait_for_memory(fakeredis.aioredis.FakeRedis(), floor=2_300_000_000)
         if got is not expected:
             failures.append(f"{name}: wait_for_memory returned {got!r}, expected {expected!r}")
 
@@ -1413,9 +1441,146 @@ async def test_wait_for_memory_admission_matrix(tmp_path, monkeypatch):
     monkeypatch.setattr(ma, "read_meminfo_available_bytes", _const(3_000_000_000))
     monkeypatch.setattr(ma, "MEM_ADMISSION_POLL_S", original_poll)
     monkeypatch.setattr(ma, "MEM_ADMISSION_MAX_WAIT_S", original_max)
-    if await ma.wait_for_memory(_BrokenRedis()) is not True:
+    if await ma.wait_for_memory(_BrokenRedis(), floor=2_300_000_000) is not True:
         failures.append("lock-Redis failure: admission did not fail open")
 
+    assert not failures, failures
+
+
+def test_cgroup_available_bytes_matrix(tmp_path):
+    """RFC-050 D1. cgroup v2: a finite memory.max yields (max - working set),
+    working set being current minus memory.stat's inactive_file (kubelet), or
+    current when memory.stat is absent; "max" or an absurd (>= 2**60) sentinel
+    is unlimited (None, fall back to host); missing files fail open to None.
+    No v2 memory.max -> v1 limit_in_bytes/usage_in_bytes (minus memory.stat
+    total_inactive_file); the v1 "no limit" sentinel (~2**63) is unlimited.
+    effective_available_bytes = min(host, cgroup), host alone without a limit."""
+    v2_cases = [
+        # name, files, expected
+        (
+            "v2 limited",
+            {"memory.max": "2147483648", "memory.current": "1073741824"},
+            2147483648 - 1073741824,
+        ),
+        ("v2 unlimited (max)", {"memory.max": "max", "memory.current": "0"}, None),
+        ("v2 unlimited (huge sentinel)", {"memory.max": str(2**62), "memory.current": "0"}, None),
+        ("no cgroup files at all", {}, None),
+        (
+            "v2 page cache is reclaimable (working set = current - inactive_file)",
+            {
+                "memory.max": "2000",
+                "memory.current": "1500",
+                "memory.stat": "anon 700\ninactive_file 600\nactive_file 200\n",
+            },
+            2000 - (1500 - 600),
+        ),
+        (
+            "v2 inactive_file above current clamps working set at 0",
+            {"memory.max": "2000", "memory.current": "100", "memory.stat": "inactive_file 900\n"},
+            2000,
+        ),
+    ]
+    v1_cases = [
+        # name, limit, usage, memory.stat, expected
+        ("v1 limited", "1073741824", "268435456", None, 1073741824 - 268435456),
+        ("v1 unlimited sentinel", str(2**63 - 1), "0", None, None),
+        (
+            "v1 total_inactive_file subtracted",
+            "1000",
+            "800",
+            "inactive_file 5\ntotal_inactive_file 300\n",
+            1000 - (800 - 300),
+        ),
+    ]
+    failures = []
+    for i, (name, files, expected) in enumerate(v2_cases):
+        d = tmp_path / f"v2_{i}"
+        d.mkdir()
+        for fname, content in files.items():
+            (d / fname).write_text(content)
+        got = ma.read_cgroup_available_bytes(
+            v2_max_path=str(d / "memory.max"),
+            v2_current_path=str(d / "memory.current"),
+            v1_limit_path=str(d / "nope.limit"),
+            v1_usage_path=str(d / "nope.usage"),
+        )
+        if got != expected:
+            failures.append(f"{name}: got {got!r}, expected {expected!r}")
+    for i, (name, limit, usage, stat, expected) in enumerate(v1_cases):
+        d = tmp_path / f"v1_{i}"
+        d.mkdir()
+        (d / "memory.limit_in_bytes").write_text(limit)
+        (d / "memory.usage_in_bytes").write_text(usage)
+        if stat is not None:
+            (d / "memory.stat").write_text(stat)
+        got = ma.read_cgroup_available_bytes(
+            v2_max_path=str(d / "nope.max"),
+            v2_current_path=str(d / "nope.current"),
+            v1_limit_path=str(d / "memory.limit_in_bytes"),
+            v1_usage_path=str(d / "memory.usage_in_bytes"),
+        )
+        if got != expected:
+            failures.append(f"{name}: got {got!r}, expected {expected!r}")
+
+    # effective_available_bytes: a tighter cgroup limit wins; none -> host.
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(_MEMINFO_SAMPLE)  # MemAvailable: 2500000 kB = 2_560_000_000 bytes
+    eff = tmp_path / "eff"
+    eff.mkdir()
+    (eff / "memory.max").write_text("1000000000")
+    (eff / "memory.current").write_text("0")
+    for name, d, expected in [
+        ("cgroup tighter than host wins", eff, 1_000_000_000),
+        ("no cgroup -> host passes through", tmp_path / "absent", 2_560_000_000),
+    ]:
+        got = ma.effective_available_bytes(
+            meminfo_path=str(meminfo),
+            v2_max_path=str(d / "memory.max"),
+            v2_current_path=str(d / "memory.current"),
+            v1_limit_path=str(d / "nope.limit"),
+            v1_usage_path=str(d / "nope.usage"),
+        )
+        if got != expected:
+            failures.append(f"effective: {name}: got {got!r}, expected {expected!r}")
+
+    assert not failures, failures
+
+
+def test_resolve_admission_floor(monkeypatch):
+    """RFC-050 D1: the service floor (800 MiB default) applies only when
+    Docling offload is actually configured (config.docling_offload_configured:
+    DOCLING_SERVICE_URL set AND a docling converter entry); local mode keeps
+    the original ~2.2 GiB floor. An explicit service flag always wins."""
+    import dataclasses
+    import importlib.util
+
+    url = "http://docling-service.pageindex.svc:8080"
+    cases = [
+        # docling_service_url, have_docling, expected_floor
+        (None, True, ma.MEM_ADMISSION_FLOOR_BYTES),
+        ("", True, ma.MEM_ADMISSION_FLOOR_BYTES),
+        (url, True, ma.MEM_ADMISSION_FLOOR_SERVICE_BYTES),
+        # URL set but no docling chain entry -> indexer never offloads -> local floor.
+        (url, False, ma.MEM_ADMISSION_FLOOR_BYTES),
+    ]
+    real_find_spec = importlib.util.find_spec
+    base_settings = ma.settings
+    failures = []
+    for docling_service_url, have_docling, expected_floor in cases:
+        monkeypatch.setattr(
+            importlib.util,
+            "find_spec",
+            lambda n, *a, _have=have_docling: (
+                (object() if _have else None) if n == "docling" else real_find_spec(n, *a)
+            ),
+        )
+        patched = dataclasses.replace(base_settings, docling_service_url=docling_service_url)
+        monkeypatch.setattr(ma, "settings", patched)
+        got = ma.resolve_admission_floor()
+        if got != expected_floor:
+            failures.append(f"url={docling_service_url!r} docling={have_docling}: got {got}")
+        if ma.resolve_admission_floor(True) != ma.MEM_ADMISSION_FLOOR_SERVICE_BYTES:
+            failures.append(f"url={docling_service_url!r}: explicit True must give service floor")
     assert not failures, failures
 
 
@@ -1576,3 +1741,101 @@ def test_store_01_c2_unchanged_bytes_resolve_to_the_existing_doc_id(mock_minio, 
 
     # Changed bytes -> mismatch, no short-circuit.
     assert hash_cache_get("dedup.pdf") != sha_v2
+
+
+# ── RFC-050 D6 / HR5: ensure_quarantine_lifecycle ────────────────────────────
+# 30-day expiration rule on quarantine/, read-merge-write, idempotent, and
+# never raises (a missing lifecycle permission must not break ingestion).
+
+
+def test_ensure_quarantine_lifecycle(monkeypatch, caplog):
+    """Merge + idempotency across three starting configs, then the never-raises
+    contract: missing s3:Get/PutBucketLifecycleConfiguration permission degrades
+    to a warning, not a broken get_minio()."""
+    from minio.commonconfig import ENABLED, Filter
+    from minio.lifecycleconfig import Expiration, LifecycleConfig, Rule
+
+    monkeypatch.delenv("QUARANTINE_TTL_DAYS", raising=False)
+
+    def _applied(client):
+        call = client.set_bucket_lifecycle.call_args
+        return call.args[1] if len(call.args) > 1 else call.kwargs["config"]
+
+    other = Rule(
+        ENABLED, rule_filter=Filter(prefix="uploads/"), rule_id="uploads-90d",
+        expiration=Expiration(days=90),
+    )
+    present = Rule(
+        ENABLED, rule_filter=Filter(prefix="quarantine/"), rule_id="quarantine-30d",
+        expiration=Expiration(days=30),
+    )
+    cases = [
+        # name, existing config, expect set, expected other rule ids kept
+        ("empty_config_adds_rule", None, True, set()),
+        ("unrelated_rule_kept_and_merged", LifecycleConfig([other]), True, {"uploads-90d"}),
+        ("idempotent_second_call_noop", LifecycleConfig([present]), False, set()),
+    ]
+    failures = []
+    for name, existing, expect_set, kept in cases:
+        client = MagicMock()
+        client.get_bucket_lifecycle.return_value = existing
+        ensure_quarantine_lifecycle(client, "pageindex")
+        if client.set_bucket_lifecycle.called is not expect_set:
+            failures.append(f"{name}: set called={client.set_bucket_lifecycle.called}")
+            continue
+        if not expect_set:
+            continue
+        config = _applied(client)
+        q = [r for r in config.rules if r.rule_id == "quarantine-30d"]
+        others = {r.rule_id for r in config.rules} - {"quarantine-30d"}
+        if not (
+            len(q) == 1
+            and q[0].rule_filter.prefix == "quarantine/"
+            and q[0].expiration.days == 30
+            and others == kept
+        ):
+            failures.append(f"{name}: bad merged config {[r.rule_id for r in config.rules]}")
+        # Calling again with the resulting config in place must be a no-op.
+        client2 = MagicMock()
+        client2.get_bucket_lifecycle.return_value = config
+        ensure_quarantine_lifecycle(client2, "pageindex")
+        if client2.set_bucket_lifecycle.called:
+            failures.append(f"{name}: second call was not a no-op")
+    assert not failures, failures
+
+    # Never raises: AccessDenied on read -> warning, no write.
+    client = MagicMock()
+    client.get_bucket_lifecycle.side_effect = _other_s3error("AccessDenied")
+    with caplog.at_level("WARNING"):
+        ensure_quarantine_lifecycle(client, "pageindex")  # must not raise
+    assert not client.set_bucket_lifecycle.called
+    assert any("quarantine" in rec.message.lower() for rec in caplog.records)
+
+    # NoSuchLifecycleConfiguration is the expected "empty" signal, not a failure.
+    client2 = MagicMock()
+    client2.get_bucket_lifecycle.side_effect = _nosuchkey_lifecycle_error()
+    ensure_quarantine_lifecycle(client2, "pageindex")
+    assert client2.set_bucket_lifecycle.called
+
+    # A failure in set_bucket_lifecycle itself must also be swallowed.
+    client3 = MagicMock()
+    client3.get_bucket_lifecycle.return_value = None
+    client3.set_bucket_lifecycle.side_effect = RuntimeError("boom")
+    with caplog.at_level("WARNING"):
+        ensure_quarantine_lifecycle(client3, "pageindex")  # must not raise
+
+    # Wiring: documents.py (owner of the quarantine prefix) registers the rule
+    # as a get_minio() bucket-init hook at import; a raising hook is isolated.
+    from pageindex_mcp.storage import minio_ops
+
+    assert ensure_quarantine_lifecycle in minio_ops._BUCKET_INIT_HOOKS
+    boom = MagicMock(side_effect=RuntimeError("hook boom"))
+    monkeypatch.setattr(minio_ops, "_BUCKET_INIT_HOOKS", [boom, ensure_quarantine_lifecycle])
+    client4 = MagicMock()
+    client4.get_bucket_lifecycle.return_value = None
+    minio_ops._run_bucket_init_hooks(client4, "pageindex")  # must not raise
+    assert client4.set_bucket_lifecycle.called
+
+
+def _nosuchkey_lifecycle_error():
+    return S3Error(MagicMock(), "NoSuchLifecycleConfiguration", "none", "res", "req", "host")

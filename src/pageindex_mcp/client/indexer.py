@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import hashlib
 import logging
@@ -10,6 +11,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -349,6 +351,19 @@ _TRANSIENT_EXCEPTION_TYPES: tuple[type[BaseException], ...] = (
 )
 
 
+def _quarantine_defects(state, *extra: str) -> list[str]:
+    """RFC-050 D3b: defect CODES for quarantine/<sha256>.meta.json -- the
+    gate's first defect plus any explicit extra, deduped, never text."""
+    codes: list[str] = []
+    first = getattr(state, "first_defect", None)
+    if first is not None:
+        codes.append(getattr(first, "value", str(first)))
+    for code in extra:
+        if code not in codes:
+            codes.append(code)
+    return codes
+
+
 def _classify_transient_failure(exc: BaseException) -> bool:
     """Return ``True`` when *exc* looks like a transient infrastructure failure.
 
@@ -581,6 +596,11 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         # thread them into _upsert_registry_row, closing the MinIO re-read
         # race window for verdict data.
         self.last_verdict_fields: dict[str, Any] | None = None
+        # RFC-050 Task 1.5: {stage: seconds} for the last index() that got past
+        # the dedup check; converters_cli surfaces it as ``stage_timings``.
+        self.last_stage_timings: dict[str, float] | None = None
+        self._tree_build_s: float = 0.0
+        self._stage_s: dict[str, float] = {}
         self._staging_key: str | None = None
 
     # ------------------------------------------------------------------
@@ -1923,7 +1943,13 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             )
         if state.flat_garble_unrecovered:
             try:
-                save_quarantine(sha256, state.result, [filename])
+                save_quarantine(
+                    sha256,
+                    state.result,
+                    [filename],
+                    reason="garbling",
+                    defects=_quarantine_defects(state, TreeDefect.GARBLING.value),
+                )
             except Exception:
                 logger.warning(
                     "quarantine write failed for %s",
@@ -2232,6 +2258,23 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     doc_id,
                 )
 
+            # RFC-050 D3 (slimmed): best-effort raw-markdown sidecar for
+            # get_document(include="raw"). Never blocks persist.
+            if state.md_content is not None:
+                try:
+                    await asyncio.to_thread(
+                        save_raw,
+                        doc_id,
+                        f"{filename}.extracted.md",
+                        state.md_content.encode("utf-8"),
+                    )
+                except Exception:
+                    logger.warning(
+                        "save_raw failed for extracted.md sidecar, doc_id=%s",
+                        doc_id,
+                        exc_info=True,
+                    )
+
             await asyncio.to_thread(hash_cache_set, filename, sha256)
 
             logger.info(
@@ -2411,6 +2454,23 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 RAW_UPLOAD_FAILURES.inc()
                 logger.exception("save_raw failed after save_doc succeeded for doc_id=%s", doc_id)
 
+            # RFC-050 D3 (slimmed): best-effort raw-markdown sidecar for
+            # get_document(include="raw"). Never blocks persist.
+            if state.md_content is not None:
+                try:
+                    await asyncio.to_thread(
+                        save_raw,
+                        doc_id,
+                        f"{filename}.extracted.md",
+                        state.md_content.encode("utf-8"),
+                    )
+                except Exception:
+                    logger.warning(
+                        "save_raw failed for extracted.md sidecar, doc_id=%s",
+                        doc_id,
+                        exc_info=True,
+                    )
+
             await asyncio.to_thread(hash_cache_set, filename, sha256)
 
             logger.info(
@@ -2482,6 +2542,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         """
         self.last_content_class = None
         self.last_verdict_fields = None
+        self.last_stage_timings = None
 
         from ..config import effective_config_snapshot
 
@@ -2520,6 +2581,9 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         sha256 = hashlib.sha256(file_bytes).hexdigest()
         logger.debug("File %s: size=%d bytes, sha256=%s", filename, len(file_bytes), sha256[:12])
 
+        # RFC-050 D7 (HR2): the per-file dedup lock is held by the worker
+        # PARENT around this child (worker/subprocess_mgr.py), not here -- a
+        # lock taken in the child is stranded when the parent kills it.
         cached_sha256 = await asyncio.to_thread(hash_cache_get, filename)
         if cached_sha256 == sha256:
             docs = await asyncio.to_thread(list_processed_docs)
@@ -2562,8 +2626,13 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             extraction_stages_captured=[],
         )
 
+        # RFC-050 Task 1.5: per-stage wall clock (see _stage_add).
+        self._tree_build_s = 0.0
+        self._stage_s = {}
+
         with bind_log_context(doc_sha8=sha256[:8]):
             try:
+                _t0, _tb0 = time.monotonic(), self._tree_build_s
                 await self._convert_to_tree(
                     state,
                     file_path,
@@ -2574,6 +2643,8 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     pre_classification=pre_classification,
                     script_context=script_context,
                 )
+                self._stage_add("extraction", _t0, _tb0)
+                _t0, _tb0 = time.monotonic(), self._tree_build_s
 
                 # Zone-3: enrich ScriptContext with post-conversion content text.
                 # _convert_to_tree populates state.md_content from the fitz probe /
@@ -2665,6 +2736,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 # re-derivation afterwards).
                 await self._recover_flat_prefer(state, filename, expected_script)
                 await self._recover_landscape_reroute(state, filename)
+                self._stage_add("recovery", _t0, _tb0)
 
                 # D2-C (RFC-049): force REJECT for garbled trees that survived
                 # recovery.  Without this, (False, Route.TREE) persists a
@@ -2773,6 +2845,8 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                                     sha256,
                                     state.result,
                                     [filename],
+                                    reason=_reject_reason,
+                                    defects=_quarantine_defects(state),
                                 )
                             except Exception:
                                 logger.warning(
@@ -2822,10 +2896,46 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 )
 
             finally:
+                self._emit_stage_timings()
                 if state.tmp_lo_dir:
                     shutil.rmtree(state.tmp_lo_dir, ignore_errors=True)
                 if state.tmp_md_path and os.path.exists(state.tmp_md_path):
                     os.unlink(state.tmp_md_path)
+
+    # ------------------------------------------------------------------
+    # RFC-050 Task 1.5: stage timing
+    # ------------------------------------------------------------------
+
+    @contextlib.contextmanager
+    def _timed_tree_build(self):
+        """Accumulate wall time of one md_to_tree / page_index call."""
+        t0 = time.monotonic()
+        try:
+            yield
+        finally:
+            self._tree_build_s = getattr(self, "_tree_build_s", 0.0) + (time.monotonic() - t0)
+
+    def _stage_add(self, stage: str, t0: float, tree_build_at_t0: float) -> None:
+        """Add wall time since *t0* to *stage*, minus tree_build nested in it,
+        so extraction / tree_build / recovery are disjoint."""
+        nested = self._tree_build_s - tree_build_at_t0
+        elapsed = max(0.0, time.monotonic() - t0 - nested)
+        self._stage_s[stage] = self._stage_s.get(stage, 0.0) + elapsed
+
+    def _emit_stage_timings(self) -> None:
+        """Publish per-stage seconds for converters_cli (``stage_timings`` in
+        the stdout JSON, observed by the worker parent) and log one
+        ``stage_duration`` decision record per stage reached."""
+        timings = dict(getattr(self, "_stage_s", {}))
+        timings["tree_build"] = getattr(self, "_tree_build_s", 0.0)
+        self.last_stage_timings = {k: round(v, 3) for k, v in timings.items()}
+        for stage, seconds in self.last_stage_timings.items():
+            decision(
+                event="stage_duration",
+                choice=stage,
+                reason="per-document stage wall clock (RFC-050 Task 1.5)",
+                attrs={"duration_ms": int(seconds * 1000)},
+            )
 
     # ------------------------------------------------------------------
     # Retrieval (lazy-load from MinIO)
@@ -2909,7 +3019,8 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 if base_url:
                     litellm.api_base = prev_base
 
-        return await _llm_with_retry(call_fn)
+        with self._timed_tree_build():
+            return await _llm_with_retry(call_fn)
 
     async def _run_md_to_tree(self, md_path: str) -> dict:
         from pageindex.page_index_md import md_to_tree
@@ -2944,7 +3055,8 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 if base_url:
                     litellm.api_base = prev_base
 
-        result = await _llm_with_retry(call_fn)
+        with self._timed_tree_build():
+            result = await _llm_with_retry(call_fn)
 
         # RFC-015 D10: splice in any preamble content the fork's tree-builder
         # silently drops (content before the first heading in the source md).

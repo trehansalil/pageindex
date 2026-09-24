@@ -229,7 +229,11 @@ def _assert_quarantined(mocks, *, sha256, source_path):
     """
     mocks["save_quarantine"].assert_called_once()
     args, kwargs = mocks["save_quarantine"].call_args
-    assert not kwargs, f"save_quarantine is called positionally; got kwargs {kwargs!r}"
+    # RFC-050 D3b: the reject reason + defect CODES ride along as keywords.
+    assert set(kwargs) == {"reason", "defects"}, f"unexpected kwargs {kwargs!r}"
+    assert kwargs["reason"] in {"garbling", "node_garbling"}
+    assert kwargs["reason"] in kwargs["defects"], kwargs
+    assert all(isinstance(d, str) for d in kwargs["defects"])
     assert args[0] == sha256, (
         f"quarantine must be keyed by the content sha256 {sha256[:12]}…, got {args[0]!r}"
     )
@@ -403,6 +407,8 @@ async def test_flat_garble_quarantines_before_raise(monkeypatch, md_probe):
     mocks["save_doc"].assert_not_called()
     mocks["save_flat_doc"].assert_not_called()
     _assert_quarantined(mocks, sha256=_MD_SHA256, source_path=md_probe)
+    # RFC-050 Task 1.5: the stage split survives a reject (surfaced to the parent).
+    assert set(c.last_stage_timings) == {"extraction", "recovery", "tree_build"}
 
 
 # ===========================================================================
@@ -486,6 +492,38 @@ class TestSaveQuarantine:
 
         meta = json.loads(mc.objects[f"quarantine/{sha}.meta.json"])
         assert meta["filenames"] == ["a.pdf", "b.pdf"]
+
+    def test_meta_reason_defects_and_old_format_merge(self, monkeypatch):
+        """RFC-050 D3b: reason + defect codes land in .meta.json; a pre-D3b
+        meta (filenames only) still merges; a later reasonless write keeps
+        them; erase still removes the one .meta.json (no new keys)."""
+        import json
+
+        from pageindex_mcp.storage.documents import erase_quarantine, save_quarantine
+
+        mc = _FakeMinio()
+        _patch_minio(monkeypatch, mc)
+        sha = "d3b0001"
+        meta_key = f"quarantine/{sha}.meta.json"
+        mc.objects[meta_key] = json.dumps({"filenames": ["old.pdf"]}).encode()
+
+        save_quarantine(
+            sha, {}, ["new.pdf"], reason="garbling", defects=["node_count_low", "garbling"]
+        )
+        meta = json.loads(mc.objects[meta_key])
+        assert meta == {
+            "filenames": ["new.pdf", "old.pdf"],
+            "reason": "garbling",
+            "defects": ["node_count_low", "garbling"],
+        }
+
+        save_quarantine(sha, {}, ["third.pdf"])
+        meta = json.loads(mc.objects[meta_key])
+        assert meta["reason"] == "garbling" and meta["defects"] == ["node_count_low", "garbling"]
+        assert len(meta["filenames"]) == 3
+
+        assert erase_quarantine(sha) == []
+        assert not [k for k in mc.objects if k.startswith(f"quarantine/{sha}")]
 
     def test_increments_metric(self, monkeypatch):
         from pageindex_mcp.metrics import QUARANTINE_WRITES_TOTAL

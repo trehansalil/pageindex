@@ -274,12 +274,24 @@ async def find_relevant_documents(query: str) -> str:
         logger.debug("find_relevant_documents completed in %.3fs", elapsed)
 
 
-def get_document(doc_id: str) -> str:
+def get_document(doc_id: str, include: str = "") -> str:
     """Get detailed information about a specific document by doc_id. Requires
-    doc_id (string). Use recent_documents() to find available doc_ids."""
+    doc_id (string). Use recent_documents() to find available doc_ids.
+
+    include: optional string, default "" (unchanged behaviour). Pass "raw" to
+    add a ``raw_markdown`` field with the extracted markdown text, when
+    available (null for legacy docs or .md/.txt inputs that never had an
+    extraction step). Any other value is rejected.
+    """
     TOOL_CALLS.labels(tool="get_document").inc()
     start = time.monotonic()
-    logger.info("get_document called (doc_id=%s)", doc_id)
+    logger.info("get_document called (doc_id=%s, include=%s)", doc_id, include)
+
+    if include not in ("", "raw"):
+        TOOL_ERRORS.labels(tool="get_document").inc()
+        logger.warning("get_document: invalid include value %r", include)
+        return json.dumps({"error": f"Invalid include value: {include!r}. Supported: '', 'raw'"})
+
     try:
         data = get_doc(doc_id)
     except Exception:
@@ -291,6 +303,26 @@ def get_document(doc_id: str) -> str:
         TOOL_DURATION.labels(tool="get_document").observe(elapsed)
         logger.debug("get_document completed in %.3fs", elapsed)
 
+    raw_markdown: dict | None = None
+    if include == "raw":
+        from ..storage.documents import load_extracted_md
+
+        try:
+            _raw_md = load_extracted_md(doc_id)
+        except Exception:
+            logger.warning("get_document: load_extracted_md failed for %s", doc_id, exc_info=True)
+            _raw_md = None
+        if _raw_md is None:
+            raw_markdown = {
+                "raw_markdown": None,
+                "raw_markdown_note": (
+                    "No extracted markdown available (legacy document, or a "
+                    ".md/.txt input that never went through extraction)."
+                ),
+            }
+        else:
+            raw_markdown = {"raw_markdown": _raw_md}
+
     # FLAT-05-C2 (Step 5 integration): a flat doc carries a content_class and no
     # tree — return its verbalized blocks/row_records instead of an (empty) node
     # map. flat_doc_view returns None for a tree doc, so the existing path below
@@ -300,41 +332,41 @@ def get_document(doc_id: str) -> str:
         logger.info(
             "get_document: %s is a flat doc (content_class=%s)", doc_id, flat["content_class"]
         )
-        return json.dumps(
-            {
-                "doc_id": doc_id,
-                "doc_name": flat["doc_name"],
-                "status": "completed",
-                "content_class": flat["content_class"],
-                "total_nodes": 0,
-                "blocks": flat["blocks"],
-                "row_records": flat["row_records"],
-            },
-            indent=2,
-        )
+        result = {
+            "doc_id": doc_id,
+            "doc_name": flat["doc_name"],
+            "status": "completed",
+            "content_class": flat["content_class"],
+            "total_nodes": 0,
+            "blocks": flat["blocks"],
+            "row_records": flat["row_records"],
+        }
+        if raw_markdown is not None:
+            result.update(raw_markdown)
+        return json.dumps(result, indent=2)
 
     structure = data.get("structure", [])
     nm: dict = {}
     _build_node_map(structure, nm)
 
     logger.info("get_document: %s has %d nodes", doc_id, len(nm))
-    return json.dumps(
-        {
-            "doc_id": doc_id,
-            "doc_name": data.get("doc_name", data.get("filename", "unknown")),
-            "status": "completed",
-            "total_nodes": len(nm),
-            "top_level_sections": [
-                {
-                    "title": n.get("title"),
-                    "node_id": n.get("node_id"),
-                    "pages": f"{n.get('start_index')}-{n.get('end_index')}",
-                }
-                for n in structure
-            ],
-        },
-        indent=2,
-    )
+    result = {
+        "doc_id": doc_id,
+        "doc_name": data.get("doc_name", data.get("filename", "unknown")),
+        "status": "completed",
+        "total_nodes": len(nm),
+        "top_level_sections": [
+            {
+                "title": n.get("title"),
+                "node_id": n.get("node_id"),
+                "pages": f"{n.get('start_index')}-{n.get('end_index')}",
+            }
+            for n in structure
+        ],
+    }
+    if raw_markdown is not None:
+        result.update(raw_markdown)
+    return json.dumps(result, indent=2)
 
 
 def get_document_structure(doc_id: str) -> str:

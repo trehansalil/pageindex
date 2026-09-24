@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import json
 import logging
+import os
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -55,6 +56,53 @@ register_storage_prefix("figures/")
 register_storage_prefix("preloaded/")
 register_storage_prefix("verdicts/")
 register_storage_prefix("quarantine/")
+
+
+# RFC-050 D6 / HR5: quarantine/ is diagnosis-only and must expire on its own;
+# delete_doc() purges it eagerly, this lifecycle rule is the backstop for
+# copies never explicitly deleted. QUARANTINE_TTL_DAYS overrides; invalid or
+# < 1 falls back to the default rather than disabling the rule. The rule is
+# registered HERE because this module owns the quarantine prefix
+# (quarantine-prefix-confined gate); minio_ops.get_minio() runs the hook.
+_QUARANTINE_LIFECYCLE_RULE_ID = "quarantine-30d"
+_DEFAULT_QUARANTINE_TTL_DAYS = 30
+
+
+def _quarantine_ttl_days() -> int:
+    raw = os.environ.get("QUARANTINE_TTL_DAYS")
+    if raw is None:
+        return _DEFAULT_QUARANTINE_TTL_DAYS
+    try:
+        days = int(raw)
+    except ValueError:
+        logger.warning(
+            "QUARANTINE_TTL_DAYS=%r is not an integer; using default %d",
+            raw,
+            _DEFAULT_QUARANTINE_TTL_DAYS,
+        )
+        return _DEFAULT_QUARANTINE_TTL_DAYS
+    if days < 1:
+        logger.warning(
+            "QUARANTINE_TTL_DAYS=%d is < 1; using default %d",
+            days,
+            _DEFAULT_QUARANTINE_TTL_DAYS,
+        )
+        return _DEFAULT_QUARANTINE_TTL_DAYS
+    return days
+
+
+def ensure_quarantine_lifecycle(client: Any, bucket: str) -> None:
+    """Best-effort 30-day (default) expiration rule on quarantine/. Never raises."""
+    _minio_ops.ensure_prefix_expiry(
+        client,
+        bucket,
+        _QUARANTINE_LIFECYCLE_RULE_ID,
+        "quarantine/",
+        _quarantine_ttl_days(),
+    )
+
+
+_minio_ops.register_bucket_init(ensure_quarantine_lifecycle)
 
 
 # ---------------------------------------------------------------------------
@@ -379,6 +427,10 @@ def _remove_object_idempotent(
         return True  # NoSuchKey is idempotent success
 
 
+#: RFC-050 D3 raw-markdown sidecar suffix under uploads/<doc_id>/.
+_EXTRACTED_MD_SUFFIX = ".extracted.md"
+
+
 def _erase_uploads(ctx: ErasureContext) -> bool:
     """Step 1: uploads/<doc_id>/*  (also recovers doc_name for steps 5 and 7)."""
     removed = 0
@@ -393,8 +445,12 @@ def _erase_uploads(ctx: ErasureContext) -> bool:
             # load_doc yields no doc_name. Recover it from the upload object
             # basename (present for both flat and tree docs) so steps 5/7 can
             # still reach the hash-cache and preloaded stores (HR2).
+            # RFC-050 D3: the raw-markdown sidecar is <name>.extracted.md, so
+            # strip that suffix -- listing order (or a failed original save)
+            # must not turn the recovered name into the sidecar's.
             if ctx.doc_name is None:
                 basename = object_name.rsplit("/", 1)[-1]
+                basename = basename.removesuffix(_EXTRACTED_MD_SUFFIX)
                 if basename:
                     ctx.doc_name = basename
             try:
@@ -854,6 +910,48 @@ def save_raw(doc_id: str, filename: str, data: bytes) -> None:
         MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
 
 
+def load_extracted_md(doc_id: str) -> str | None:
+    """Return the raw-markdown sidecar for *doc_id*, or None if absent.
+
+    Looks only under ``uploads/<doc_id>/`` (never ``quarantine/`` -- HR5:
+    quarantined artifacts must never be reachable through this loader) for
+    the single object ending in ``.extracted.md`` written by
+    ``_persist_tree_result`` / ``_persist_flat_result`` (RFC-050 D3).
+    """
+    if not doc_id or "/" in doc_id or "\\" in doc_id or ".." in doc_id:
+        logger.warning("load_extracted_md: rejected malformed doc_id")
+        return None
+
+    MINIO_OPS.labels(operation="list").inc()
+    start = time.monotonic()
+    mc = _minio_ops.get_minio()
+    try:
+        for obj in mc.list_objects(
+            settings.minio_bucket, prefix=f"uploads/{doc_id}/", recursive=True
+        ):
+            object_name = obj.object_name
+            if object_name and object_name.endswith(".extracted.md"):
+                response = None
+                try:
+                    response = mc.get_object(settings.minio_bucket, object_name)
+                    return response.read().decode("utf-8", errors="replace")
+                finally:
+                    if response is not None:
+                        try:
+                            response.close()
+                            response.release_conn()
+                        except Exception:
+                            pass
+        return None
+    except S3Error as e:
+        if getattr(e, "code", "") == "NoSuchKey":
+            return None
+        logger.warning("load_extracted_md: MinIO error for doc %s: %s", doc_id, e)
+        return None
+    finally:
+        MINIO_DURATION.labels(operation="list").observe(time.monotonic() - start)
+
+
 # ---------------------------------------------------------------------------
 # Figure crop storage  (MinIO: figures/<doc_id>/fig-<index>.png)
 # ---------------------------------------------------------------------------
@@ -885,10 +983,26 @@ def save_figure(doc_id: str, index: int, png_bytes: bytes) -> str:
 # ---------------------------------------------------------------------------
 
 
-def save_quarantine(
-    sha256: str, payload: dict, filenames: list[str], *, bucket: str | None = None
+_QUARANTINE_REASON_MAX_CHARS = 64
+
+
+def save_quarantine(  # noqa: PLR0913 -- all but the first three are keyword-only
+    sha256: str,
+    payload: dict,
+    filenames: list[str],
+    *,
+    bucket: str | None = None,
+    reason: str | None = None,
+    defects: list[str] | None = None,
 ) -> None:
-    """Write quarantine/<sha256>.json and merge *filenames* into quarantine/<sha256>.meta.json."""
+    """Write quarantine/<sha256>.json and merge *filenames* into quarantine/<sha256>.meta.json.
+
+    RFC-050 D3b: *reason* (the reject reason code, e.g. ``garbling``) and
+    *defects* (TreeDefect codes) are recorded in the same .meta.json -- codes
+    only, never document text. They describe the latest write (the payload is
+    overwritten too); omitted arguments keep whatever an older meta held, and
+    a meta without them (pre-D3b) still loads and merges.
+    """
     mc = _minio_ops.get_minio()
     bkt = bucket or settings.minio_bucket
 
@@ -897,12 +1011,13 @@ def save_quarantine(
     mc.put_object(bkt, data_key, BytesIO(content), len(content), content_type="application/json")
 
     meta_key = f"quarantine/{sha256}.meta.json"
-    existing_filenames: list[str] = []
+    existing: dict = {}
     try:
         resp = mc.get_object(bkt, meta_key)
         try:
-            existing = json.loads(resp.read())
-            existing_filenames = existing.get("filenames", [])
+            loaded = json.loads(resp.read())
+            if isinstance(loaded, dict):
+                existing = loaded
         finally:
             resp.close()
             resp.release_conn()
@@ -912,8 +1027,16 @@ def save_quarantine(
     except Exception:
         pass
 
-    merged = sorted(set(existing_filenames) | set(filenames))
-    meta = {"filenames": merged}
+    merged = sorted(set(existing.get("filenames", [])) | set(filenames))
+    meta: dict[str, Any] = {"filenames": merged}
+    if reason is not None:
+        meta["reason"] = str(reason)[:_QUARANTINE_REASON_MAX_CHARS]
+    elif "reason" in existing:
+        meta["reason"] = existing["reason"]
+    if defects is not None:
+        meta["defects"] = [str(d)[:_QUARANTINE_REASON_MAX_CHARS] for d in defects]
+    elif "defects" in existing:
+        meta["defects"] = existing["defects"]
     meta_content = json.dumps(meta, indent=2).encode()
     mc.put_object(
         bkt,
