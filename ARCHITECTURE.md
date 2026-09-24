@@ -785,7 +785,7 @@ The `validate_tree` thresholds must be **calibrated before** the gate is wired a
   the compose file. Both containers listen on `0.0.0.0` internally (their Dockerfile `uvicorn --host`),
   so what actually bounds the exposure is the compose port mapping, and both are therefore published as
   **`127.0.0.1:8204:8204` and `127.0.0.1:8207:8207`** — loopback only. A bare `"8207:8207"` publishes on
-  all host interfaces, which put an AGPL rasterizer on the LAN with no opt-in; every consumer uses
+  all host interfaces, which would put an AGPL rasterizer on the LAN with no opt-in; every consumer uses
   `http://localhost:<port>` (`config.py:351`, `scripts/ocr_spike_eval.py:46-47`), so the narrowing costs
   nothing. Widening either mapping back to all interfaces is a change to this term, not a deployment
   detail;
