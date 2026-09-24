@@ -86,7 +86,8 @@ fi
 COLLECT_LOG="$(mktemp -t test-budget-collect.XXXXXX)"
 trap 'rm -f "$COLLECT_LOG"' EXIT
 
-COLLECT_CMD='exec timeout '"$COLLECT_TIMEOUT"' uv run pytest --collect-only -q'
+# with-timeout.sh, not bare `timeout`: GNU timeout is absent on macOS.
+COLLECT_CMD='exec bash "'"$LIB_DIR"'/with-timeout.sh" '"$COLLECT_TIMEOUT"' uv run pytest --collect-only -q'
 
 # Prefer a memory-capped cgroup scope. Probe first: systemd-run is absent on CI
 # runners and needs polkit for an unprivileged --scope, and a hard dependency

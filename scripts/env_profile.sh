@@ -164,7 +164,7 @@ case "$PI_MINIO_ACCESS" in auto|cluster|public) ;; *) echo "PI_MINIO_ACCESS must
 # ─── MinIO ───────────────────────────────────────────────────────────────────
 tcp_open() {  # host port [timeout]
   local h="$1" p="$2" t="${3:-2}"
-  timeout "$t" bash -c "exec 3<>/dev/tcp/$h/$p" 2>/dev/null
+  bash "$(dirname "${BASH_SOURCE[0]}")/lib/with-timeout.sh" "$t" bash -c "exec 3<>/dev/tcp/$h/$p" 2>/dev/null
 }
 
 MINIO_ACCESS_MODE="n/a"

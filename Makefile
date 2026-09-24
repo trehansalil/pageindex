@@ -233,7 +233,7 @@ test:
 
 # Escape hatch. Only for a host with no systemd, and never in the background.
 test-uncapped:
-	timeout 1800 uv run pytest $(PYTEST_ARGS)
+	bash scripts/lib/with-timeout.sh 1800 uv run pytest $(PYTEST_ARGS)
 
 # ─── Quality gates ──────────────────────────────────────────────────────────
 # The gates were a suite of scripts nothing ever executed: before 2026-09-23 no
@@ -265,7 +265,7 @@ define capped
 			sh -c 'echo 900 > /proc/self/oom_score_adj; exec timeout 1800 $(1)'; \
 	else \
 		echo "systemd-run unavailable — running under timeout only, watch memory yourself"; \
-		timeout 1800 $(1); \
+		bash scripts/lib/with-timeout.sh 1800 $(1); \
 	fi
 endef
 
