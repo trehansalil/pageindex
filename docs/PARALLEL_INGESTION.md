@@ -70,34 +70,54 @@ Two independent gates exist:
 
 | Control | Where | Scope |
 |---|---|---|
-| `MAX_JOBS` (default 1, ceiling 4) | `worker.py`, `resolve_max_jobs()` | per worker process |
-| `MEM_ADMISSION_FLOOR_BYTES` ≈ 2.2 GiB | `memory_admission.py:22`, gate at `worker.py:372-375` | cross-process, Redis lock `pageindex:admission` |
+| `MAX_JOBS` (default 1, or 2 when `config.docling_offload_configured()` is true and the env var is unset; ceiling 4) | `worker/lifecycle.py`, `resolve_max_jobs()` | per worker process |
+| `MEM_ADMISSION_FLOOR_BYTES` ≈ 2.2 GiB, or `MEM_ADMISSION_FLOOR_SERVICE_BYTES` = 800 MiB when `config.docling_offload_configured()` is true | `memory_admission.py`, gate in `wait_for_memory()` | cross-process, Redis lock `pageindex:admission` |
 
 Multiple worker **processes** are already safe and already deployed — KEDA
 scales replicas 1↔2 (`hetzner-deployment-service/apps/pageindex-mcp/worker-scaledobject.yaml`).
 Cross-process safety comes from arq's `unique=True` cron dedup (`worker.py:689-691`)
 and the admission lock. No per-document locking serializes distinct documents.
 
-## 4. The opportunity: the memory floor is stale for remote Docling
+## 4. RFC-050 D1/D2: the admission floor and MAX_JOBS are now route-aware
 
 `_run_converter_subprocess` (`worker.py:219-249`) always spawns the converter
-child. But when `DOCLING_SERVICE_URL` is set, `client.py:762-790` takes the
-`_remote_pdf_to_markdown` branch and **never invokes the local converter**, so
-the lazy Docling/PyTorch import at `converters.py:1058` is never reached.
+child. But when `DOCLING_SERVICE_URL` is set (the in-cluster Docling service
+pod — `services/docling-service`, not the retired Scaleway remote endpoint),
+`client.py`'s `_remote_pdf_to_markdown` branch **never invokes the local
+converter**, so the lazy Docling/PyTorch import at `converters.py:1058` is
+never reached. The child's peak RSS on that path is dominated by PyMuPDF text
+extraction and tree building — materially below the ~1.9 GiB figure baked
+into `MEM_ADMISSION_FLOOR_BYTES`.
 
-The child's peak RSS on that path is dominated by PyMuPDF text extraction and
-tree building — materially below the ~1.9 GiB figure baked into
-`MEM_ADMISSION_FLOOR_BYTES` and the k8s pod-memory comments. Nothing in the code
-distinguishes the two routes for admission purposes.
+As of RFC-050 D1/D2 this is no longer stale: `memory_admission.py` uses
+`MEM_ADMISSION_FLOOR_SERVICE_BYTES` (800 MiB default) instead of
+`MEM_ADMISSION_FLOOR_BYTES`, and `resolve_max_jobs()` (`worker/lifecycle.py`)
+defaults `MAX_JOBS` to 2 instead of 1, whenever
+`config.docling_offload_configured()` is true — **corrected post-review,
+2026-09-24**: this is `DOCLING_SERVICE_URL` set *and* `docling` importable
+(the indexer's docling converter entry exists), not `DOCLING_SERVICE_URL`
+alone, since a set-but-unusable URL should not silently raise concurrency. An
+explicit `PAGEINDEX_WORKER_MAX_JOBS` still wins, and the worker warns at
+startup when `DOCLING_SERVICE_URL` is set but offload isn't configured.
+Per-upload staging is orthogonal to this and stays present for every arq job
+regardless.
 
-Remote Docling is the current default (`PI_DOCLING=remote`), so the deployment
-is being throttled by a number derived for a path it no longer takes.
+The gate also now factors in the pod's cgroup memory limit (v2/v1), taking
+`min(host MemAvailable, cgroup headroom)` rather than only the host-wide
+reading. **Corrected post-review, 2026-09-24:** `cgroup headroom` is
+`limit − working_set`, where `working_set = current − inactive_file` (v2
+reads `inactive_file` from `memory.stat`; v1 reads `total_inactive_file` from
+the same file) — mirroring kubelet's own headroom calculation rather than
+subtracting raw `memory.current`/`usage_in_bytes`, which would overcount
+reclaimable page cache as pressure. It falls back to the raw-usage
+subtraction when the stat can't be parsed — see
+[ENV_PROFILES.md](ENV_PROFILES.md#pageindex_worker_max_jobs--only-raise-it-when-docling-is-offloaded).
 
 ## 5. Recommended order
 
 1. Add `--file` (repeatable) — cheap, unblocks arbitrary cross-folder sets.
-2. Make the admission floor route-aware: a lower floor when
-   `DOCLING_SERVICE_URL` is set. Measure the remote-path child's actual peak RSS
+2. ~~Make the admission floor route-aware~~ — done (RFC-050 D1/D2, §4 above).
+   Still open: measure the in-cluster-service-path child's actual peak RSS
    first — do not guess.
 3. Raise `maxReplicaCount` in the KEDA ScaledObject, rather than raising
    `MAX_JOBS`. That preserves the existing horizontal-scaling design; raising
@@ -105,3 +125,47 @@ is being throttled by a number derived for a path it no longer takes.
    intra-pod admission control.
 
 Steps 2 and 3 change production memory behaviour and need an explicit decision.
+
+## Deployment sizing (RFC-050)
+
+The in-cluster docling-service pod moves Docling's RSS off the worker, not off
+the node: both land on the same single k3s node (`portfolio`, 7.6 GB RAM,
+allocatable 7,937,228 Ki ≈ 7.57 GiB), next to redis, postgres and minio.
+
+| Pod | Replicas | Memory request | Memory limit | Concurrency knob |
+|---|---|---|---|---|
+| `docling-service` (`services/docling-service`, uvicorn `--workers 1`, :8080) | 1 | ~2.5Gi | ~3.5Gi | one conversion at a time; ~2 GB peak RSS per its README |
+| `pageindex-mcp-worker` | KEDA 1↔2 (`maxReplicaCount: 2`) | ~1Gi | ~1.5Gi | `PAGEINDEX_WORKER_MAX_JOBS=2` — the default once `config.docling_offload_configured()` is true (§4) |
+| worker admission floor | — | — | — | `MEM_ADMISSION_FLOOR_SERVICE_BYTES` = 800 MiB (838860800) |
+
+Fit check against the node's scheduled requests on 2026-09-24 (2,904 Mi,
+including today's 512 Mi worker request): replacing that with 2 × 1 Gi
+workers and adding 2.5 Gi for docling-service gives ≈ 7,000 Mi of requests,
+≈ 90 % of allocatable. A second KEDA replica still schedules, but with little
+room left, so anything else added to the node can leave it `Pending`. Limits
+are overcommitted (already 154 % today) — so the cgroup-aware admission gate
+(§4) is what holds a pod inside its limit, not the scheduler.
+
+Two figures are **assumptions, not measurements**. The 1.5 Gi worker limit
+assumes the service-path child peaks well under the 1.9–3.1 GiB local-Docling
+child — measure it (§5 step 2) before relying on `MAX_JOBS=2` inside that
+limit. The G1 run should watch total node memory, not only worker RSS
+(RFC-050 Risk 4). Read stage timings from worker logs with
+`make g1-timings LOGS="baseline=a.log baseline=b.log post=c.log post=d.log"`
+(`scripts/g1_stage_timings.py`). The Prometheus scrape is deferred to Phase 3.
+
+The manifests are **not in this repo**: they live in the separate
+`hetzner-deployment-service` repo (`apps/pageindex-mcp/…`, see §3). The change
+is on its branch `feature/pageindex-docling-service`: a `docling-service`
+Deployment + Service, the configmap fix, worker resources, and a
+`docling-service-image-updated` deploy route that
+`.github/workflows/build-push-docling-service.yml` here dispatches after
+publishing `ghcr.io/trehansalil/docling-service`. Merge it only **after** the
+G1 baseline arm is recorded: anything on that repo's `main` goes live on the
+next image dispatch. The earlier sketch,
+[infra/hetzner-deployment-service-rfc050.patch](infra/hetzner-deployment-service-rfc050.patch),
+is kept for the sizing rationale. As of 2026-09-24
+the live `pageindex-mcp-config` still sets `PAGEINDEX_WORKER_MAX_JOBS="10"`.
+That explicit value wins over the D2 default, and the ceiling clamps it to 4.
+It also still points `DOCLING_SERVICE_URL` at Scaleway. The patch corrects
+both.

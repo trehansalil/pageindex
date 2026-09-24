@@ -176,31 +176,50 @@ toggle you are on.
 
 | Variable | Default | What it does |
 |---|---|---|
-| `PAGEINDEX_WORKER_MAX_JOBS` | `1` | arq worker concurrency. See the warning below. |
+| `PAGEINDEX_WORKER_MAX_JOBS` | `1` (`2` when `DOCLING_SERVICE_URL` is set and this is left unset) | arq worker concurrency. See the warning below. |
+| `MEM_ADMISSION_FLOOR_BYTES` | `2_300_000_000` (~2.2 GiB) | Cross-process admission floor for local Docling conversion. |
+| `MEM_ADMISSION_FLOOR_SERVICE_BYTES` | `838_860_800` (800 MiB) | Cross-process admission floor used instead of the above when `DOCLING_SERVICE_URL` is set — conversion is offloaded, so the worker only holds thin I/O-bound state. |
 | `MINIO_REGION` | *(empty)* | Signing region. Empty means the SDK discovers it. Set it only if your MinIO/S3 is configured with a non-default region — pinning the wrong one makes every request fail to authenticate. |
 | `MINIO_PATH_PREFIX` | *(empty)* | Route prefix for direct S3 calls. `make env` sets this for you when remote MinIO is reached over the public route; see [How presigning works](#how-presigning-works-over-the-public-route). |
 
-### `PAGEINDEX_WORKER_MAX_JOBS` — only raise it against remote Docling
+### `PAGEINDEX_WORKER_MAX_JOBS` — only raise it when Docling is offloaded
 
-The worker defaults to **one job in flight**. A single Docling index can peak at
+The worker defaults to **one job in flight**. A local Docling index can peak at
 several GiB, so letting two heavy jobs stack doubles peak RSS on an already
 memory-tight node and invites an OOM kill — the exact failure that used to
 freeze uploads at `status=processing`.
 
-With **remote** Docling (`DOCLING=remote`, the default) the worker is I/O-bound
-— it waits on Scaleway — so 2–4 parallel jobs are safe and roughly linear:
+When `DOCLING_SERVICE_URL` points at the in-cluster Docling service pod, the
+worker only holds thin I/O-bound state during a job rather than the local
+conversion peak, so parallel jobs are safe. As of RFC-050 D2,
+`resolve_max_jobs()` (`worker/lifecycle.py`) applies this automatically:
+**if `PAGEINDEX_WORKER_MAX_JOBS` is left unset and `DOCLING_SERVICE_URL` is
+set, the default becomes 2** instead of 1. An explicit env value always wins
+over that default:
 
 ```bash
-PAGEINDEX_WORKER_MAX_JOBS=4 make worker
+PAGEINDEX_WORKER_MAX_JOBS=4 make worker   # explicit override, either profile
 ```
 
-**Do not raise it against `DOCLING=local`.** There the conversion runs in your
-own process tree and the memory is yours to pay for.
+**Do not raise it when Docling runs locally (`DOCLING_SERVICE_URL` unset).**
+There the conversion runs in your own process tree and the memory is yours to
+pay for.
 
-The value is clamped to `[1, 4]` (`MAX_JOBS_CEILING` in `worker.py`); anything
-higher, lower, or unparseable falls back inside that range rather than being
-trusted, so a typo or a stray remote-profile setting cannot OOM the worker.
-Raising the ceiling is a deliberate code change.
+The value is clamped to `[1, 4]` (`MAX_JOBS_CEILING` in `worker/lifecycle.py`);
+anything higher, lower, or unparseable falls back to the memory-safe default
+(1) rather than being trusted, and a value above the ceiling is clamped to 4
+with a startup warning, so a typo or a stray profile setting cannot OOM the
+worker. Raising the ceiling is a deliberate code change.
+
+The memory-admission gate (`memory_admission.py`) mirrors this split: the
+floor used to decide whether a job may start is `MEM_ADMISSION_FLOOR_BYTES`
+(~2.2 GiB) normally, or the much smaller `MEM_ADMISSION_FLOOR_SERVICE_BYTES`
+(800 MiB default) when `DOCLING_SERVICE_URL` is set. The gate also now reads
+the pod's cgroup memory limit (v2 `memory.max`/`memory.current`, falling back
+to v1) and uses `min(host MemAvailable, cgroup headroom)` when a finite cgroup
+limit exists, rather than only the host-wide reading. The resolved floor,
+concurrency mode, and whether cgroup accounting is active are logged once at
+worker startup.
 
 ## Running things
 

@@ -32,7 +32,13 @@ governs:
 
 ## Overview
 
-This design addresses two ~~coupled~~ related (not coupled — **Amendment 2026-09-24, Iter 7**, matching the RFC) concerns in the PageIndex ingestion pipeline: (1) throughput bottlenecks caused by a stale memory admission gate and conservative worker concurrency defaults, and (2) the absence of persisted raw extraction output. The solution tunes the admission gate for remote Docling, raises default worker concurrency, wires the existing `save_raw` storage function into the pipeline, and adds a ~~`--from-raw` re-processing path~~ CLI dry-run replay (`--from-raw`) of cached extraction for stored and rejected documents **(Amendment 2026-09-24, Iteration 6)**. ~~Recovery loop parallelization provides an additional latency reduction for documents requiring multiple recovery attempts.~~ Recovery method optimization (D5, redefined in Iteration 2) reduces recovery latency without changing the sequential dispatch order.
+**Current contract (2026-09-24, Iter 9 — MINIMAL scope, user decision.)** This design covers three concerns: (1) throughput — a cgroup-aware memory admission gate and a service-aware worker concurrency default, targeting the in-cluster `services/docling-service` pod; (2) a per-file dedup lock (D7, done — keyed on `sha256(filename)` since the hash cache is filename-keyed, not content-keyed) that closes an orphan-copy race before concurrency rises; and (3) persisting the tree builder's input markdown for persisted documents only (D3, slimmed), queryable via `get_document(doc_id, include="raw")`. The CLI replay (D4) and recovery method optimization (D5) from earlier iterations are **deferred** to a follow-up RFC — see their sections below, kept for reference rather than deleted.
+
+<details><summary>Amendment history (Iter 1-8, collapsed)</summary>
+
+Iterations 1-8 built toward a `--from-raw` CLI dry-run replay of cached extraction (D4, requiring a state sidecar and a fail-closed write-barrier overlay) and recovery method optimization (D5). Both grew substantially in scope across iterations (see each section's history) without a quantified throughput contribution, and are cut in Iter 9's MINIMAL-scope pass.
+
+</details>
 
 ## Key Design Principles
 
@@ -55,14 +61,15 @@ This design addresses two ~~coupled~~ related (not coupled — **Amendment 2026-
 ```mermaid
 graph TB
   subgraph "Worker Host"
-    Worker["arq Worker<br/>MAX_JOBS=2 (remote)"]
-    AdmGate["Admission Gate<br/>route-aware threshold"]
+    Worker["arq Worker<br/>MAX_JOBS=2 (Docling service mode)"]
+    AdmGate["Admission Gate<br/>cgroup-aware, route-aware threshold"]
+    DedupLock["Dedup Lock (D7)"]
     SubProc1["Converter Subprocess 1"]
     SubProc2["Converter Subprocess 2"]
   end
 
-  subgraph "Remote Services"
-    Docling["Docling Service<br/>(Scaleway)"]
+  subgraph "In-Cluster Services"
+    Docling["services/docling-service pod<br/>(FastAPI, warm models)"]
   end
 
   subgraph "Storage"
@@ -72,8 +79,9 @@ graph TB
   end
 
   Worker --> AdmGate
-  AdmGate -->|"RSS < threshold"| SubProc1
-  AdmGate -->|"RSS < threshold"| SubProc2
+  AdmGate --> DedupLock
+  DedupLock -->|"lock acquired"| SubProc1
+  DedupLock -->|"lock acquired"| SubProc2
   SubProc1 -->|"extract"| Docling
   SubProc2 -->|"extract"| Docling
   SubProc1 -->|"save_raw + save_doc"| MinIO
@@ -86,21 +94,37 @@ graph TB
 
 ### Architecture Decisions
 
-**D1: Route-aware admission threshold (RFC-050 D1):** The existing `_has_headroom(floor)` in `memory_admission.py` already accepts a configurable floor parameter. The change threads a route-aware floor value from the caller (`process_document_job`) based on `DOCLING_SERVICE_URL`: 800 MiB for remote, 2.2 GiB for local. Alternative considered: adding a `remote_docling: bool` parameter to `wait_for_memory` — rejected because passing the floor value directly is simpler and more flexible. **(Amendment 2026-09-24: simplified design based on existing `floor` param)**
+**D1: Cgroup-aware, route-aware admission threshold (RFC-050 D1) — Done (implemented 2026-09-24, uncommitted):** Two changes. (a) `available` is computed as `min(host MemAvailable, cgroup_headroom)` instead of the host value alone — `memory_admission.py:35-46` reads only `/proc/meminfo` today. `cgroup_headroom` is `memory.max − memory.current` (cgroup v2, when `memory.max` is numeric) or `memory.limit_in_bytes − memory.usage_in_bytes` (v1 fallback); if neither is readable, `available` falls back to the host value, unchanged from today. (b) The existing `_has_headroom(floor)` already accepts a configurable floor parameter; the change threads a route-aware floor value from the caller (`process_document_job`) based on `DOCLING_SERVICE_URL`: `MEM_ADMISSION_FLOOR_SERVICE_BYTES` (800 MiB) for service mode, `MEM_ADMISSION_FLOOR_BYTES` (2.2 GiB) for local. Alternative considered: a `remote_docling: bool` parameter on `wait_for_memory` — rejected in favor of passing the floor value directly. **(Amendment 2026-09-24: simplified design based on existing `floor` param)**
 
-**D2: MAX_JOBS auto-default (RFC-050 D2):** `resolve_max_jobs(raw)` in `worker/lifecycle.py` already exists with `MAX_JOBS_DEFAULT` and `MAX_JOBS_CEILING`. ~~Modify it to check `DOCLING_SERVICE_URL` and default to 2 when remote.~~ **(Amendment 2026-09-24, Iter 8, following Task 1.3's Iter 7 rule):** keep it pure. Add a `remote: bool` parameter, which the call site computes from `settings.docling_service_url`, and default to 2 when `remote` is true. Env var `PAGEINDEX_WORKER_MAX_JOBS` always takes precedence. Alternative: always default to 1 — rejected because the remote path's RSS is low enough that serial execution wastes capacity. **(Amendment 2026-09-24: leverages existing `resolve_max_jobs` function)**
+**D2: MAX_JOBS auto-default (RFC-050 D2) — Done (implemented 2026-09-24, uncommitted; the `pageindex_worker_max_jobs` gauge was not added — R2 AC4 deferred to Phase 3 with the worker `/metrics` scrape):** `resolve_max_jobs(raw)` in `worker/lifecycle.py` already exists with `MAX_JOBS_DEFAULT` and `MAX_JOBS_CEILING`. ~~Modify it to check `DOCLING_SERVICE_URL` and default to 2 when remote.~~ **(Amendment 2026-09-24, Iter 8, following Task 1.3's Iter 7 rule):** keep it pure. Add a `remote: bool` parameter, which the call site computes from `settings.docling_service_url`, and default to 2 when `remote` is true. Env var `PAGEINDEX_WORKER_MAX_JOBS` always takes precedence. Alternative: always default to 1 — rejected because the remote path's RSS is low enough that serial execution wastes capacity. **(Amendment 2026-09-24: leverages existing `resolve_max_jobs` function)**
 
-**D3: Raw output storage path (RFC-050 D3):** Raw markdown is stored at `uploads/<doc_id>/<original_filename>.extracted.md` (~~`.raw.md`~~ — **Amendment 2026-09-24, Iteration 5**: stale suffix corrected) using the existing `save_raw` function. Alternative: a separate `raw/` prefix — rejected because co-locating with the upload keeps the per-document directory self-contained and simplifies erasure. **(Amendment 2026-09-24, Iteration 5):** rejected documents have no `doc_id`, so their markdown goes to `quarantine/<sha256>.extracted.md` via a new `save_quarantine_extracted` — co-located with RFC-049's quarantine objects under the same full-sha256 key, erased by the same two functions, and unserved. Rejected alternative: `uploads/<sha256[:8]>/` (Iteration 4) — no erasure caller, no discovery, 32-bit collision space.
+**D3: Raw output storage path (RFC-050 D3) — Current contract (2026-09-24, Iter 9, slimmed):** Raw markdown is stored at `uploads/<doc_id>/<original_filename>.extracted.md` using the existing `save_raw` function, for persisted documents only. Alternative: a separate `raw/` prefix — rejected because co-locating with the upload keeps the per-document directory self-contained and simplifies erasure. Rejected documents get no markdown object at all (see [D3b](#3b-reject-reason-in-quarantine-meta-new-d3b)) — the Iteration 5-6 plan to also write `quarantine/<sha256>.extracted.md` (+ a state sidecar) is cut with D4 (deferred), which was its only consumer.
 
-**D4: From-raw re-processing (RFC-050 D4, P2):** ~~A `--from-raw` flag that must traverse 4 layers: `preprocess_client.py` CLI → HTTP `POST /upload/files` → arq job metadata → converter subprocess → `_convert_to_tree`. Each layer needs to thread the flag. Alternative: a local-only reprocessing script that calls the indexer directly — considered but deferred as it bypasses the job queue's error handling and retry logic. **(Amendment 2026-09-24: reclassified P2, effort revised 4h→8-10h due to cross-layer complexity)**~~
+<details><summary>Amendment history (Iterations 4-6)</summary>
 
-**(Amendment 2026-09-24, Iteration 6):** the chain above was wrong — `preprocess_client.py` never calls HTTP; its `_process_one(sem, file, run_id)` (`preprocess_client.py:154`) drives the same `_run_converter_subprocess` (`worker/subprocess_mgr.py:243`) as the arq job. The 8-10h figure was also stale against the RFC's Iteration 4 estimate of 12-16h. **Decision: a CLI dry-run replay.** It runs in the normal converter child (NG1): `converters_cli` gets replay arguments, skips `probe_conversion_route` (handshake values come from the state sidecar) and calls `index()` in replay mode, which bypasses the hash-cache dedup and swaps `_convert_to_tree`'s converter dispatch for the cached text and restored state. Everything after the dispatch — `prepare_tree`, `validate_tree`, `finalize_gate_and_route`, the GateSpec recovery loop, and the persist methods, where the verdict is computed — runs unchanged behind a write barrier. Alternatives rejected: (a) an HTTP `from_raw` form flag — `POST /upload/files` takes file bytes, so it forces a re-upload, and a `POST /reprocess/{doc_id}` route adds a job type and re-persist rules (RFC NG5); (b) returning before the persist methods — that skips the verdict, flat-route construction and the RFC-047 Surya density fallback, which all live inside them; (c) re-deriving state from markdown — page count, landscape pages and the pre-NFKC RTL signal are not in the text. Effort ~~13-15h~~ 14.5-16.5h (RFC Wave 3; **Iter 7**: +1.5h for the read-your-writes overlay). **(Amendment 2026-09-24, Iter 7):** the barrier is an in-memory overlay over the MinIO and Redis clients (§3), not "record and drop" — the persist methods read back their own writes. Rejected: stubbing `_confirm_write_visible` (every future read-after-write breaks replay again) and a scratch bucket (infrastructure, and a leak lands in real storage). **(Amendment 2026-09-24, Iter 8):**
-- **Install.** The overlay replaces the module singletons (`minio_ops._minio_client`, `cache._redis_sync`, `cache._redis_async`) through a context manager, not the accessor functions.
-- **Fail-closed.** Non-emulated methods raise `ReplayWriteBlocked`.
-- **Host-only.** The replay is a host-only operator CLI: the container image ships no `preprocess_client.py`.
-- **Effort** 17.5-19.5h. All four are specified in §3.
+Iteration 4 tried `uploads/<sha256[:8]>/` for rejected documents — no erasure caller, no discovery, 32-bit collision space. Iteration 5 moved it to `quarantine/<sha256>.extracted.md` (full sha256, RFC-049's key space) via a new `save_quarantine_extracted`. Iteration 6 added a state sidecar beside it for the planned replay (D4).
 
-**D5: Recovery method optimization (RFC-050 D5, P2):** Recovery methods live in `client/recovery.py` as `RecoveryMixin` — 8 async methods all mutating shared `ExtractionState`. Sequential ordering is a correctness invariant (NOT parallelizable). Optimization targets individual method internals (profiling hotspots, reducing redundant I/O, caching intermediate results) while preserving the sequential GateSpec dispatch order. Alternative: parallelization via `asyncio.gather` — rejected because all 8 methods share mutable `ExtractionState` with sequential ordering as a correctness invariant. **(Amendment 2026-09-24: added actual module location and method names) (Amendment 2026-09-24, Iteration 3: redefined from parallelization to optimization — shared mutable state makes parallelization infeasible; reclassified P1→P2)**
+</details>
+
+**D4: From-raw re-processing (RFC-050 D4) — DEFERRED, 2026-09-24, Iter 9.** Cut from this RFC (MINIMAL scope, user decision). Follow-up option: a scratch bucket + scratch Redis db, ~3h, instead of the fail-closed read-your-writes overlay below.
+
+<details><summary>D4 — full Iter 1-8 design, kept for the follow-up RFC (collapsed)</summary>
+
+A CLI dry-run replay (`preprocess_client.py --from-raw`) running in the normal converter child: `converters_cli` gets replay arguments, skips `probe_conversion_route` (handshake values come from a state sidecar), and calls `index()` in replay mode, bypassing the hash-cache dedup and swapping `_convert_to_tree`'s converter dispatch for cached text and restored state. Everything after the dispatch (`prepare_tree`, `validate_tree`, `finalize_gate_and_route`, the GateSpec recovery loop, the persist methods where the verdict is computed) runs unchanged behind a write barrier — a fail-closed, in-memory read-your-writes overlay replacing the module singletons `minio_ops._minio_client`, `cache._redis_sync` and `cache._redis_async` via a context manager, restored on exit. Rejected alternatives: an HTTP `from_raw` form flag (forces a re-upload); returning before the persist methods (skips the real verdict); re-deriving state from markdown (page count, landscape pages, the pre-NFKC RTL signal aren't in the text); "record and drop" instead of read-your-writes (breaks on `save_doc`'s own visibility check); a scratch bucket (rejected then as "infrastructure, and a leak lands in real storage" — reconsidered as the Iter 9 follow-up option since the overlay's per-method emulation list turned out to be the expensive part). Iter 8 effort: 17.5-19.5h.
+
+</details>
+
+**D5: Recovery method optimization (RFC-050 D5) — DEFERRED, 2026-09-24, Iter 9.** Cut from this RFC (MINIMAL scope, user decision) — no quantified target; Task 1.5's stage-timing histogram (kept) gives a follow-up RFC real data to profile against.
+
+<details><summary>D5 — Iter 1-8 design, kept for the follow-up RFC (collapsed)</summary>
+
+Recovery methods live in `client/recovery.py` as `RecoveryMixin` — 8 async methods all mutating shared `ExtractionState`. Sequential ordering is a correctness invariant (NOT parallelizable — rejected alternative: `asyncio.gather`). Optimization targets individual method internals (profiling hotspots, reducing redundant I/O, caching intermediate results) while preserving the sequential GateSpec dispatch order.
+
+</details>
+
+**D3b: Reject reason in quarantine meta (RFC-050 D3b) — Done (implemented 2026-09-24, uncommitted):** See [§3b](#3b-reject-reason-in-quarantine-meta-new-d3b) below.
+
+**D7: Per-file dedup lock (RFC-050 D7) — Done (implemented 2026-09-24, uncommitted):** See [§1b](#1b-per-file-dedup-lock-new-d7) below.
 
 ### Deployment Architecture
 
@@ -138,51 +162,175 @@ sequenceDiagram
   SP->>SP: _run_md_to_tree(md_content) → validate_tree → route
   alt TREE route
     SP->>M: save_doc(doc_id, tree_json)
-    SP->>M: save_raw(doc_id, .extracted.md + .extracted.state.json)
+    SP->>M: save_raw(doc_id, .extracted.md)
   else FLAT route
     SP->>M: save_flat_doc(doc_id, flat_json)
-    SP->>M: save_raw(doc_id, .extracted.md + .extracted.state.json)
+    SP->>M: save_raw(doc_id, .extracted.md)
   else REJECT
-    SP->>M: save_quarantine_extracted(sha256, md, state)
-    SP->>M: save_quarantine(sha256, ...) — garbling rejects only
+    SP->>M: save_quarantine(sha256, ...) — garbling rejects only; .meta.json now carries reject_reason + defects (D3b)
   end
   SP-->>W: result
 ```
 
-**(Amendment 2026-09-24, Iteration 6):** diagram corrected — the extracted markdown is saved in the persist methods after tree construction (Iteration 3), not before `_run_stages`; `save_quarantine` is keyed by sha256, not `doc_id`; the state sidecar is new in this iteration.
+**(Amendment 2026-09-24, Iter 9):** diagram slimmed — no state sidecar, no `save_quarantine_extracted` (both cut with D4, deferred). `save_raw` for `.extracted.md` runs at exactly the two persist sites shown.
 
 ## Service Contracts
 
 ### 1. Admission Gate (memory_admission.py)
 
-**Responsibility**: Block job start until host memory is sufficient for safe extraction.
-**Location**: `src/pageindex_mcp/memory_admission.py` (NOT `worker/job.py`). **(Amendment 2026-09-24: corrected location)**
+**Responsibility**: Block job start until memory (host and cgroup) is sufficient for safe extraction.
+**Location**: `src/pageindex_mcp/memory_admission.py`.
+
+**Current contract (2026-09-24, Iter 9 — corrected post-review, 2026-09-24).**
+
+<details><summary>Pre-review Iter 9 text (superseded — headroom used raw memory.current/usage_in_bytes, keyed on DOCLING_SERVICE_URL alone)</summary>
 
 ```python
-# _has_headroom already accepts floor param — leverage it
+def _cgroup_headroom() -> int | None:
+    # cgroup v2: read memory.max and memory.current; if memory.max == "max", try v1 fallback
+    # cgroup v1 fallback: memory.limit_in_bytes - memory.usage_in_bytes
+    # returns None if neither is readable (caller then uses the host value alone)
+    ...
+
+def _available_bytes() -> int:
+    host = _host_mem_available()          # existing /proc/meminfo read
+    cg = _cgroup_headroom()
+    return min(host, cg) if cg is not None else host
+
+# _has_headroom already accepts floor param — unchanged
 async def wait_for_memory(redis, *, floor: int | None = None) -> bool:
     effective_floor = floor or MEM_ADMISSION_FLOOR_BYTES
-    # ... calls _has_headroom(floor=effective_floor)
+    available = _available_bytes()
+    # ... calls _has_headroom(available, floor=effective_floor)
+```
+
+- Caller in `process_document_job` (`worker/job.py:184`) passes `floor=MEM_ADMISSION_FLOOR_SERVICE_BYTES` when `DOCLING_SERVICE_URL` is set.
+
+</details>
+
+```python
+def _working_set(current: int, stat_text: str, *, v2: bool) -> int:
+    # v2: parse `inactive_file` out of memory.stat; v1: `total_inactive_file`
+    # working_set = current - inactive_file, mirroring kubelet's own headroom calc
+    # falls back to `current` unadjusted if the stat can't be parsed
+    ...
+
+def _cgroup_headroom() -> int | None:
+    # cgroup v2: read memory.max, memory.current, memory.stat; if memory.max == "max", try v1 fallback
+    #   headroom = memory.max - _working_set(memory.current, memory.stat, v2=True)
+    # cgroup v1 fallback: headroom = memory.limit_in_bytes - _working_set(memory.usage_in_bytes, memory.stat, v2=False)
+    # returns None if neither is readable (caller then uses the host value alone)
+    ...
+
+def _available_bytes() -> int:
+    host = _host_mem_available()          # existing /proc/meminfo read
+    cg = _cgroup_headroom()
+    return min(host, cg) if cg is not None else host
+
+# _has_headroom already accepts floor param — unchanged
+async def wait_for_memory(redis, *, floor: int | None = None) -> bool:
+    effective_floor = floor or MEM_ADMISSION_FLOOR_BYTES
+    available = _available_bytes()
+    # ... calls _has_headroom(available, floor=effective_floor)
 ```
 
 **Internal Interfaces**:
-- Caller in `process_document_job` passes `floor=MEM_ADMISSION_FLOOR_REMOTE_BYTES` when `DOCLING_SERVICE_URL` is set
-- `_has_headroom(floor)` already exists — no new parameter needed on that function
-- Logs selected threshold at first call
-- **(Amendment 2026-09-24, Iter 8):** `_has_headroom(available, floor=MEM_ADMISSION_FLOOR_BYTES)` is at `memory_admission.py:49`. `wait_for_memory` (`:72-99`) calls it at `:86` without `floor`; the new `floor` keyword on `wait_for_memory` is passed through there. `MEM_ADMISSION_FLOOR_REMOTE_BYTES` is a module constant beside `MEM_ADMISSION_FLOOR_BYTES` (`:23`), read via `os.getenv`. The file is `src/pageindex_mcp/memory_admission.py`; there is no `worker/memory_admission.py`. The single caller is `worker/job.py:184`.
+- `_has_headroom(available, floor=MEM_ADMISSION_FLOOR_BYTES)` is at `memory_admission.py:49` and is unchanged.
+- `wait_for_memory` (`:72-99`) calls it at `:86`; it gains the new `floor` keyword, and `available` is now `_available_bytes()` (cgroup-aware) instead of the host-only read at `:35-46`.
+- Caller in `process_document_job` (`worker/job.py:184`) passes `floor=MEM_ADMISSION_FLOOR_SERVICE_BYTES` when `config.docling_offload_configured()` is true (`DOCLING_SERVICE_URL` set AND `docling` importable — the indexer's docling converter entry exists), not on `DOCLING_SERVICE_URL` alone.
+- `MEM_ADMISSION_FLOOR_SERVICE_BYTES` is a module constant beside `MEM_ADMISSION_FLOOR_BYTES` (`:23`), read via `os.getenv`.
+- Cgroup headroom is computed from `working_set = current − inactive_file` (v2: `memory.stat`'s `inactive_file`; v1: `total_inactive_file`), not raw `memory.current`/`usage_in_bytes` — matching kubelet's own calculation. Falls back to the raw-usage subtraction when the stat can't be parsed.
+- If host memory cannot be read, or neither cgroup file is readable, the gate still fails open (admits the job) — unchanged behavior (see Error Handling).
+- Logs the selected threshold and mode (local/service) at first call, and warns at startup when `DOCLING_SERVICE_URL` is set but offload isn't configured (worker stays in local-floor mode).
+
+### 1b. Per-File Dedup Lock (New D7)
+
+**Responsibility**: Prevent two concurrent ingests of identical file bytes from both minting a `doc_id` (HR2 orphan-copy race).
+**Location (post-review, 2026-09-24)**: new module `storage/ingest_lock.py`; acquired and released in the **parent**, `worker/subprocess_mgr.py`'s `_run_converter_subprocess`, around `_run_converter_child` — not in `index()`. Covers both callers of `_run_converter_subprocess`: the arq job (`job.py`) and `preprocess_client.py`.
+
+<details><summary>Pre-review Iter 9 text (superseded — lock lived inside `index()`, keyed on filename content, no cancel/parent-death handling)</summary>
+
+**Location**: new module `storage/ingest_lock.py`; wraps the existing hash-cache dedup check (`client/indexer.py:2521`) and the two `hash_cache_set` call sites (`:2234`, `:2412`). `index()` now wraps `_index_locked()`.
+
+**Current contract (2026-09-24, Iter 9):** the hash cache is keyed by filename, not content sha256, so the lock is keyed on `sha256(filename)` too — Redis key `pageindex:ingest-lock:<sha256(filename)>`.
+
+```python
+async def acquire_dedup_lock(redis, filename: str, *, ttl_ms: int) -> str | None:
+    key = f"pageindex:ingest-lock:{hashlib.sha256(filename.encode()).hexdigest()}"
+    token = secrets.token_hex(16)
+    ok = await redis.set(key, token, nx=True, px=ttl_ms)
+    return token if ok else None
+
+async def release_dedup_lock(redis, filename: str, token: str) -> None:
+    # Lua compare-and-delete: only the holder's own token releases the lock
+    key = f"pageindex:ingest-lock:{hashlib.sha256(filename.encode()).hexdigest()}"
+    await redis.eval(_CAS_DEL_SCRIPT, 1, key, token)
+```
+
+**Flow:** `ttl_ms = (JOB_TIMEOUT + 60) * 1000`. Before the existing `hash_cache_get` check, acquire the lock. Holder: run the dedup check, extract if needed, `hash_cache_set`, then release via the Lua compare-and-delete in a `finally` block. Waiter: poll every 3s up to `JOB_TIMEOUT`, then re-run the dedup check — if now populated, take the dedup-skip path; otherwise proceed to extract. If Redis is unreachable, proceed unlocked and log a warning (fail-open) — availability over strict mutual exclusion. Caveats: a waiter's poll-wait counts against its own job timeout; a SIGKILLed holder (no `finally` runs) blocks other ingests of that filename until the lock's TTL expires.
+
+</details>
+
+**Current contract (2026-09-24, Iter 9 — corrected post-review, 2026-09-24):** the lock now lives in the parent, so a killed child (OOM/timeout) no longer strands it — the parent's own `finally` releases it regardless of how the child exited. Key is still filename-derived, since the hash cache is filename-keyed, not content-keyed: `pageindex:ingest-lock:<sha256(basename(abspath(pdf_path)))>`.
+
+**Job deadline (2026-09-24, Iter 9, Task 1.8 — done):** the lock wait and the memory-admission wait no longer eat arq's budget unaccounted. `worker/job.py` sets `deadline = start + JOB_TIMEOUT − CHILD_GRACE_SECONDS`; the child timeout is clamped to the time remaining and the lock wait is capped at `remaining / 2`, so the child always times out before arq cancels the job. `preprocess_client.py` passes no deadline.
+
+```python
+async def acquire_dedup_lock(redis, pdf_path: str, *, ttl_ms: int) -> str | None:
+    key = f"pageindex:ingest-lock:{hashlib.sha256(os.path.basename(os.path.abspath(pdf_path)).encode()).hexdigest()}"
+    token = secrets.token_hex(16)
+    ok = await redis.set(key, token, nx=True, px=ttl_ms)
+    return token if ok else None
+
+async def release_dedup_lock(redis, pdf_path: str, token: str) -> None:
+    # Lua compare-and-delete: only the holder's own token releases the lock
+    key = f"pageindex:ingest-lock:{hashlib.sha256(os.path.basename(os.path.abspath(pdf_path)).encode()).hexdigest()}"
+    await redis.eval(_CAS_DEL_SCRIPT, 1, key, token)
+
+# _run_converter_subprocess (worker/subprocess_mgr.py)
+async def _run_converter_subprocess(pdf_path: str, ...):
+    ttl_ms = (MAX_EFFECTIVE_TIMEOUT + KILL_GRACE_S + 60) * 1000  # upper bound; child timeout unknown pre-handshake
+    max_wait_s = min(INGEST_LOCK_MAX_WAIT_S, min(CHILD_TIMEOUT, MAX_EFFECTIVE_TIMEOUT) / 2)
+    token = await acquire_dedup_lock(redis, pdf_path, ttl_ms=ttl_ms)
+    try:
+        if token is None:
+            token = await _wait_for_lock_or_timeout(redis, pdf_path, max_wait_s)  # None on expiry -> proceed unlocked, warn
+        return await _run_converter_child(pdf_path, ...)
+    except asyncio.CancelledError:
+        if token is not None:
+            await release_dedup_lock(redis, pdf_path, token)  # CAS delete, then re-raise
+        raise
+    finally:
+        if token is not None:
+            await release_dedup_lock(redis, pdf_path, token)
+```
+
+**Flow:** `ttl_ms = (MAX_EFFECTIVE_TIMEOUT + kill grace + 60) * 1000` — an upper bound, since the parent can't know the child's effective timeout before the handshake. Before spawning the child, the parent acquires the lock. Holder: runs `_run_converter_child`, releases via the Lua compare-and-delete in its own `finally`, whether the child returns, times out or is OOM-killed. Waiter: polls up to `min(INGEST_LOCK_MAX_WAIT_S` (default 900s)`, half of min(CHILD_TIMEOUT, MAX_EFFECTIVE_TIMEOUT))`; on expiry, proceeds unlocked with a warning rather than blocking indefinitely — the wait counts against the arq `JOB_TIMEOUT` budget. A cancellation during acquire does a token compare-and-delete before re-raising. If Redis is unreachable, proceeds unlocked and logs a warning (fail-open) — availability over strict mutual exclusion. Caveats: a waiter's poll-wait still counts against the arq `JOB_TIMEOUT`; a **parent** (worker pod) death — as distinct from a child death — strands the lock until TTL expiry, since nothing external reaps it. The `ingest_dedup_lock` decision point lives in a new `_WORKER_POINTS` table (`obs/decision_points.py`), not the existing indexer-side decision table.
 
 ### 2. Raw Output Persistence (save_raw)
 
-**Current contract (2026-09-24, Iter 8):**
-- **What is written.** The tree builder's input markdown (post-stages, post-recovery `state.md_content`) and a state sidecar, at four sites, each guarded by `md_content is not None` and wrapped in `try/except` → `logger.warning`:
-  - `_persist_tree_result` (`client/indexer.py:2407`) and `_persist_flat_result` (`:2226`): after the existing upload `save_raw`, write `save_raw(doc_id, f"{filename}.extracted.md", md)` and `save_raw(doc_id, f"{filename}.extracted.state.json", state_json)`.
-  - The `flat_garble_unrecovered` branch in `_persist_flat_result` (`:1924-1933`) and `case (False, Route.REJECT)` in `index()` (`:2762-2787`, every reject reason): `save_quarantine_extracted(sha256, md, state)` writes `quarantine/<sha256>.extracted.md` and `.extracted.state.json`, and emits the new `quarantine_extracted_write` decision event.
-- **Content types.** `save_raw` replaces its inline `.pdf`-or-octet-stream ternary with a suffix map: `.pdf` → `application/pdf`, `.md` → `text/markdown`, `.json` → `application/json`, anything else → `application/octet-stream`.
-- **Snapshot helpers.** `extraction_state_snapshot` / `restore_extraction_state` in `helpers/` cover the R3 AC5 field list. They never include the guarded gate fields or `flat_garble_unrecovered`, and they keep `has_png` on each `pic_results` entry. Both persist methods gain the keyword `pre_classification=None`.
-- **Erasure.** `_erase_quarantine` and `erase_quarantine` remove four exact keys.
-- **Retention.** `quarantine/` expires after 30 days ([Property 3b](#property-3b-quarantine-expires-within-30-days-added-2026-09-24-iter-8)).
+**Current contract (2026-09-24, Iter 9 — slimmed, MINIMAL scope):**
+- **What is written.** The tree builder's input markdown (post-stages, post-recovery `state.md_content`), at exactly **two** sites, guarded by `md_content is not None` and wrapped in `try/except` → `logger.warning`:
+  - `_persist_tree_result` (`client/indexer.py:2407`) and `_persist_flat_result` (`:2226`): after the existing upload `save_raw`, write `save_raw(doc_id, f"{filename}.extracted.md", md)`.
+- **No state sidecar, no reject-side writes.** Both were cut with D4 (deferred, its only consumer).
+- **Content types.** `save_raw` replaces its inline `.pdf`-or-octet-stream ternary with a suffix map: `.pdf` → `application/pdf`, `.md` → `text/markdown`, anything else → `application/octet-stream`.
+- **Erasure.** No change — `uploads/` prefix delete already covers it.
+- **Retention.** `quarantine/` (unaffected by this section — see §3b) expires after 30 days ([Property 3b](#property-3b-quarantine-expires-within-30-days-added-2026-09-24-iter-8)).
 
-<details><summary>§2 amendment history (Iterations 2-7)</summary>
+### 3b. Reject Reason in Quarantine Meta (New D3b)
+
+**Responsibility**: Give an operator the reject reason and defect list for a rejected document without a markdown+state pair.
+**Location**: `storage/documents.py`, `save_quarantine` (`:888-936`).
+
+```python
+def save_quarantine(sha256: str, payload: dict, filenames: list[str], *,
+                     reject_reason: str, defects: list[str], bucket: str | None = None) -> None:
+    # .meta.json now includes: {"filenames": [...], "reject_reason": reject_reason, "defects": defects}
+```
+
+Called at the two existing reject points — the `flat_garble_unrecovered` branch in `_persist_flat_result` (`:1924-1933`) and `case (False, Route.REJECT)` in `index()` (`:2762-2787`), for every reject reason, not only the garbling defects `save_quarantine` already handles. No new object, no new erasure key — the existing quarantine erasure (`_erase_quarantine`, `erase_quarantine`) and the 30-day TTL already cover `.meta.json` as a whole.
+
+<details><summary>§2 amendment history (Iterations 2-8, collapsed)</summary>
 
 **Responsibility**: Persist ~~raw extraction markdown before tree construction~~ the tree builder's input markdown, after tree construction, at persist or reject time **(Amendment 2026-09-24, Iter 7)**.
 
@@ -234,6 +382,10 @@ def restore_extraction_state(snapshot: dict) -> tuple[dict, list[str]]:
 </details>
 
 ### 3. From-Raw Re-Processing Path
+
+**DEFERRED (2026-09-24, Iter 9). Cut from this RFC** (MINIMAL scope, user decision). The full Iter 6-8 replay contract is kept below, collapsed, for a follow-up RFC — including the rejected sketches, so the same dead ends aren't re-explored. Follow-up option: replace the fail-closed read-your-writes overlay with a scratch bucket + scratch Redis db (real writes to a disposable store), ~3h instead of the ~17.5-19.5h overlay spec below.
+
+<details><summary>§3 — full Iter 1-8 design, kept for the follow-up RFC (collapsed)</summary>
 
 **(Superseded 2026-09-24, Iteration 6 — see "Replay contract" below.)** ~~**Responsibility**: Skip PDF extraction when cached raw output exists.~~ The sketch below had the wrong signature — the real one is `_process_one(sem: asyncio.Semaphore, file: Path, run_id: str) -> None` (`preprocess_client.py:154`), and it takes a local file, not a `doc_id`.
 
@@ -351,74 +503,90 @@ async def index(self, file_path, ..., replay: ReplayInput | None = None): ...
 
 </details>
 
-### 4. MCP Query Tool: get_raw_output
+</details>
 
-**Responsibility**: Expose raw extraction output through the MCP query surface.
+### 4. MCP Query Tool: get_document(doc_id, include="raw")
+
+**Responsibility**: Expose raw extraction output through the existing `get_document` MCP tool.
+
+**Current contract (2026-09-24, Iter 9 — reversed from the Iter 7 sixth-tool plan):**
 
 ```python
 @mcp.tool()
-async def get_raw_output(doc_id: str) -> str:
-    """Retrieve the raw markdown extracted from a document before tree construction."""
-    raw = storage.load_raw(doc_id)
-    if raw is None:
-        raise ValueError(f"No raw output found for {doc_id}")
-    return raw.decode("utf-8")
+async def get_document(doc_id: str, include: str | None = None) -> dict | str:
+    """Retrieve a processed document. include="raw" returns the persisted extraction markdown instead."""
+    if include == "raw":
+        raw = storage.documents.load_raw(doc_id)
+        if raw is None:
+            raise ValueError(f"No raw output found for {doc_id}")
+        return raw.decode("utf-8")
+    # ... existing get_document(doc_id) behavior, unchanged when include is None
 ```
 
-**Scope (Amendment 2026-09-24, Iteration 5):** `doc_id` only — persisted documents only. `load_raw` lists `uploads/<doc_id>/*.extracted.md` and never touches `quarantine/`, so a rejected document's sha256 (or any other string) returns not-found. No `list_raw_outputs` discovery tool is added. Rejected-document output is an unserved diagnostic copy (HR5), read by operators from MinIO.
+**Scope:** `doc_id` only — persisted documents only. `load_raw` lists `uploads/<doc_id>/*.extracted.md` and never touches `quarantine/`, so a rejected document's sha256 (or any other string) returns not-found. Rejected-document output stays unserved (HR5) — trivially, since D3 (Iter 9) never writes it in the first place.
 
-**(Amendment 2026-09-24, Iter 8):**
-- **Frozen tool surface.** `FROZEN_SURFACE["tools"]` (`scripts/gates/source_invariants.py:501-507`, five names) pins the tool surface. Task 3.4 adds `get_raw_output` to it in the same commit, as an RFC-sanctioned facade change.
-- **Storage imports.** `load_raw` is imported from `storage.documents` and is not added to the storage package's frozen `__all__` (35 names, `source_invariants.py:461`). `('SIDECAR_VERSION',)` is `REMOVED_SURFACE["storage"]` (`:80`), not the frozen surface.
-- **DESIGN.md.** It documents 5 registered tools plus 2 planned (`compare_tiers`, `find_clause_across_docs`). `get_raw_output` becomes the sixth registered tool.
+**Frozen surfaces (unchanged by this design):**
+- `FROZEN_SURFACE["tools"]` (`scripts/gates/source_invariants.py:501-507`, five names) is **not** modified — `get_document` already exists; only its signature gains an optional parameter, which is not a facade-frozen surface concern.
+- `load_raw` is imported from `storage.documents` directly and is not added to the storage package's frozen `__all__` (35 names, `source_invariants.py:461`).
+- `DESIGN.md` continues to document 5 registered tools plus 2 planned (`compare_tiers`, `find_clause_across_docs`); `get_document`'s entry gains the `include` parameter (Task 3.4).
+
+<details><summary>Amendment history</summary>
+
+Iteration 5 scoped a new `get_raw_output(doc_id)` tool to persisted documents only. Iter 7-8 made it a sixth registered MCP tool, requiring a `FROZEN_SURFACE["tools"]` update. **(Iter 9, reversed):** folded into `get_document(doc_id, include="raw")` instead — cheaper than growing the frozen tool surface, and the MCP contract stays at five tools.
+
+</details>
 
 ## Data Models
 
 ### Storage Layout (MinIO additions)
 
+**Current contract (2026-09-24, Iter 9 — slimmed):**
+
 ```
 uploads/<doc_id>/
   <original_filename>               # raw upload (existing)
-  <original_filename>.extracted.md  # post-stages markdown (NEW — RFC-050 D3; was .raw.md)
-  <original_filename>.extracted.state.json  # replay state sidecar (NEW — RFC-050 D3, Iteration 6)
+  <original_filename>.extracted.md  # post-stages markdown (NEW — RFC-050 D3; persisted documents only)
 processed/<doc_id>.json             # tree JSON (existing)
 processed/<doc_id>.flat.json        # flat JSON (existing)
 processed/<doc_id>.meta.json        # metadata (existing)
 quarantine/<sha256>.json            # rejected payload (existing, RFC-049; garbling rejects only)
-quarantine/<sha256>.meta.json       # filenames (existing, RFC-049)
-quarantine/<sha256>.extracted.md    # rejected-doc markdown (NEW — RFC-050 D3, Iteration 5; all reject reasons)
-quarantine/<sha256>.extracted.state.json  # rejected-doc state sidecar (NEW — RFC-050 D3, Iteration 6)
+quarantine/<sha256>.meta.json       # filenames + reject_reason + defects (RFC-049 existing object;
+                                     #   reject_reason/defects fields NEW — RFC-050 D3b, Iter 9)
 ```
 
-~~**(Amendment 2026-09-24, Iteration 5):** `quarantine/` has no lifecycle TTL — RFC-049's 30-day TTL is superseded by [RFC-050 D6](../rfcs/050-pipeline-acceleration-raw-export.md#decision-summary).~~ **(Amendment 2026-09-24, Iter 8; user decision, HR5):** `quarantine/` carries a 30-day MinIO lifecycle expiration (prefix filter `quarantine/`), which covers all four object kinds above. It is RFC-049 Task 7.5c, implemented by RFC-050 Task 3.6; see [D6](../rfcs/050-pipeline-acceleration-raw-export.md#decision-summary) and [Property 3b](#property-3b-quarantine-expires-within-30-days-added-2026-09-24-iter-8).
+No state sidecar and no `quarantine/*.extracted.*` objects (cut, Iter 9 — their only consumer, D4, is deferred).
+
+`quarantine/` carries a 30-day MinIO lifecycle expiration (prefix filter `quarantine/`), covering both object kinds above. It is RFC-049 Task 7.5c, implemented by RFC-050 Task 3.6; see [D6](../rfcs/050-pipeline-acceleration-raw-export.md#decision-summary) and [Property 3b](#property-3b-quarantine-expires-within-30-days-added-2026-09-24-iter-8).
 
 ### Configuration Additions
 
 ```python
-MEM_ADMISSION_FLOOR_REMOTE_BYTES: int = 800 * 1024 * 1024  # 800 MiB
+MEM_ADMISSION_FLOOR_SERVICE_BYTES: int = 800 * 1024 * 1024  # 800 MiB
 # MEM_ADMISSION_FLOOR_BYTES remains at ~2.2 GiB (existing)
-# MAX_JOBS default: 2 if DOCLING_SERVICE_URL set, else 1
+# MAX_JOBS default: 2 if config.docling_offload_configured(), else 1  (post-review fix, 2026-09-24)
 ```
 
 ### Erasure Note
 
-`uploads/` already covers ~~`*.raw.md`~~ `*.extracted.md` since raw files are stored under `uploads/<doc_id>/`. The existing `_ERASURE_MANIFEST` entry handles erasure without a new entry. **(Amendment 2026-09-24, Iteration 5):** the reject-path object `quarantine/<sha256>.extracted.md` needs no new manifest entry either, but the existing quarantine step (`_erase_quarantine`) and the standalone `erase_quarantine` must each remove it as a third key — both delete exact keys, not a prefix. **(Amendment 2026-09-24, Iteration 6):** `uploads/<doc_id>/<filename>.extracted.state.json` is covered by the `uploads/` prefix delete; `quarantine/<sha256>.extracted.state.json` is a fourth exact key in `_erase_quarantine` and `erase_quarantine`. A replay creates nothing, so it adds no erasure surface.
+`uploads/` already covers `*.extracted.md` since raw files are stored under `uploads/<doc_id>/`. The existing `_ERASURE_MANIFEST` entry handles erasure without a new entry. **(Iter 9):** there is no reject-side `.extracted.*` object to erase (cut with D4) — D3b adds fields to `quarantine/<sha256>.meta.json`, an object the existing quarantine erasure already removes whole. No new erasure surface anywhere in this RFC. **Backups (Phase 6, operator work, not in code; user decision 2026-09-24):** only `uploads/` (so `.extracted.md` rides along) and the Postgres registry are backed up, nightly, 30-day retention; HR2 reaches them through an erasure ledger of erased `doc_id`/sha256 replayed against any restore before it is served — see ARCHITECTURE.md § Compliance.
+
+**Post-review fix (2026-09-24):** the doc-name recovery helper (used to reconstruct a document's original filename from its stored object keys, e.g. for erasure logging/audit) SHALL strip the `.extracted.md` suffix in addition to its existing known suffixes — covering the sidecar-only case where `uploads/<doc_id>/` still holds `<filename>.extracted.md` but the original `<filename>` upload has already been removed (or never persisted). Without this, recovery would return a filename carrying the `.extracted.md` suffix for that case.
 
 ### Content-Type Fix
 
-**(Amendment 2026-09-24):** The existing `save_raw` function maps `.pdf` → `application/pdf` and defaults to `application/octet-stream`. When called with ~~`<filename>.raw.md`~~ `<filename>.extracted.md`, it will set `application/octet-stream` — semantically wrong. ~~Add `".md": "text/markdown"` to the content-type map in `save_raw`.~~ **(Amendment 2026-09-24, Iter 8, following §2's Iter 7 note):** there is no content-type map. `save_raw` (`storage/documents.py:838-854`) uses an inline `.pdf`-or-octet-stream ternary. Replace it with a suffix → content-type map: `.pdf` → `application/pdf`, `.md` → `text/markdown`, `.json` → `application/json`, default `application/octet-stream` (Task 3.1).
+The existing `save_raw` function (`storage/documents.py:838-854`) uses an inline `.pdf`-or-octet-stream ternary. When called with `<filename>.extracted.md`, it sets `application/octet-stream` — semantically wrong. Replace it with a suffix → content-type map: `.pdf` → `application/pdf`, `.md` → `text/markdown`, default `application/octet-stream` (Task 3.1). **(Iter 9):** no `.json` entry needed — the state sidecar that would have used it is cut.
 
 ## Correctness Properties
 
 ### Property 1: Admission Gate Route Selection
 
-*For any* worker startup with `DOCLING_SERVICE_URL` set, the admission gate SHALL use `MEM_ADMISSION_FLOOR_REMOTE_BYTES` (800 MiB). *For any* startup without it, SHALL use `MEM_ADMISSION_FLOOR_BYTES` (2.2 GiB).
+*For any* worker startup with `DOCLING_SERVICE_URL` set, the admission gate SHALL use `MEM_ADMISSION_FLOOR_SERVICE_BYTES` (800 MiB). *For any* startup without it, SHALL use `MEM_ADMISSION_FLOOR_BYTES` (2.2 GiB).
 
 **Validates: Requirements 1, 2**
 
 ### Property 2: Raw Output Persistence Completeness
 
-**Current contract (2026-09-24, Iter 8):** *For any* document whose `state.md_content` is not `None` at persist or reject time, the pipeline SHALL write two objects: the markdown (`<filename>.extracted.md` under `uploads/<doc_id>/`, or `quarantine/<sha256>.extracted.md` for a rejected document) and its state sidecar (`.extracted.state.json` beside it). The writes happen at exactly four sites: the two persist methods, the `flat_garble_unrecovered` branch and `case (False, Route.REJECT)`. A failed write never changes the route or blocks the rejection. *For any* document whose `md_content` is `None`, no such object is written.
+**Current contract (2026-09-24, Iter 9 — slimmed):** *For any* persisted document (TREE or FLAT route) whose `state.md_content` is not `None` at persist time, the pipeline SHALL write `<filename>.extracted.md` under `uploads/<doc_id>/`. The write happens at exactly two sites: the two persist methods. A failed write never changes the route or blocks persistence. *For any* document whose `md_content` is `None`, no such object is written. *For any* rejected document, no `.extracted.md` is ever written (see [Property 8](#property-8-reject-metadata-completeness-added-2026-09-24-iter-9) instead).
 
 <details><summary>Property 2 amendment history (Iterations 2-6)</summary>
 
@@ -430,7 +598,7 @@ MEM_ADMISSION_FLOOR_REMOTE_BYTES: int = 800 * 1024 * 1024  # 800 MiB
 
 ### Property 3: Erasure Cascade Completeness
 
-*For any* document with a persisted raw output, `delete_doc(doc_id)` SHALL remove the raw output file. After deletion, zero files SHALL remain under the document's MinIO prefix. **(Amendment 2026-09-24, Iteration 5):** *For any* rejected document, `erase_quarantine(sha256)` — and `delete_doc` of a later-persisted document with the same bytes, via `ctx.sha256` — SHALL leave zero of `quarantine/<sha256>.json`, `.meta.json`, `.extracted.md`, and — **(Amendment 2026-09-24, Iteration 6)** — `.extracted.state.json`. ~~Retention is not time-bounded (RFC-049 Property 12a's 30-day TTL is superseded by RFC-050 D6).~~ **(Amendment 2026-09-24, Iter 8):** retention is bounded at 30 days. See Property 3b.
+*For any* document with a persisted raw output, `delete_doc(doc_id)` SHALL remove the raw output file. After deletion, zero files SHALL remain under the document's MinIO prefix. *For any* rejected document, `erase_quarantine(sha256)` — and `delete_doc` of a later-persisted document with the same bytes, via `ctx.sha256` — SHALL leave zero of `quarantine/<sha256>.json` and `.meta.json` (the latter now carrying D3b's `reject_reason`/`defects` fields, which are removed with the whole object; no separate key). Retention is bounded at 30 days — see Property 3b.
 
 **Validates: Requirement 3 (AC3)**
 
@@ -442,11 +610,19 @@ MEM_ADMISSION_FLOOR_REMOTE_BYTES: int = 800 * 1024 * 1024  # 800 MiB
 
 ### Property 3a: Rejected Output Is Never Served (Added: 2026-09-24, Iteration 5)
 
-*For any* string `k` that is not the `doc_id` of a persisted document — including a rejected document's sha256 — `get_raw_output(k)` SHALL return not-found, and no MCP tool or HTTP route SHALL read from `quarantine/`.
+**Current contract (2026-09-24, Iter 9 — trivial, kept as a regression guard):** *For any* string `k` that is not the `doc_id` of a persisted document — including a rejected document's sha256 — `get_document(k, include="raw")` SHALL return not-found, and no MCP tool or HTTP route SHALL read from `quarantine/`. This is now trivially true rather than load-bearing: since D3 (Iter 9) never writes reject-side markdown, there is nothing for a rejected sha256 to leak. Kept as a regression guard (a future PR re-adding reject-side writes without re-checking this property would be caught by the test).
 
 **Validates: Requirement 3 (AC4), HR5**
 
+### Property 8: Reject Metadata Completeness (Added: 2026-09-24, Iter 9)
+
+*For any* document that reaches a reject point (the `flat_garble_unrecovered` branch or `case (False, Route.REJECT)`), `quarantine/<sha256>.meta.json` SHALL contain a non-empty `reject_reason` and a `defects` list reflecting the actual gate defects at that point. A failed write is logged and never blocks the rejection.
+
+**Validates: Requirement 3 (D3b)**
+
 ### Property 4: From-Raw Equivalence
+
+**DEFERRED (2026-09-24, Iter 9).** Cut from this RFC with D4/R4 (deferred). Kept below for the follow-up RFC.
 
 ~~*For any* document processed via `--from-raw`, the tree/flat output SHALL be identical to processing the same raw markdown through the full pipeline (extraction skipped, all subsequent stages preserved). Two separate threading paths must be supported: (a) `preprocess_client.py` CLI → subprocess (2-layer); (b) HTTP → arq → subprocess (4-layer). State reconstruction at `_convert_to_tree` must set ~10+ state fields beyond `md_content` — stored metadata or synthesis required. **(Amendment 2026-09-24, Iteration 4): Added two-path acknowledgement and state reconstruction note.**~~
 
@@ -455,6 +631,8 @@ MEM_ADMISSION_FLOOR_REMOTE_BYTES: int = 800 * 1024 * 1024  # 800 MiB
 **Validates: Requirement 4 (AC1, AC2)**
 
 ### Property 4a: Replay Writes Nothing (Added: 2026-09-24, Iteration 6)
+
+**DEFERRED (Iter 9).**
 
 *For any* replay — persisted or rejected, recovery on or off, any route or verdict — the MinIO, Redis and registry clients SHALL receive zero executed mutating calls, and every stored object SHALL be byte-identical before and after.
 
@@ -469,11 +647,15 @@ MEM_ADMISSION_FLOOR_REMOTE_BYTES: int = 800 * 1024 * 1024  # 800 MiB
 
 ### Property 4b: Quarantine Is Read Only by the Operator CLI (Added: 2026-09-24, Iteration 6)
 
+**DEFERRED (Iter 9).**
+
 The quarantine replay reader SHALL live in `storage/documents.py`, the only file `check_quarantine_prefix_confined` allows to hold the prefix, and SHALL have no non-test caller other than `preprocess_client.py`. No MCP tool, HTTP route or worker job SHALL reach it.
 
 **Validates: Requirement 4 (AC5), HR5**
 
 ### Property 5: Recovery Optimization Equivalence
+
+**DEFERRED (2026-09-24, Iter 9).** Cut from this RFC with D5/R5 (deferred). Kept below for the follow-up RFC.
 
 *For any* recovery method optimized in D5, the optimized version SHALL produce identical output to the baseline version for representative documents. The sequential GateSpec dispatch order SHALL be preserved.
 
@@ -487,6 +669,12 @@ The quarantine replay reader SHALL live in `storage/documents.py`, the only file
 
 **Validates: Requirement 2 (AC3)**
 
+### Property 7: Dedup Lock Mutual Exclusion (Added: 2026-09-24, Iter 9)
+
+*For any* two concurrent ingests of identical file bytes (same filename), at most one SHALL mint a `doc_id` and persist; the other SHALL take the dedup-skip path once it observes the winner's hash-cache entry. *For any* single ingest with no contention, behavior is unchanged (lock acquired and released without a waiter). *For any* holder that crashes without releasing (e.g. SIGKILL), a waiter blocks until the lock's TTL expires rather than forever; if Redis itself is unreachable, the pipeline fails open and proceeds unlocked.
+
+**Validates: Requirement 6**
+
 ## Error Handling
 
 ### Service-Specific Error Handling
@@ -499,22 +687,15 @@ The quarantine replay reader SHALL live in `storage/documents.py`, the only file
 - MinIO write fails for raw output → Log error, continue with pipeline (raw output is diagnostic, not load-bearing for tree construction)
 - Raw file exceeds 50 MB → Log warning, persist anyway
 
-**From-Raw Path:**
-- ~~Raw output not found in MinIO → Fall back to full extraction, log info~~
-- ~~Raw output corrupted (not valid UTF-8) → Fall back to full extraction, log warning~~
-- **(Amendment 2026-09-24, Iteration 6):** no `.extracted.md` → exit 2, `no_raw_cache`; the replay never extracts
-- Not valid UTF-8 → exit 1, the report names the object; no fallback
-- State sidecar missing, or `schema_version` unknown → replay on defaults, report `approximate` with the missing fields
-- Original upload missing when recovery is on → run with recovery off and say so in the report
-- A mutating call reaches the write barrier → recorded, not executed, listed in the report; expected from the persist methods, so not an error **(Amendment 2026-09-24, Iter 7: applied to the in-memory overlay so read-after-write checks pass; never reaches a real store)**
-- **(Added: Iter 7)** A `has_png` figure is missing from `figures/<doc_id>/`, or the document is rejected → non-empty placeholder, report `approximate`
-- Child timeout or crash → handled as for a normal ingest in `_run_converter_subprocess`; exit 1
-- **(Added: Iter 8)** A non-emulated overlay method is called → `ReplayWriteBlocked`; the child fails and the replay exits 1. This is a bug to fix in the overlay list, never a write.
-- **(Added: Iter 8)** Non-ZDR LLM tier without `--allow-non-zdr` → exit 1 before any fetch or spawn (HR3)
-- **(Added: Iter 8)** More than one non-`.extracted.*` key under `uploads/<doc_id>/` → exit 1, naming the keys
-- **(Added: Iter 8)** Any exit path, including crash, timeout and `KeyboardInterrupt` → the `TemporaryDirectory` context manager removes every fetched file (HR2)
-- **(Added: Iter 8)** Child argparse error (its exit 2) → the parent maps it to exit 1. Only the parent's own pre-spawn check produces exit 2 (`no_raw_cache`)
-- **(Added: Iter 8)** Rejected document whose quarantine objects expired (30-day TTL) → exit 2, `no_raw_cache`
+**Dedup Lock (New, Iter 9):**
+- Lock cannot be acquired within the retry budget (holder crashed) → proceed unlocked, log a warning; ingestion is not blocked
+- Waiter acquires the lock after the holder released it, cache is now populated → dedup-skip path
+- Waiter acquires the lock, cache still empty (holder failed before persisting) → proceed to extract as the new holder
+
+**Reject Metadata (New D3b, Iter 9):**
+- Write to `quarantine/<sha256>.meta.json` fails → log a warning, the document is still rejected (RFC-049 Property 12c) — reason/defects are diagnostic, not load-bearing
+
+**From-Raw Path — DEFERRED (Iter 9):** the full Iter 6-8 error-handling list (no cache → `no_raw_cache`; corrupted UTF-8; missing state sidecar → `approximate`; write-barrier semantics; HR2/HR3 safeguards; exit code mapping) is kept in RFC-050's history and design §3 for the follow-up RFC that revives D4.
 
 **Quarantine lifecycle (Added: Iter 8):**
 - Applying the rule fails (MinIO error, lifecycle API unsupported) → log an error and continue. Startup or ingest is not blocked. The Task 3.6 check (`get_bucket_lifecycle()` shows the rule) reports it as missing.
@@ -528,10 +709,12 @@ The quarantine replay reader SHALL live in `storage/documents.py`, the only file
 
 ### Testing Layers
 
-1. **Property-Based Tests (PBT)**: Verify Properties 1-6 across randomized inputs. **(Amendment 2026-09-24, Iteration 6: plus 3a, 4a, 4b.)** **(Iter 8: plus 3b.)**
-2. **Unit Tests**: Admission gate threshold selection, MAX_JOBS default logic, raw output file naming. **(Iteration 6: state snapshot round-trip, `None` guard, replay flag parsing, `no_raw_cache`.)**
-3. **Integration Tests**: save_raw → delete_doc erasure, ~~from-raw re-processing path, recovery parallelization~~ replay round-trip with an LLM stub and a zero-write spy, recovery optimization **(Amendment 2026-09-24, Iteration 6)**.
-4. **Corpus Validation**: 16-document re-ingestion with timing comparison.
+**Current contract (2026-09-24, Iter 9):**
+
+1. **Property-Based Tests (PBT)**: Verify Properties 1, 2, 3, 3a (trivial), 3b, 6, 7, 8 across randomized inputs. Properties 4, 4a, 4b, 5 are deferred with D4/D5.
+2. **Unit Tests**: cgroup-aware admission gate, `wait_for_memory` threshold selection, MAX_JOBS default logic, dedup lock acquire/release/timeout, raw output file naming, D3b reject-metadata fields.
+3. **Integration Tests**: `save_raw` → `delete_doc` erasure, concurrent-ingest dedup lock, quarantine TTL rule application.
+4. **Corpus Validation**: 16-document ingestion, baseline (local Docling, `MAX_JOBS=1`) vs. post (in-cluster docling service, `MAX_JOBS=2`), G1 protocol.
 
 ### Property-Based Testing Configuration
 
@@ -541,39 +724,45 @@ The quarantine replay reader SHALL live in `storage/documents.py`, the only file
 
 ### Test Categories
 
+**Current contract (2026-09-24, Iter 9):**
+
 | Component | PBT Properties | Unit Tests | Integration Tests |
 |-----------|----------------|------------|-------------------|
-| Admission Gate | 1, 6 | threshold selection, mode detection | worker startup with env vars |
-| Raw Persistence | 2, 3 | file naming, save_raw call; **(Iteration 6)** state snapshot round-trip, `None` guard | save → delete cascade; **(Iteration 6)** four-key quarantine erase |
-| From-Raw Path | ~~4~~ 4, 4a, 4b | flag parsing, ~~cache hit/miss~~ `no_raw_cache`, quarantine-reader gate **(Iteration 6)** | ~~full re-processing round-trip~~ replay round-trip with an LLM stub and a zero-write spy; forced-reject replay by sha256 **(Iteration 6)** |
-| Recovery Loop | 5 | ~~independence classification~~ per-method timing, dispatch order unchanged **(Iteration 6 — stale since Iteration 2)** | ~~concurrent OCR + bidi~~ optimized vs baseline output |
-| **(Added: Iter 8)** Quarantine TTL | 3b | lifecycle rule present, prefix `quarantine/`, ≤30 days, idempotent, other rules kept | — |
-| **(Added: Iter 8)** Replay safeguards | 4a (fail-closed) | `ReplayWriteBlocked` on a non-emulated method; singletons restored; temp dir removed after a forced crash; non-ZDR refusal and `--allow-non-zdr`; `--no-text`; ambiguous original → exit 1; child exit mapping | parent spy: no `_upsert_registry_row`, `save_doc_meta`, `_mirror_bridged_*` |
+| Admission Gate | 1, 6 | threshold selection, cgroup v1/v2/unreadable, mode detection | worker startup with env vars |
+| Dedup Lock | 7 | acquire/release, CAS release, stuck-lock timeout | concurrent-ingest, one `doc_id` minted |
+| Raw Persistence | 2, 3 | file naming, `save_raw` call, content-type map | save → delete cascade (2 sites only) |
+| Reject Metadata (D3b) | 8 | `reject_reason`/`defects` fields written, best-effort on failure | forced reject → fields present in `.meta.json` |
+| Quarantine TTL | 3b | lifecycle rule present, prefix `quarantine/`, ≤30 days, idempotent, other rules kept | — |
 
-**Test-only coverage (Added: 2026-09-24, Iter 8).** These acceptance criteria have no correctness property and are covered by tests alone:
-- **R1 AC3** (log the active threshold and mode): unit test in Task 1.4.
-- **R2 AC4** (`pageindex_worker_max_jobs` gauge): Task 1.4 and the Wave 1 checkpoint.
-- **R4 AC6** (`no_raw_cache`): Task 5.3.
-- **R4 AC7** (replay runs in the converter subprocess): the Task 5.3 integration test.
-- **R4 AC8-AC12** (temp dir, ZDR, `--no-text`, original selection and exit codes, host-only / no `decision()`): Task 5.3.
-- **G1 / Task 1.5** (stage timing histogram and `decision()` record): the Task 1.5 unit test and the Task 9.1/9.2 measurement.
+**Test-only coverage.** R1 AC3 (log threshold/mode) has no correctness property and is covered by tests alone (Task 1.4). R2 AC4 (`pageindex_worker_max_jobs` gauge) is **deferred to Phase 3, not implemented** (user decision 2026-09-24, lands with the worker `/metrics` scrape). G1 / Task 1.5 (stage timing histogram and `decision()` record) is covered by its unit test and the Task 9.1/9.2 measurement; the histogram is `pageindex_stage_duration_seconds{stage=extraction|tree_build|recovery}` (non-overlapping stages, one `stage_duration` decision record per stage per doc) — **open item:** it is not visible on `/metrics` today (worker `/metrics` isn't scraped and the Redis metric bridge carries scalars only), so logs (parsed by `make g1-timings`) remain the source for G1 attribution until the Phase 3 worker scrape. **LLM concurrency cap — deferred open item (user decision 2026-09-24):** `pageindex` is a site-packages dependency (not vendored) whose `page_index_md.py` fans node summaries out via `asyncio.gather` with no semaphore, so bursts double at `MAX_JOBS=2`; revisit only if `make g1-timings` shows 429/retry lines (fix = fork change or client-side limiter).
+
+<details><summary>Deferred (Iter 9) — From-Raw Path / Recovery Loop rows, kept for the follow-up RFC</summary>
+
+| Component | PBT Properties | Unit Tests | Integration Tests |
+|-----------|----------------|------------|-------------------|
+| From-Raw Path | 4, 4a, 4b | flag parsing, `no_raw_cache`, quarantine-reader gate | replay round-trip with an LLM stub and a zero-write spy; forced-reject replay by sha256 |
+| Recovery Loop | 5 | per-method timing, dispatch order unchanged | optimized vs baseline output |
+| Replay safeguards | 4a (fail-closed) | `ReplayWriteBlocked` on a non-emulated method; singletons restored; temp dir removed after a forced crash; non-ZDR refusal and `--allow-non-zdr`; `--no-text`; ambiguous original → exit 1; child exit mapping | parent spy: no `_upsert_registry_row`, `save_doc_meta`, `_mirror_bridged_*` |
+
+</details>
 
 ### Key Test Scenarios
 
 **Critical Path Tests:**
-1. Remote-Docling worker starts with MAX_JOBS=2, processes 2 documents concurrently, both succeed
+1. In-cluster-Docling worker starts with MAX_JOBS=2, processes 2 documents concurrently, both succeed
 2. Document ingested → raw output persisted → document deleted → zero files remain
-3. ~~Document ingested → re-processed with --from-raw → identical tree output~~ **(Amendment 2026-09-24, Iteration 6):** document ingested → replayed with `--from-raw --doc-id` → same structure, gate, route and verdict; zero writes
+3. Two concurrent ingests of identical bytes → exactly one `doc_id` minted, the other dedup-skips
+4. Forced reject → `quarantine/<sha256>.meta.json` has `reject_reason` and `defects`; TTL rule still expires it within 30 days
 
 **Edge Cases:**
 - MAX_JOBS set to 10 → clamped to 4 with warning
 - Raw output write fails → pipeline continues, tree/flat output still produced
-- ~~--from-raw with no cached raw → falls back to full extraction transparently~~ **(Iteration 6):** `--from-raw` on a `.txt` input or a pre-D3 document → exit 2, `no_raw_cache`
-- **(Added: Iteration 6)** `--from-raw --sha256` on a rejected document → replays with recovery off, lists the would-be recovery triggers; `quarantine/` unchanged
-- **(Added: Iteration 6)** replay of a document persisted before the state sidecar shipped → runs on defaults, report `approximate`
-- **(Added: Iter 7)** replay through `_persist_tree_result` / `_persist_flat_result` → no `PersistenceNotVisibleError` (overlay read-your-writes); parent never calls `_upsert_registry_row` or `_mirror_bridged_set`
-- **(Added: Iter 7)** flat-route replay of a document with figures → same image-enrichment ratio and verdict as stored (figures reloaded by `has_png`)
-- **(Added: Iter 8)** figures reloaded under `original_doc_id`, never the child's fresh `uuid4`
-- **(Added: Iter 8)** flat garbled PDF replayed with `--no-recovery` → the VLM garble fallback is not called and is listed as a would-be trigger
-- **(Added: Iter 8)** rejected document replayed after its quarantine objects expired → exit 2 `no_raw_cache`
-- ~~Two recovery strategies classified as independent produce different results → first success wins~~ (stale since Iteration 2 — recovery is sequential)
+- `.md`/`.txt` input or the LibreOffice/all-converters-failed `page_index` route → no `.extracted.md` written, no exception
+- Dedup lock holder crashes mid-extraction → waiter's bounded retry times out, proceeds unlocked, logs a warning
+- Non-garbling reject reason (e.g. a structural gate failure, not RFC-049's garbling defects) → still gets `reject_reason`/`defects` in `.meta.json` via D3b, even though `save_quarantine`'s `.json` payload is garbling-only
+
+<details><summary>Deferred (Iter 9) — replay edge cases, kept for the follow-up RFC</summary>
+
+`--from-raw` on a `.txt` input or pre-D3 document → `no_raw_cache`; `--sha256` on a rejected document → recovery off, would-be triggers listed; replay of a pre-sidecar document → `approximate`; replay through the persist methods → no `PersistenceNotVisibleError`; flat-route replay with figures → same enrichment ratio and verdict; figures reloaded under `original_doc_id`; VLM garble fallback skipped and listed under `--no-recovery`; expired quarantine → `no_raw_cache`.
+
+</details>

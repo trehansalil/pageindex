@@ -496,7 +496,7 @@ derivative**. The assumption "deleting the raw blob auto-cascades to derivatives
 raw-file deletion does NOT remove the tree, the sidecar, the hash entry, or the cache. The current
 `delete_doc` (`storage.py:98`) already removes `processed/<id>.json`, `.meta.json`, and `uploads/<id>/`
 and invalidates the cache — but it does **not** purge the filename→sha256 entry in
-`hashes/processed_hashes.json`, and backups are out of scope of any automatic path.
+`hashes/processed_hashes.json`, and backups are reached only via the erasure ledger (below).
 
 **Required erasure fan-out** (a planned `erase_document(doc_id)` operation hardening `delete_doc`):
 
@@ -510,7 +510,8 @@ erase_document(doc_id):
    + MinIO  hashes/processed_hashes.json            remove the {filename: sha256} entry  ← currently MISSED
    + MinIO  processed/graph.json                    remove this doc's nodes/edges        [Tier 2]
    ✓ Redis  pageindex:doc:<doc_id>                  cache invalidate
-   ! Backups / object-store snapshots               MANUAL purge — operator responsibility, DOCUMENTED, never automatic
+   ! Backups (uploads/ + Postgres registry)         append doc_id/sha256 to the erasure ledger; ledger is
+                                                    replayed against any restore before it is served   [RFC-050 Phase 6 — NOT in code yet]
 ```
 
 The `quarantine` step runs **after `meta_json` and before `redis_cache`**, which is not arbitrary:
@@ -528,17 +529,23 @@ no registry row, so `delete_doc` cannot reach it. The operator path is by sha256
    against each object's `filenames` array.
 2. Run `scripts/erase-quarantine.sh <sha256>` (a thin wrapper over `erase_quarantine(sha256)`, which
    shares the cascade's implementation). It exits non-zero if any delete errors.
-3. Purge any documented backup manually, per HR2 — see below.
+3. Record the sha256 in the erasure ledger so any backup restore replays it, per HR2 — see below.
 
 No new MCP tool or HTTP route is added for this; it is deliberately an operator-only path.
 
-**Retention.** Quarantine is bounded by a MinIO lifecycle rule, applied per environment by the
-operator (owner: Salil Trehan) rather than by in-code `set_bucket_lifecycle`:
+**Retention.** Current contract (2026-09-24, Iter 9): the 30-day quarantine lifecycle rule is now applied in code. `storage/minio_ops.py` provides a generic `ensure_prefix_expiry()` plus `register_bucket_init()`; `storage/documents.py` registers the rule `quarantine-30d` (`--prefix "quarantine/"`, `--expire-days` from `QUARANTINE_TTL_DAYS`, default 30, minimum 1), applied best-effort on first `get_minio()` via read-merge-write against the bucket's existing lifecycle config (never a blind overwrite of other rules), and it never raises on failure.
+
+The manual `mc ilm rule add` step below is kept only as a fallback for buckets where the service account lacks lifecycle permission (`s3:PutLifecycleConfiguration`) and the in-code registration therefore no-ops:
 
 ```
 mc ilm rule add --prefix "quarantine/" --expire-days 30 <alias>/<bucket>
 mc ilm rule ls <alias>/<bucket>                      # verify
-mc version info <alias>/<bucket>                     # if versioning is ON, also:
+```
+
+Noncurrent-version expiry (relevant only when bucket versioning is ON) is still out of scope / manual — it is not registered by `ensure_prefix_expiry()`:
+
+```
+mc version info <alias>/<bucket>                     # if versioning is ON:
 mc ilm rule add --prefix "quarantine/" --noncurrent-expire-days 30 <alias>/<bucket>
 ```
 
@@ -546,14 +553,20 @@ mc ilm rule add --prefix "quarantine/" --noncurrent-expire-days 30 <alias>/<buck
 > versions behind **in every prefix**, not just this one. That is a general HR2 gap and is tracked
 > outside RFC-049.
 
-Backup purging is explicitly the operator's responsibility and must be documented in the runbook; it
-is never performed automatically. **[high — AWS Bedrock RTBF guidance.]**
+**Backup policy (user decision 2026-09-24, RFC-050 Phase 6).** Only what cannot be re-derived is
+backed up: MinIO `uploads/` (the sources) and the Postgres registry. Everything else (`processed/`,
+`figures/`, `verdicts/`, `quarantine/`, Redis, the hash cache) is rebuilt by re-ingest and is never
+backed up. Cadence nightly, retention **30 days**. Backups are not purged in place; instead
+`delete_doc` / `erase_quarantine` append the erased `doc_id` / sha256 to an **erasure ledger**, and
+the ledger is replayed (the full cascade, per entry) against any restore **before** the restored
+data is served. The 30-day retention bounds how long an erased document can survive inside a
+backup. **[high — AWS Bedrock RTBF guidance.]**
 
-> **Backup status (verified 2026-09-23): no documented backup exists.** There is no `mc mirror`,
+> **Status (2026-09-24): policy decided, not implemented.** As of 2026-09-23 there is no `mc mirror`,
 > `pg_dump`, Velero schedule or snapshot job anywhere in `scripts/`, `Makefile`, the k8s manifests or
-> CI. The manual-purge step above therefore has no target today. This is recorded as fact, not as
-> reassurance: the moment a backup *is* introduced, it inherits the whole cascade — `quarantine/`
-> included — and this note must be replaced with the purge procedure.
+> CI, and no ledger in code. The backup job, the ledger write in the cascade and the restore-time
+> replay are RFC-050 Phase 6 / operator work. Until they land, no backup exists and HR2's backup
+> step has no target.
 
 ### LLM-provider data-residency routing  (ADR-005)
 
@@ -836,3 +849,4 @@ Items below are **flagged assumptions**, distinct from the asserted facts above.
 | R9 | **LLM-provider zero-retention / EU-residency claims & sector minimums** | Provider claims and sector-regulatory minimums not independently re-verified | Re-validate per provider + per deployment jurisdiction at deploy time (ADR-005) |
 | R10 | **AGPL §13 network-source obligation** | A **legal** decision, not technical; obligation already incurred via `pymupdf`, and widened to the two OCR sidecars by ADR-006 (accepted, not cleared) | Legal sign-off, or Artifex commercial license, or pivot to MIT Docling (ADR-001). Promoting either OCR sidecar to a deployed service voids ADR-006 and requires the `pypdfium2` swap first |
 | R11 | **Versioning supersedes-chain** | No canonical pattern verified; reissues currently create unlinked `doc_id`s | Design `effective_date`/`doc_family`/content-hash dedup from first principles (Tier 1 P1b) |
+| R12 | **Unbounded per-node LLM summary fan-out** | `pageindex` is an installed site-packages dependency (the fork above), not vendored; `page_index_md.py` runs node summaries via `asyncio.gather` with no semaphore, so bursts double at `MAX_JOBS=2` (RFC-050) | **Deferred (user decision 2026-09-24).** Revisit only if G1 runs show 429s (`make g1-timings` counts 429/retry lines); a fix needs a fork change or a client-side limiter |
