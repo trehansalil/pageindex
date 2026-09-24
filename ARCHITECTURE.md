@@ -766,6 +766,33 @@ The `validate_tree` thresholds must be **calibrated before** the gate is wired a
   paths target the same configured endpoint. Provider zero-retention claims must be re-validated against
   current provider docs at deployment time.
 
+### ADR-006 — PyMuPDF in the OCR sidecar services (HR4)
+- **Context.** The RFC-046 OCR engine evaluation added two FastAPI sidecars, `services/surya-ocr-service`
+  and `services/paddleocr-vl-service`. Both rasterize PDF input for their `/ocr/pdf` endpoint through
+  **PyMuPDF** (`fitz`): open the byte stream, read `page_count`, render each page to a PIL image
+  (`surya-ocr-service/app.py:145,245`, `paddleocr-vl-service/app.py:123,223`). PyMuPDF is **AGPL-3.0**.
+  The main application deliberately made the opposite choice for the same job — `converters/headings.py:632`
+  records **pypdfium2** (BSD-3/Apache-2) as the rasterizer *because* of HR4, and `pypdfium2>=5.8.0` is
+  already a direct runtime dependency. The sidecars therefore diverge from the house rule.
+- **Decision.** Keep PyMuPDF in both sidecars and accept the exposure explicitly, on these terms:
+  (1) both are **internal-only evaluation services** — reachable only on the `docker-compose` network,
+  published behind no public ingress, and not part of the deployed product surface;
+  (2) **neither is built or deployed by any workflow** in `.github/workflows/`;
+  (3) the AGPL §13 network-source obligation this incurs is the **same obligation ADR-001 already booked**
+  for the main application's `pymupdf` dependency — this is more surface on an outstanding obligation, not
+  a new class of exposure;
+  (4) if either sidecar is ever promoted to a deployed, externally reachable service, **this decision is
+  void** and the rasterizer must be swapped to `pypdfium2` first. Both call sites are
+  `fitz.open(stream=…, filetype="pdf")` plus a page render, for which `pypdfium2` is a direct substitute.
+- **Status.** **Accepted by the maintainer, 2026-09-24 — as a documented acceptance, not a legal clearance.**
+  HR4 says serving PyMuPDF over a network is "a legal decision to clear, not a settled safe-harbor". This
+  ADR records *that the decision was taken and on what terms*; it is not sign-off by counsel, and **R10
+  stays open**. Raised by `cubic-dev-ai` on PR #24 (thread `SGdb`).
+- **Consequences.** Two further components fall under the unresolved AGPL §13 obligation tracked as R10.
+  The exit remains cheap and is pinned in term (4) above. Each sidecar's README carries this note so the
+  constraint travels with the service rather than living only here.
+
+
 ---
 
 ## Risks & Thin-Evidence Flags
@@ -784,5 +811,5 @@ Items below are **flagged assumptions**, distinct from the asserted facts above.
 | R7 | **`validate_tree` thresholds** | `node_count` / `depth` / garbling-ratio thresholds uncalibrated | Calibrate against GHV corpus + clean control set; warn-only until then (ADR-003) |
 | R8 | **Outline-TOC reliability + heading re-leveling robustness** | Outline reliability not cross-corpus measured; heuristic remapped only ~35-78% of headings; AVB outlines flat | Iterate on AVB clause-code grammar; numbering prefix is primary signal |
 | R9 | **LLM-provider zero-retention / EU-residency claims & sector minimums** | Provider claims and sector-regulatory minimums not independently re-verified | Re-validate per provider + per deployment jurisdiction at deploy time (ADR-005) |
-| R10 | **AGPL §13 network-source obligation** | A **legal** decision, not technical; obligation already incurred via `pymupdf` | Legal sign-off, or Artifex commercial license, or pivot to MIT Docling (ADR-001) |
+| R10 | **AGPL §13 network-source obligation** | A **legal** decision, not technical; obligation already incurred via `pymupdf`, and widened to the two OCR sidecars by ADR-006 (accepted, not cleared) | Legal sign-off, or Artifex commercial license, or pivot to MIT Docling (ADR-001). Promoting either OCR sidecar to a deployed service voids ADR-006 and requires the `pypdfium2` swap first |
 | R11 | **Versioning supersedes-chain** | No canonical pattern verified; reissues currently create unlinked `doc_id`s | Design `effective_date`/`doc_family`/content-hash dedup from first principles (Tier 1 P1b) |

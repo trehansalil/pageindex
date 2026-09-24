@@ -12,6 +12,31 @@ on 8207), so the eval script can compare all three side by side.
 this service behaves — see "Not supported" below for a path that is
 documented elsewhere in this repo's history but not what the code does.
 
+## Licensing — AGPL-3.0 (read before deploying)
+
+Inference is proxied to Ollama, but **PDF rasterization is local and uses
+PyMuPDF (`pymupdf`), which is AGPL-3.0**:
+
+- `app.py:123` — renders a page to a PIL image before base64-encoding it
+- `app.py:223` — `/ocr/pdf`, opens the stream to read `page_count`
+
+The main application does **not** use PyMuPDF for this. It uses
+**pypdfium2** (BSD-3/Apache-2) deliberately, because of CLAUDE.md **Hard
+Rule 4** — see `src/pageindex_mcp/converters/headings.py:632`. This service
+diverges from that rule.
+
+That divergence is a recorded, accepted decision, **not a legal clearance**:
+see **ADR-006** in `ARCHITECTURE.md`. It holds only while this service stays
+what it is today — an internal-only evaluation sidecar on the
+`docker-compose` network, behind no public ingress, built and deployed by no
+workflow in `.github/workflows/`.
+
+**If this service is ever promoted to a deployed, externally reachable
+service, ADR-006 is void.** Swap the two call sites above to `pypdfium2`
+(already a direct dependency of the main app) and drop `pymupdf` from
+`pyproject.toml` *before* it ships. AGPL §13's network-source obligation is
+tracked as risk **R10** in `ARCHITECTURE.md` and is still open.
+
 ## Requires
 
 - A running **Ollama** server (not bundled, not started by this service)
