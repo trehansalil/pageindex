@@ -223,7 +223,11 @@ _GATES_POINTS: tuple[DecisionPoint, ...] = (
         module=_H_GATES,
         function="_gate_suspect_density",
         choices=("fires", "clear", "not_evaluated_no_page_count"),
-        attrs=("page_count", "chars_per_page", "chars_per_page_corrected", "corrected_delta", "verdict_would_change", "floor_used", "floor_arabic", "is_arabic"),
+        attrs=(
+            "page_count", "chars_per_page", "chars_per_page_corrected",
+            "corrected_delta", "verdict_would_change",
+            "floor_used", "floor_arabic", "is_arabic",
+        ),
     ),
     _p(
         event="garble_recovery_eligible",
@@ -963,7 +967,10 @@ _INDEXER_POINTS: tuple[DecisionPoint, ...] = (
         choices=("blocks_stripped", "enriched_blocks_clean"),
         attrs=("checked_count", "stripped_count", "retained_count", "fired_prongs"),
         always_emits=False,
-        note="D3 (RFC-047): per-block garble check on enriched image blocks; garbled blocks have ocr_text cleared.",
+        note=(
+            "D3 (RFC-047): per-block garble check on enriched"
+            " image blocks; garbled blocks have ocr_text cleared."
+        ),
     ),
     _p(
         event="verdict_downgrade_override_flat",
@@ -1081,7 +1088,10 @@ _INDEXER_POINTS: tuple[DecisionPoint, ...] = (
             "winner",
         ),
         always_emits=False,
-        note="RFC-048 Amendment: parallel VLM+Surya after validate_tree condemns a standalone image.",
+        note=(
+            "RFC-048 Amendment: parallel VLM+Surya after"
+            " validate_tree condemns a standalone image."
+        ),
     ),
 )
 
@@ -1098,7 +1108,10 @@ _RECOVERY_POINTS: tuple[DecisionPoint, ...] = (
         choices=("md_clean", "md_garbled", "md_empty"),
         attrs=("md_char_count", "md_garbled", "fired_prongs"),
         always_emits=False,
-        note="D7 (RFC-046 task 5.1): garble-checks recovered markdown before the expensive tree rebuild.",
+        note=(
+            "D7 (RFC-046 task 5.1): garble-checks recovered"
+            " markdown before the expensive tree rebuild."
+        ),
     ),
     _p(
         event="ocr_retry_lang_degrade",

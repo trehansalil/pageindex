@@ -132,7 +132,7 @@ def _classify_langs_from_filename(filename: str) -> list[str]:
     return langs or ["en"]
 
 
-def detect_lang_from_text_layer(
+def detect_lang_from_text_layer(  # noqa: PLR0915
     pdf_path: str,
     *,
     max_sample_pages: int = _MAX_SAMPLE_PAGES,
@@ -421,7 +421,10 @@ def preclassify_document(
                 pages_needing_ocr = inspector_result.get("pages_needing_ocr", [])
                 has_encoding_issues = inspector_result.get("has_encoding_issues", False)
         except Exception:
-            logger.debug("preclassify_document: pdf_inspector failed for %s", filepath, exc_info=True)
+            logger.debug(
+            "preclassify_document: pdf_inspector failed for %s",
+            filepath, exc_info=True,
+        )
 
     # 2. text-layer language detection (reuses existing function)
     text_layer_result = detect_lang_from_text_layer(filepath)

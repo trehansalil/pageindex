@@ -96,7 +96,7 @@ def _dedupe_chart_text_lines(text: str) -> str:
 
 # Zone-3: _defect_from_reason_str moved to types.py next to finalize_gate_and_route.
 # Re-exported here for backward compat with any callers importing from verdict.
-from .types import _defect_from_reason_str as _defect_from_reason_str
+from .types import _defect_from_reason_str as _defect_from_reason_str  # noqa: E402
 
 
 def _clamp_pass(
@@ -309,7 +309,8 @@ def _try_image_enrichment(
         if script_context is not None
         else ScriptContext(
             dominant_script=expected_script,
-            had_presentation_forms=_infer_presentation_forms(_promoted_text),  # pre-NFKC: post-normalize but safe — returns False on destroyed PF
+            # pre-NFKC: post-normalize but safe — returns False on destroyed PF
+            had_presentation_forms=_infer_presentation_forms(_promoted_text),
             source="apply_promotions",
         )
     )
@@ -456,7 +457,7 @@ _try_content_class_promotion = _try_cat_c
 _try_small_doc_promotion = _try_small_doc
 
 
-def apply_promotions(
+def apply_promotions(  # noqa: PLR0915
     outcome: GateOutcome,
     content_class: str,
     image_enrichment_ratio: float | None,
@@ -764,7 +765,10 @@ def compute_verdict(
         _bare_script: str | None = expected_script.dominant_script
     else:
         _bare_script = expected_script
-    outcome = evaluate_gates(structure, validate_result, expected_script, th, flat_signals=flat_signals)
+    outcome = evaluate_gates(
+        structure, validate_result, expected_script, th,
+        flat_signals=flat_signals,
+    )
     if outcome.hard_fail_verdict is not None:
         return outcome.hard_fail_verdict
     _sc = expected_script if isinstance(expected_script, ScriptContext) else None

@@ -173,7 +173,7 @@ def route_and_extract_flat(md: str) -> tuple[str, list[dict]]:  # noqa: C901, PL
     return content_class, blocks
 
 
-class BlockTextPurpose(str, enum.Enum):
+class BlockTextPurpose(str, enum.Enum):  # noqa: UP042
     """D2 (RFC-041): purpose tag for block text extraction."""
 
     GARBLE_CHECK = "garble_check"
@@ -182,7 +182,7 @@ class BlockTextPurpose(str, enum.Enum):
     DISPLAY = "display"
 
 
-def block_text(block: dict, purpose: BlockTextPurpose) -> str:
+def block_text(block: dict, purpose: BlockTextPurpose) -> str:  # noqa: C901
     """D2 (RFC-041): canonical single-block text extraction.
 
     All consumers that need text from a flat block call this function.

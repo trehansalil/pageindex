@@ -408,7 +408,7 @@ def _defect_from_reason_str(reason: str | None) -> TreeDefect:
     )
 
 
-def finalize_gate_and_route(
+def finalize_gate_and_route(  # noqa: PLR0913
     state: ExtractionState,
     vt_raw: TreeGateResult | tuple[bool, str],
     flat_routing_enabled: bool = True,

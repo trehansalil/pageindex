@@ -47,7 +47,7 @@ def _tree_depth(nodes: list) -> int:
     return best
 
 
-def _node_text_parts(
+def _node_text_parts(  # noqa: C901
     n: dict,
     *,
     include_ocr_text: bool = False,
@@ -169,7 +169,11 @@ def _flatten_tree_text(
 
     def _walk(ns: list) -> None:
         for n in ns:
-            parts.extend(_node_text_parts(n, include_ocr_text=include_ocr_text, include_summary=include_summary))
+            parts.extend(_node_text_parts(
+                n,
+                include_ocr_text=include_ocr_text,
+                include_summary=include_summary,
+            ))
             _walk(n.get("nodes") or [])
 
     _walk(nodes)
@@ -269,7 +273,7 @@ def _tree_is_reordered(structure: list) -> bool:
 # Redirected to the canonical garble.py copies to eliminate
 # fix-one-miss-the-other drift (RFC-013 D7).
 # ---------------------------------------------------------------------------
-from .garble import GarbleConfig, _garble_ratio, _infer_presentation_forms
+from .garble import GarbleConfig, _garble_ratio, _infer_presentation_forms  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # TreeSignals
@@ -308,7 +312,9 @@ class TreeSignals:
         depth = _tree_depth(structure)
         _, _, max_leaf_ratio = _tree_max_leaf_ratio(structure)
         flat_text = _flatten_tree_text(structure)
-        flat_text_corrected = _flatten_tree_text(structure, include_ocr_text=True, include_summary=False)
+        flat_text_corrected = _flatten_tree_text(
+            structure, include_ocr_text=True, include_summary=False,
+        )
 
         if isinstance(expected_script, ScriptContext):
             _eff_script: str | None = expected_script.dominant_script
@@ -517,7 +523,12 @@ def validate_tree(
             )
             _script_ctx = ScriptContext(
                 dominant_script=_eff_script,
-                had_presentation_forms=_infer_presentation_forms(sig.flat_text) if sig.flat_text else False,  # pre-NFKC: post-normalize but safe — returns False on destroyed PF
+                # pre-NFKC: post-normalize but safe — returns False on destroyed PF
+                had_presentation_forms=(
+                    _infer_presentation_forms(sig.flat_text)
+                    if sig.flat_text
+                    else False
+                ),
                 source="validate_tree",
             )
 

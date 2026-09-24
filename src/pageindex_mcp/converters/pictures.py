@@ -24,8 +24,8 @@ from ..obs.decisions import decision
 
 # Backward-compat alias: tests monkeypatch this attribute via setattr.
 _OCR_ESCALATION_PER_PICTURE = pipeline_config.ocr_escalation_per_picture
-from ..metrics import TESSERACT_OCR_FAILURE_TOTAL
-from ..picture_plane import (
+from ..metrics import TESSERACT_OCR_FAILURE_TOTAL  # noqa: E402
+from ..picture_plane import (  # noqa: E402
     OcrEngine,
     OcrMode,
     PictureGateConfig,
@@ -35,10 +35,10 @@ from ..picture_plane import (
     _classify_region,
     decide_ocr_strategy,
 )
-from ..script import RtlDecision, ScriptContext
-from .headings import _heading_count
-from .ocr_langs import detect_ocr_langs, ensure_tessdata
-from .types import PictureResult, TessdataUnavailableError
+from ..script import RtlDecision, ScriptContext  # noqa: E402
+from .headings import _heading_count  # noqa: E402
+from .ocr_langs import detect_ocr_langs, ensure_tessdata  # noqa: E402
+from .types import PictureResult, TessdataUnavailableError  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -1000,7 +1000,7 @@ def _landscape_rasterize_rotate_reextract(
     return results
 
 
-def _recover_picture_text(  # noqa: PLR0915, C901
+def _recover_picture_text(  # noqa: PLR0913, PLR0915, C901
     pdf_path: str,
     regions: list[dict],
     langs: list[str],

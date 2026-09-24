@@ -20,11 +20,11 @@ from .timeouts import effective_child_timeout
 # Backward-compat alias: tests monkeypatch this attribute via setattr/patch.
 # New code should read ``pipeline_config.pdf_inspector_preclassify`` directly.
 PDF_INSPECTOR_PRECLASSIFY = pipeline_config.pdf_inspector_preclassify
-from ..metrics import (
+from ..metrics import (  # noqa: E402
     CONVERTER_CHILD_OOM_TOTAL,
     CONVERTER_PEAK_RSS_KIB,
 )
-from .constants import INSPECTOR_CONFIDENCE_THRESHOLD, INSPECTOR_OCR_MULTIPLIER
+from .constants import INSPECTOR_CONFIDENCE_THRESHOLD, INSPECTOR_OCR_MULTIPLIER  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

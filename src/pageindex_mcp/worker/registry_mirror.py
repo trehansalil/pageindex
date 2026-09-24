@@ -133,7 +133,7 @@ async def _enqueue_verdict_retry(doc_id: str, verdict_fields: dict[str, Any]) ->
         )
 
 
-async def _upsert_registry_row(
+async def _upsert_registry_row(  # noqa: C901, PLR0915
     doc_id: str,
     content_class: str | None,
     verdict_fields: dict[str, Any] | None = None,

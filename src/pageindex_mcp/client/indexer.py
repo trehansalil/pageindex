@@ -48,6 +48,7 @@ from ..converters import (
     zdr_egress_gate,
 )
 from ..helpers import (
+    _RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC,
     GATES,
     Candidate,
     ExtractionState,
@@ -56,7 +57,6 @@ from ..helpers import (
     TreeDefect,
     TreeSignals,
     VerdictThresholds,
-    _RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC,
     _extract_page_hits,
     _flat_block_primary_text,
     _flatten_tree_text,
@@ -70,8 +70,8 @@ from ..helpers import (
     _synthesize_preamble_node,
     _tree_max_leaf_ratio,
     _tree_node_count,
-    compute_verdict,
     arbitrate,
+    compute_verdict,
     detect_garble,
     finalize_gate_and_route,
     prepare_tree,
@@ -444,8 +444,9 @@ async def _surya_density_recovery(
     surya_url: str,
     timeout_s: float,
 ) -> SuryaRecoveryResult | None:
-    import httpx
     import time as _time
+
+    import httpx
 
     t0 = _time.monotonic()
     try:
@@ -513,8 +514,9 @@ async def _surya_image_ocr(
     surya_url: str,
     timeout_s: float,
 ) -> SuryaRecoveryResult | None:
-    import httpx
     import time as _time
+
+    import httpx
 
     t0 = _time.monotonic()
     try:
@@ -722,7 +724,8 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                                 if script_context is not None
                                 else ScriptContext(
                                     dominant_script=expected_script,
-                                    had_presentation_forms=_infer_presentation_forms(raw_text),  # pre-NFKC: raw PDF text
+                                                            # pre-NFKC: raw PDF text
+                        had_presentation_forms=_infer_presentation_forms(raw_text),
                                     source="pre_garble_probe",
                                 )
                             )
@@ -1311,7 +1314,11 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             # D4 (RFC-046 task 6.2): bounded detect-correct-retry.
             # Compare content-derived langs against filename-derived; if they
             # differ, re-OCR once with corrected langs and arbitrate.
-            content_langs = detect_ocr_langs(standalone_ocr_text) if standalone_ocr_text else img_langs
+            content_langs = (
+                detect_ocr_langs(standalone_ocr_text)
+                if standalone_ocr_text
+                else img_langs
+            )
             if sorted(content_langs) != sorted(img_langs):
                 _corrective_degraded = False
                 try:
@@ -1378,7 +1385,11 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 else:
                     decision(
                         event="d4_corrective_retry",
-                        choice="skip_tessdata_unavailable" if _corrective_degraded else "skip_same_langs",
+                        choice=(
+                            "skip_tessdata_unavailable"
+                            if _corrective_degraded
+                            else "skip_same_langs"
+                        ),
                         reason="corrective langs same as original or tessdata unavailable",
                         attrs={
                             "source_langs": detected,
@@ -1767,7 +1778,8 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             if script_context is not None
             else ScriptContext(
                 dominant_script=expected_script,
-                had_presentation_forms=_infer_presentation_forms(flat_md),  # pre-NFKC: post-normalize but safe — returns False on destroyed PF
+                # pre-NFKC: post-normalize but safe — returns False on destroyed PF
+                had_presentation_forms=_infer_presentation_forms(flat_md),
                 source="flat_garble_gate",
             )
         )
@@ -1808,7 +1820,8 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         if script_context is not None
                         else ScriptContext(
                             dominant_script=expected_script,
-                            had_presentation_forms=_infer_presentation_forms(vlm_md),  # pre-NFKC: raw VLM output
+                            # pre-NFKC: raw VLM output
+                            had_presentation_forms=_infer_presentation_forms(vlm_md),
                             source="vlm_fallback_garble",
                         )
                     )
@@ -1816,7 +1829,11 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     if not _garble_check_flat_blocks(
                         _vlm_blocks,
                         script_context=_vlm_ctx,
-                        config=_image_garble_cfg if _image_garble_cfg is not None else _garble_config,
+                        config=(
+                            _image_garble_cfg
+                            if _image_garble_cfg is not None
+                            else _garble_config
+                        ),
                     ):
                         flat_md = vlm_md
                         state.pic_results = []
@@ -2009,7 +2026,10 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     surya_url=settings.surya_service_url,
                     timeout_s=settings.surya_fallback_timeout_s,
                 )
-                if _surya_res is not None and _surya_res.chars_per_page >= _RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC:
+                if (
+                    _surya_res is not None
+                    and _surya_res.chars_per_page >= _RFC029_MIN_SCANNED_DENSITY_FLOOR_ARABIC
+                ):
                     decision(
                         event="surya_density_fallback",
                         choice="recovery_succeeded",
@@ -2077,7 +2097,12 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         logger=logger,
                     )
 
-            if not _surya_attempted and _is_arabic_dominant and f_verdict == "FAIL" and "suspect_density" in f_verdict_reason:
+            if (
+                not _surya_attempted
+                and _is_arabic_dominant
+                and f_verdict == "FAIL"
+                and "suspect_density" in f_verdict_reason
+            ):
                 decision(
                     event="surya_density_fallback",
                     choice="not_attempted",

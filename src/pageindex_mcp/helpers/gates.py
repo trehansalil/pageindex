@@ -813,7 +813,7 @@ def validate_recovery_method_names() -> None:
     import importlib
 
     recovery_mod = importlib.import_module("pageindex_mcp.client.recovery")
-    RecoveryMixin = getattr(recovery_mod, "RecoveryMixin")
+    RecoveryMixin = recovery_mod.RecoveryMixin
 
     for gate in GATES:
         if gate.gate_fn is None:

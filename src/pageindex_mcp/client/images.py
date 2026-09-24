@@ -27,10 +27,10 @@ from ..helpers import (
     detect_garble,
     route_and_extract_flat,
 )
-from ..script import BlobKind, ScriptContext
 from ..metrics import (
     LOW_QUALITY_TREES,
 )
+from ..script import BlobKind, ScriptContext
 from ..storage import save_figure
 
 logger = logging.getLogger(__name__)
@@ -149,7 +149,8 @@ async def _attempt_tesseract_raster_recovery(
             if script_context is not None
             else ScriptContext(
                 dominant_script=expected_script,
-                had_presentation_forms=_infer_presentation_forms(ocr_text),  # pre-NFKC: raw Tesseract OCR
+                                # pre-NFKC: raw Tesseract OCR
+                had_presentation_forms=_infer_presentation_forms(ocr_text),
                 source="tesseract_raster_recovery",
             )
         )

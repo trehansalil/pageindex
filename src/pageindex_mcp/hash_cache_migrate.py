@@ -40,9 +40,8 @@ if str(_SRC) not in sys.path:
 
 from pageindex_mcp.cache import get_cache_redis  # noqa: E402
 from pageindex_mcp.config import settings  # noqa: E402
-from pageindex_mcp.storage import HASH_CACHE_KEY, HASH_OBJECT, get_minio  # noqa: E402
-
 from pageindex_mcp.obs import configure as configure_obs  # noqa: E402
+from pageindex_mcp.storage import HASH_CACHE_KEY, HASH_OBJECT, get_minio  # noqa: E402
 
 configure_obs()
 logger = logging.getLogger("hash_cache_migrate")

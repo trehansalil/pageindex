@@ -2,7 +2,7 @@
 
 ``from pageindex_mcp.helpers import X`` continues to work after the split.
 """
-# ruff: noqa: F401, E402
+# ruff: noqa: F401
 
 from __future__ import annotations
 
@@ -33,25 +33,12 @@ from ..script import (
     is_arabic_char as _is_arabic_char,
 )
 
-# ── types ────────────────────────────────────────────────────────────────────
-from .types import (
-    _UNSET,
-    ExtractionState,
-    GateOutcome,
-    GateSpec,
-    LowQualityTreeError,
-    RecoveryOutcome,
-    Route,
-    TreeDefect,
-    TreeGateResult,
-    VerdictResult,
-    VerdictThresholds,
-    _defect_from_reason_str,
-    _ReasonPolicy,
-    _Unset,
-    decide_route,
-    finalize_gate_and_route,
-    reset_verdict_thresholds,
+# ── arbitrate ───────────────────────────────────────────────────────────────
+from .arbitrate import (
+    ENGINE_RELIABILITY_ORDER,
+    HALLUCINATION_CHAR_RATIO,
+    Candidate,
+    arbitrate,
 )
 
 # ── tree_validation ──────────────────────────────────────────────────────────
@@ -64,14 +51,6 @@ from .flat import (
     doc_text,
     flat_doc_view,
     route_and_extract_flat,
-)
-
-# ── arbitrate ───────────────────────────────────────────────────────────────
-from .arbitrate import (
-    ENGINE_RELIABILITY_ORDER,
-    HALLUCINATION_CHAR_RATIO,
-    Candidate,
-    arbitrate,
 )
 
 # ── garble ───────────────────────────────────────────────────────────────────
@@ -101,9 +80,9 @@ from .garble import (
     _garble_ratio,
     _has_any_presentation_form,
     _infer_presentation_forms,
-    _pf_ratio,
     _is_morphologically_nonsense,
     _latin_token_ratio,
+    _pf_ratio,
     detect_garble,
     hash_pipe_ratio,
     ocr_noise_ratio,
@@ -198,6 +177,27 @@ from .tree_validation import (
     validate_tree,
 )
 
+# ── types ────────────────────────────────────────────────────────────────────
+from .types import (
+    _UNSET,
+    ExtractionState,
+    GateOutcome,
+    GateSpec,
+    LowQualityTreeError,
+    RecoveryOutcome,
+    Route,
+    TreeDefect,
+    TreeGateResult,
+    VerdictResult,
+    VerdictThresholds,
+    _defect_from_reason_str,
+    _ReasonPolicy,
+    _Unset,
+    decide_route,
+    finalize_gate_and_route,
+    reset_verdict_thresholds,
+)
+
 # ── verdict ──────────────────────────────────────────────────────────────────
 from .verdict import (
     _clamp_pass,
@@ -217,16 +217,23 @@ from .verdict import (
 
 __all__ = [
     "BULK_PROFILE",
+    # arbitrate
+    "ENGINE_RELIABILITY_ORDER",
     "FEATURE_WIRINGS",
     "FLAT_MARKDOWN_PROFILE",
     # gates
     "GATES",
     "GATE_TABLE",
+    "HALLUCINATION_CHAR_RATIO",
     "HARD_FAIL_DEFECTS",
+    "PF_SIGNAL_RATIO",
     "REASON_POLICY",
     "_GATE_PRIORITY",
     "_UNSET",
     "BlobKind",
+    # flat block measurement (D2/RFC-041: canonical API is block_text / doc_text)
+    "BlockTextPurpose",
+    "Candidate",
     "ExtractionState",
     "FeatureWiring",
     # garble
@@ -249,10 +256,6 @@ __all__ = [
     "_ReasonPolicy",
     "_Unset",
     "_extract_page_hits",
-    # flat block measurement (D2/RFC-041: canonical API is block_text / doc_text)
-    "BlockTextPurpose",
-    "block_text",
-    "doc_text",
     "_flat_block_primary_text",
     # tables
     "_flat_parse_table",
@@ -262,16 +265,15 @@ __all__ = [
     "_garble_check_nodes",
     "_garble_config",
     "_garble_ratio",
-    "PF_SIGNAL_RATIO",
     "_has_any_presentation_form",
     "_infer_presentation_forms",
-    "_pf_ratio",
     "_infer_script",
+    "_is_morphologically_nonsense",
+    "_llm",
     # tree node measurement (canonical — use instead of ad-hoc text sums)
     "_node_char_count",
     "_node_text_parts",
-    "_is_morphologically_nonsense",
-    "_llm",
+    "_pf_ratio",
     # rag
     "_rag",
     "_script_from_filename",
@@ -287,6 +289,8 @@ __all__ = [
     "_try_ocr_promotion",
     "_try_small_doc_promotion",
     "apply_promotions",
+    "arbitrate",
+    "block_text",
     "classify_verdict",
     "compute_image_enrichment_ratio",
     "compute_verdict",
@@ -294,6 +298,7 @@ __all__ = [
     "decide_rtl",
     "detect_garble",
     "detect_regression",
+    "doc_text",
     # verdict
     "evaluate_gates",
     "finalize_gate_and_route",
@@ -313,9 +318,4 @@ __all__ = [
     "table_is_rtl",
     "validate_feature_wirings",
     "validate_tree",
-    # arbitrate
-    "ENGINE_RELIABILITY_ORDER",
-    "HALLUCINATION_CHAR_RATIO",
-    "Candidate",
-    "arbitrate",
 ]

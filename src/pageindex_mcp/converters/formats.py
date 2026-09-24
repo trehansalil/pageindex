@@ -411,11 +411,10 @@ async def vlm_extract_markdown(pdf_path: str, model: str | None = None) -> str:
     import openai
 
     from ..client import get_openai_client
-    from ..config import settings
 
     # HR3: block VLM extraction when pii_corpus=True and endpoint is not
     # ZDR-allowlisted — rasterized PDF pages contain full document PII.
-    from ..config import ZDRComplianceError
+    from ..config import ZDRComplianceError, settings
     from .pictures import zdr_egress_gate
 
     allowed, _api_base = zdr_egress_gate("VLM markdown extraction", doc_id=pdf_path)

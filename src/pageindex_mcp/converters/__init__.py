@@ -28,14 +28,6 @@ from .docling_conv import (
     probe_conversion_route,
 )
 
-# --- preclassify.py ---
-from .preclassify import (
-    PreClassification,
-    detect_lang_from_text_layer,
-    merge_lang_sources,
-    preclassify_document,
-)
-
 # --- formats.py ---
 from .formats import (
     docx_to_markdown,
@@ -133,17 +125,26 @@ from .pictures import (
 from .pipeline import (
     ConverterChainEntry,
     ConverterFailurePolicy,
-    as_chain_entry,
     _build_candidate,
     _run_stages,
+    as_chain_entry,
     pdf_markdown_converters,
     pdf_to_markdown_docling,
+)
+
+# --- preclassify.py ---
+from .preclassify import (
+    PreClassification,
+    detect_lang_from_text_layer,
+    merge_lang_sources,
+    preclassify_document,
 )
 
 # --- types.py ---
 from .types import Candidate, PictureResult, TessdataUnavailableError
 
 __all__ = [
+    "BIDI_NORM_VERSION",
     "LANDSCAPE_CHAR_THRESHOLD",
     "LANDSCAPE_REEXTRACT_DEADLINE_SECONDS",
     "MAX_LANDSCAPE_PAGES",
@@ -166,13 +167,12 @@ __all__ = [
     "_PICTURE_PAGE_COVERAGE_THRESHOLD",
     "_RFC029_TABLE_DEDUP_ENABLED",
     "_RFC029_TABLE_MIN_COLLAPSE_COLS",
-    "ConverterChainEntry",
-    "ConverterFailurePolicy",
-    "as_chain_entry",
     # types
     "Candidate",
-    "BIDI_NORM_VERSION",
+    "ConverterChainEntry",
+    "ConverterFailurePolicy",
     "PictureResult",
+    "PreClassification",
     "RtlDecision",
     "TessdataUnavailableError",
     # pictures
@@ -230,6 +230,7 @@ __all__ = [
     "_title_matches",
     "_try_download_tessdata",
     "apply_rtl",
+    "as_chain_entry",
     "chunked_docling_timeout_s",
     "decide_rtl",
     "detect_lang_from_text_layer",
@@ -239,14 +240,13 @@ __all__ = [
     "html_to_markdown_with_images",
     "image_to_markdown",
     "libreoffice_to_pdf",
+    "merge_lang_sources",
     "normalize_dashes",
     "numbering_depth",
     "pdf_markdown_converters",
     "pdf_to_markdown",
     "pdf_to_markdown_docling",
     "pptx_to_markdown",
-    "PreClassification",
-    "merge_lang_sources",
     "preclassify_document",
     "probe_conversion_route",
     "reconstruct_bidi_order",

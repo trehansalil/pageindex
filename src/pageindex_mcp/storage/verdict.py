@@ -49,7 +49,7 @@ def _read_existing_sidecar(mc: Minio, doc_id: str) -> dict:
         return {}
 
 
-def save_doc_meta(doc_id: str, meta: dict) -> None:  # noqa: C901, PLR0915
+def save_doc_meta(doc_id: str, meta: dict) -> None:
     """Read-merge-write sidecar: reads the existing sidecar (if any), merges
     new fields from *meta* on top, and writes the result.  This prevents
     subset-payload callers (promotion_sweep, registry_backfill) from

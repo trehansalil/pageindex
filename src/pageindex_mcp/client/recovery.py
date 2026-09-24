@@ -22,7 +22,6 @@ from ..converters import (
     reconstruct_bidi_order,
     splice_picture_text_for_tree,
 )
-from .images import _IMAGE_EXTS
 from ..converters.pipeline import DOCLING_CONVERTER_NAME
 from ..helpers import (
     ExtractionState,
@@ -48,6 +47,7 @@ from ..metrics import (
 from ..obs.decisions import decision
 from ..picture_plane import OcrEngine, SkipReason, skip_reason_from_str
 from ..script import BlobKind, ScriptContext, decide_rtl
+from .images import _IMAGE_EXTS
 
 if TYPE_CHECKING:
     pass
@@ -128,7 +128,8 @@ def _keep_best_wins(
         if script_context is not None
         else ScriptContext(
             dominant_script=expected_script,
-            had_presentation_forms=_infer_presentation_forms(_pre_text),  # pre-NFKC: post-normalize but safe — returns False on destroyed PF
+                            # pre-NFKC: post-normalize but safe — returns False on destroyed PF
+                had_presentation_forms=_infer_presentation_forms(_pre_text),
             source="ocr_retry_keep_best",
         )
     )
@@ -543,7 +544,8 @@ class RecoveryMixin:
                 if script_context is not None
                 else ScriptContext(
                     dominant_script=expected_script,
-                    had_presentation_forms=_infer_presentation_forms(_md_text),  # pre-NFKC: post-normalize but safe
+                                        # pre-NFKC: post-normalize but safe
+                    had_presentation_forms=_infer_presentation_forms(_md_text),
                     source="pre_rebuild_md_quality",  # pre-NFKC
                 )
             )
@@ -845,7 +847,11 @@ class RecoveryMixin:
         between the per-node repair path and the whole-document
         normalization paths is observable rather than silent.
         """
-        if not (not state.ok and TreeDefect.RTL_REVERSAL in _all_defects(state) and (ext == ".pdf" or ext in _IMAGE_EXTS)):
+        if not (
+            not state.ok
+            and TreeDefect.RTL_REVERSAL in _all_defects(state)
+            and (ext == ".pdf" or ext in _IMAGE_EXTS)
+        ):
             return
         # Zone-7: guard against double bidi correction.
         # _renormalize_bidi_guarded (whole-markdown-level) already ran on

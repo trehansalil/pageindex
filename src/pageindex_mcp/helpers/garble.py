@@ -421,7 +421,7 @@ def _emit_prong_decision(
     )
 
 
-def _garble_prongs(
+def _garble_prongs(  # noqa: PLR0915
     norm_blob: str,
     *,
     expected_script: str | None = None,
@@ -690,7 +690,7 @@ def detect_garble(
         _effective_script = _infer_script(blob)
 
     _had_pf = script_context.had_presentation_forms
-    if not _had_pf:
+    if not _had_pf:  # noqa: SIM102
         if _pf_ratio(blob) > PF_SIGNAL_RATIO:
             _had_pf = True
         # Removed: the prior fallback here unconditionally set _had_pf=True
@@ -1104,7 +1104,8 @@ def _garble_ratio(text, expected_script=None, *, script_context=None):
         if script_context is not None
         else ScriptContext(
             dominant_script=expected_script,
-            had_presentation_forms=_infer_presentation_forms(text),  # pre-NFKC: post-normalize but safe — returns False on destroyed PF
+            # pre-NFKC: post-normalize but safe — returns False on destroyed PF
+            had_presentation_forms=_infer_presentation_forms(text),
             source="garble_ratio",
         )
     )

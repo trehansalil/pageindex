@@ -16,9 +16,8 @@ from .auth import BearerAuthMiddleware
 from .cache import get_async_redis
 from .config import settings
 from .metrics import metrics_response, registry_metrics_sync_loop
-from .upload_app import create_upload_app
-
 from .obs import configure as configure_obs
+from .upload_app import create_upload_app
 
 configure_obs()
 

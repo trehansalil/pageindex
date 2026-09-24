@@ -81,13 +81,13 @@ from .reconcile import (  # noqa: E402
 __all__ = [
     "_backfill",
     "_delete_stale_rows",
-    "cleanup_protect_empty_processed_at",
     "_drain_verdict_retry_queue",
     "_enrich_one",
     "_heal_orphans",
     "_list_meta_entries",
     "_list_meta_keys",
     "_upsert_all",
+    "cleanup_protect_empty_processed_at",
     "reconcile_registry_drift",
     "run_auto_backfill",
 ]

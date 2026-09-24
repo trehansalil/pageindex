@@ -678,12 +678,12 @@ def reset_pipeline_config() -> None:
     ``pageindex_mcp.*`` module that holds a reference to the old instance, so
     ``compute_verdict`` and friends see the fresh config immediately.
     """
-    global pipeline_config  # noqa: PLW0603
-    global PDF_INSPECTOR_PRECLASSIFY, PRECLASSIFY_ENABLED, ALLOW_AGPL_FALLBACK  # noqa: PLW0603
-    global REMOTE_MD_RENORMALIZE, OCR_ESCALATION_GARBLE  # noqa: PLW0603
-    global OCR_ESCALATION_LOW_CONTENT  # noqa: PLW0603
-    global OCR_ESCALATION_PER_PICTURE, IMAGE_DOMINANT_OCR_ESCALATION_ENABLED  # noqa: PLW0603
-    global VERDICT_DOWNGRADE_ENABLED  # noqa: PLW0603
+    global pipeline_config
+    global PDF_INSPECTOR_PRECLASSIFY, PRECLASSIFY_ENABLED, ALLOW_AGPL_FALLBACK
+    global REMOTE_MD_RENORMALIZE, OCR_ESCALATION_GARBLE
+    global OCR_ESCALATION_LOW_CONTENT
+    global OCR_ESCALATION_PER_PICTURE, IMAGE_DOMINANT_OCR_ESCALATION_ENABLED
+    global VERDICT_DOWNGRADE_ENABLED
 
     pipeline_config = PipelineConfig.from_env()
 
@@ -711,7 +711,7 @@ def reset_pipeline_config() -> None:
         if _name != "pageindex_mcp" and not _name.startswith("pageindex_mcp."):
             continue
         if getattr(_mod, "pipeline_config", None) is not None:
-            setattr(_mod, "pipeline_config", pipeline_config)
+            _mod.pipeline_config = pipeline_config
 
 
 def effective_config_snapshot() -> dict:

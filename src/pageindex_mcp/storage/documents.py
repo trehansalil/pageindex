@@ -786,10 +786,10 @@ def validate_erasure_manifest() -> None:
     seen_produces: set[str] = set()
     seen_deletes: set[str] = set()
     for entry in _ERASURE_MANIFEST:
-        for field in entry.consumes:
-            if field not in seen_produces:
+        for consumed in entry.consumes:
+            if consumed not in seen_produces:
                 raise ValueError(
-                    f"ErasureStep '{entry.name}' consumes '{field}' but no "
+                    f"ErasureStep '{entry.name}' consumes '{consumed}' but no "
                     f"earlier step in _ERASURE_MANIFEST produces it -- move "
                     f"the producing step before '{entry.name}'"
                 )
@@ -915,7 +915,10 @@ def save_quarantine(
     merged = sorted(set(existing_filenames) | set(filenames))
     meta = {"filenames": merged}
     meta_content = json.dumps(meta, indent=2).encode()
-    mc.put_object(bkt, meta_key, BytesIO(meta_content), len(meta_content), content_type="application/json")
+    mc.put_object(
+        bkt, meta_key, BytesIO(meta_content),
+        len(meta_content), content_type="application/json",
+    )
 
     QUARANTINE_WRITES_TOTAL.labels(result="ok").inc()
     decision(
@@ -928,7 +931,10 @@ def save_quarantine(
             "meta_filenames_count": len(merged),
         },
     )
-    logger.info("save_quarantine: wrote %s (%d bytes, %d filenames)", data_key, len(content), len(merged))
+    logger.info(
+        "save_quarantine: wrote %s (%d bytes, %d filenames)",
+        data_key, len(content), len(merged),
+    )
 
 
 
