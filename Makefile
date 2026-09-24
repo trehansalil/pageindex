@@ -58,6 +58,8 @@ help:
 	@echo "  make ingest          ingest doc_store/ through the running server"
 	@echo "  make ingest-dry-run  list what would be submitted"
 	@echo "  make ingest-minio    ingest from the MinIO bucket   [PREFIX=some/folder/]"
+	@echo "  make g1-timings      RFC-050 G1 stage timings + 429 counts from worker logs"
+	@echo "                      [LOGS=\"baseline=a.log baseline=b.log post=c.log post=d.log\"]"
 	@echo ""
 	@echo "Quality gates (same set the gates.yml CI workflow runs)"
 	@echo "  make gates           blocking gates: dag, test-ratio-guard, test-budget"
@@ -153,6 +155,16 @@ ingest-dry-run: env
 
 ingest-minio: env
 	$(INGEST) --source minio $(if $(PREFIX),--prefix $(PREFIX))
+
+# RFC-050 G1: per-stage median/p90 (extraction / tree_build / recovery) and LLM
+# rate-limit counts, parsed from the stage_duration decision records in worker
+# JSON logs. Stdlib only, reads nothing but the files named. LABEL=path groups
+# runs into arms; with two arms it prints the G1 verdict (>=30% median cut).
+LOGS ?=
+.PHONY: g1-timings
+g1-timings:
+	@test -n "$(LOGS)" || { echo 'usage: make g1-timings LOGS="baseline=a.log post=b.log"' >&2; exit 2; }
+	@python3 scripts/g1_stage_timings.py $(LOGS)
 
 # ─── Confluence sync for agents/{rfcs,designs,tasks} ────────────────────────
 #
