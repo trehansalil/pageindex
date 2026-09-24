@@ -574,10 +574,6 @@ class TestComputeVerdictSignature:
         with pytest.raises(TypeError, match="TreeGateResult"):
             compute_verdict(_single_leaf(), "flat_prose", "bare_string")  # type: ignore[arg-type]
 
-    def test_none_validate_result_accepted(self):
-        result = compute_verdict(_single_leaf(), "flat_prose", None)
-        assert isinstance(result, VerdictResult)
-
 
 class TestUnifiedGateEvaluation:
     """After flat/tree verdict unification, compute_verdict no longer accepts

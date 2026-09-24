@@ -308,22 +308,30 @@ def test_remote_version_enforce_defaults_false(monkeypatch):
     assert PipelineConfig.from_env().remote_version_enforce is False
 
 
-@pytest.mark.parametrize("raw,expected", [("false", False), ("0", False), ("true", True)])
-def test_agpl_structural_fallback_enabled_reads_env(monkeypatch, raw, expected):
+def test_agpl_structural_fallback_enabled_reads_env(monkeypatch):
     """Contract: the flag is operator-settable from the environment."""
     from pageindex_mcp.config import PipelineConfig
 
-    monkeypatch.setenv("AGPL_STRUCTURAL_FALLBACK_ENABLED", raw)
-    assert PipelineConfig.from_env().agpl_structural_fallback_enabled is expected
+    failures = []
+    for raw, expected in [("false", False), ("0", False), ("true", True)]:
+        monkeypatch.setenv("AGPL_STRUCTURAL_FALLBACK_ENABLED", raw)
+        got = PipelineConfig.from_env().agpl_structural_fallback_enabled
+        if got is not expected:
+            failures.append(f"{raw!r}: expected {expected}, got {got!r}")
+    assert not failures, failures
 
 
-@pytest.mark.parametrize("raw,expected", [("true", True), ("1", True), ("false", False)])
-def test_remote_version_enforce_reads_env(monkeypatch, raw, expected):
+def test_remote_version_enforce_reads_env(monkeypatch):
     """Contract: the flag is operator-settable from the environment."""
     from pageindex_mcp.config import PipelineConfig
 
-    monkeypatch.setenv("REMOTE_VERSION_ENFORCE", raw)
-    assert PipelineConfig.from_env().remote_version_enforce is expected
+    failures = []
+    for raw, expected in [("true", True), ("1", True), ("false", False)]:
+        monkeypatch.setenv("REMOTE_VERSION_ENFORCE", raw)
+        got = PipelineConfig.from_env().remote_version_enforce
+        if got is not expected:
+            failures.append(f"{raw!r}: expected {expected}, got {got!r}")
+    assert not failures, failures
 
 
 def test_new_zone_flags_are_declared_fields():

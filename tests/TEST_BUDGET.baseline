@@ -50,4 +50,9 @@
 #                  and the count the suite actually collects; the PR body's
 #                  "923" was a third, earlier measurement. 961 is the measured
 #                  truth and supersedes both stale figures.
-961
+# 2026-09-24  952  ICR-97 /test-budget safe-floor pass: -9 net. Collapsed 3
+#                  parametrize tables, deleted/merged 2 duplicate tautology
+#                  tests, folded tests/test_registry_backfill.py into
+#                  tests/test_registry.py (-2 exact duplicates). 28 -> 27
+#                  files. Measured with `uv run pytest --collect-only -q`.
+952

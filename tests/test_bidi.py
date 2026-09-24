@@ -1312,9 +1312,9 @@ class TestWriteBarrierExhaustionPropagates:
     save_flat_doc."""
 
     def test_save_doc_meta_does_not_raise_on_barrier_exhaustion(self, mock_minio, monkeypatch):
+        barrier = MagicMock(side_effect=PersistenceNotVisibleError("processed/doc.meta.json"))
         monkeypatch.setattr(
-            "pageindex_mcp.storage.minio_ops._confirm_write_visible",
-            MagicMock(side_effect=PersistenceNotVisibleError("processed/doc.meta.json")),
+            "pageindex_mcp.storage.minio_ops._confirm_write_visible", barrier
         )
         save_doc_meta(
             "doc123",
@@ -1325,6 +1325,8 @@ class TestWriteBarrierExhaustionPropagates:
                 "processed_at": "2026-08-10T00:00:00Z",
             },
         )
+        barrier.assert_not_called()
+        assert mock_minio.put_object.called
 
 
 # ===========================================================================

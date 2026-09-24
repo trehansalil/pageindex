@@ -319,7 +319,9 @@ async def test_flat_02_c2_flat_json_nosuchkey_tolerated(mock_minio):
         patch("pageindex_mcp.cache.doc_cache_delete"),
         patch("pageindex_mcp.storage.hash_cache.hash_cache_delete"),
     ):
-        await delete_doc("ghostflat")  # must NOT raise
+        result = await delete_doc("ghostflat")  # must NOT raise
+
+    assert not any("flat" in e for e in result["errors"]), result["errors"]
 
 
 async def test_delete_doc_read_doc_name_generic_exception_recorded(mock_minio):
@@ -338,40 +340,38 @@ async def test_delete_doc_read_doc_name_generic_exception_recorded(mock_minio):
     assert any("read-doc-name" in e for e in result["errors"])
 
 
-@pytest.mark.parametrize(
-    "target_key,error_fragment",
-    [
+async def test_delete_doc_non_nosuchkey_remove_errors_recorded(mock_minio):
+    """A non-NoSuchKey S3Error while removing any cascade artifact is
+    recorded in errors (not swallowed like NoSuchKey is)."""
+    failures = []
+    for target_key, error_fragment in [
         ("processed/errkey001.json", "processed.json"),
         ("processed/errkey001.meta.json", "processed.meta.json"),
         ("preloaded/report.pdf", "preloaded/"),
-    ],
-)
-async def test_delete_doc_non_nosuchkey_remove_errors_recorded(
-    mock_minio, target_key, error_fragment
-):
-    """A non-NoSuchKey S3Error while removing any cascade artifact is
-    recorded in errors (not swallowed like NoSuchKey is)."""
-    load_resp = MagicMock()
-    load_resp.read.return_value = json.dumps(
-        {"doc_id": "errkey001", "doc_name": "report.pdf"}
-    ).encode()
-    mock_minio.get_object.return_value = load_resp
-    mock_minio.list_objects.return_value = []
+    ]:
+        load_resp = MagicMock()
+        load_resp.read.return_value = json.dumps(
+            {"doc_id": "errkey001", "doc_name": "report.pdf"}
+        ).encode()
+        mock_minio.get_object.return_value = load_resp
+        mock_minio.list_objects.return_value = []
 
-    def _remove(bucket, name):
-        if name == target_key:
-            raise _other_s3error()
-        raise _nosuchkey()
+        def _remove(bucket, name, _target=target_key):
+            if name == _target:
+                raise _other_s3error()
+            raise _nosuchkey()
 
-    mock_minio.remove_object.side_effect = _remove
+        mock_minio.remove_object.side_effect = _remove
 
-    with (
-        patch("pageindex_mcp.cache.doc_cache_delete"),
-        patch("pageindex_mcp.storage.hash_cache.hash_cache_delete"),
-    ):
-        result = await delete_doc("errkey001")
+        with (
+            patch("pageindex_mcp.cache.doc_cache_delete"),
+            patch("pageindex_mcp.storage.hash_cache.hash_cache_delete"),
+        ):
+            result = await delete_doc("errkey001")
 
-    assert any(error_fragment in e for e in result["errors"])
+        if not any(error_fragment in e for e in result["errors"]):
+            failures.append(f"{target_key}: no {error_fragment!r} in {result['errors']}")
+    assert not failures, failures
 
 
 # ── RFC-007 D9 / Property 8 — observable staging delete failure ─────────────
