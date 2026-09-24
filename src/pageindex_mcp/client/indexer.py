@@ -725,8 +725,9 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                                 if script_context is not None
                                 else ScriptContext(
                                     dominant_script=expected_script,
-                                    # pre-NFKC: raw PDF text
-                                    had_presentation_forms=_infer_presentation_forms(raw_text),
+                                    had_presentation_forms=_infer_presentation_forms(  # pre-NFKC
+                                        raw_text,
+                                    ),
                                     source="pre_garble_probe",
                                 )
                             )
@@ -1807,8 +1808,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             if script_context is not None
             else ScriptContext(
                 dominant_script=expected_script,
-                # pre-NFKC: post-normalize but safe — returns False on destroyed PF
-                had_presentation_forms=_infer_presentation_forms(flat_md),
+                had_presentation_forms=_infer_presentation_forms(flat_md),  # pre-NFKC
                 source="flat_garble_gate",
             )
         )
@@ -1849,8 +1849,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         if script_context is not None
                         else ScriptContext(
                             dominant_script=expected_script,
-                            # pre-NFKC: raw VLM output
-                            had_presentation_forms=_infer_presentation_forms(vlm_md),
+                            had_presentation_forms=_infer_presentation_forms(vlm_md),  # pre-NFKC
                             source="vlm_fallback_garble",
                         )
                     )
