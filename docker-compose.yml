@@ -224,8 +224,9 @@ services:
 
   # RFC-036 D7 OCR spike services (paddleocr-service, docling-ocr-service,
   # paddleocr-vl-service) and their `ocr-spike` compose profile were removed
-  # 2026-09-24 (RFC-051 D1) — scripts/ocr_spike_eval.py, their only consumer,
-  # was deleted with them. surya-ocr-service below is live and unaffected.
+  # 2026-09-24 (RFC-051 D1) — the spike evaluation script, their only
+  # consumer, was deleted with them. surya-ocr-service below is live and
+  # unaffected.
 
   # Surya downloads its model weights via huggingface_hub at first request,
   # not at build time (unlike docling-service, which bakes them into the

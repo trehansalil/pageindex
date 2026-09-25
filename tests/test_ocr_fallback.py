@@ -2,8 +2,8 @@
 """Surya OCR fallback — standalone images (RFC-048) and Arabic density (RFC-047 D8).
 
 Consolidated from test_rfc048_surya_image.py and test_d8_surya_fallback.py.
-(scripts/ocr_spike_eval.py and its coverage here were removed 2026-09-24, RFC-051 D1 —
-the spike script had no remaining production consumers.)
+(The RFC-036 OCR spike evaluation harness and its coverage here were removed
+2026-09-24, RFC-051 D1 — it had no remaining production consumers.)
 
 Covers:
   - Decision-event registration for surya_image_fallback / surya_density_fallback

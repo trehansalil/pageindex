@@ -183,7 +183,7 @@ storage:                       # was _STORAGE_POINTS
 
 ### Property 1: Zero Caller Guarantee
 
-**Current contract (2026-09-24, Iter 9):** *For any* script deleted (`table_separator_baseline.py`, `ocr_spike_eval.py`), there SHALL be zero import statements, zero function calls, and zero string references to that script in the entire codebase (excluding git history and this RFC). `facade_surface_measure.py` is out of scope for this property — it is kept, so its `test_source_invariants.py` references are untouched.
+**Current contract (2026-09-24, Iter 9):** *For any* script deleted (`table_separator_baseline.py`, `ocr_spike_eval.py`), there SHALL be zero import statements, zero function calls, and zero string references to that script in the entire codebase (excluding git history and this RFC). `facade_surface_measure.py` is out of scope for this property — it is kept, so its `test_source_invariants.py` references are untouched. **(Amendment 2026-09-25, PR #25 review):** "the entire codebase" means the live surface — Python, YAML, shell, the `Makefile`, `docker-compose.yml`, `.github/`, and live service READMEs. Historical records are exempt and are not rewritten: prior RFC/design/task/plan files under `agents/`, reports under `audit/`, and the dated history comments in `tests/TEST_BUDGET.baseline`. An `audit/` report that still *instructs* running a deleted script carries a historical marker instead.
 
 <details><summary>Amendment history (Iter 2, facade_surface_measure.py included, superseded)</summary>
 

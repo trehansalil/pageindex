@@ -1,9 +1,9 @@
 # audit/archive/MANIFEST.md
 
 Files archived from `audit/` on 2026-09-24 as part of RFC-051 D2 (Iteration 9).
-Each was grep-checked (scripts/, tests/, .github/, Makefile, .claude/, agents/, docs/, *.md, src/) and had zero live references.
+Each was grep-checked (scripts/, tests/, .github/, Makefile, the gitignored local .claude/, agents/, docs/, *.md, src/) and had zero live references to the archived file itself. Remaining mentions are prose citations inside other historical `audit/` reports (e.g. `audit/DEAD_CODE_AUDIT_2026-09-06.md`, `audit/PHASE*_POSTPROCESS_REGISTRY_*.md`), which were left unedited. This scope covers the archived audit files only; references to the scripts deleted by RFC-051 D1 are tracked separately and survive only in historical documents.
 
-| File | Original path | Lines | Reason |
+| File | Original path | Lines (`wc -l`) | Reason |
 |---|---|---|---|
 | `ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-12_POST.md` | `audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-12_POST.md` | 469 | superseded defect-zone audit run |
 | `ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-13_POST-FIX-3.md` | `audit/ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-13_POST-FIX-3.md` | 574 | superseded defect-zone audit run |
@@ -73,7 +73,10 @@ Each was grep-checked (scripts/, tests/, .github/, Makefile, .claude/, agents/, 
 ## Skipped candidates (not archived)
 
 - `CORPUS_REINGESTION_AUDIT_RUN-6.md`, `RUN-7.md`, `RUN-8.md` — match the pinned glob `audit/CORPUS_REINGESTION_AUDIT_RUN-*` (Makefile + confluence_sync.sh consumer); excluded per RFC-051 D2 pin list despite fitting the 'stale run report' shape.
-- `ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-11.md`, `_RUN-2.md`, `_2026-08-24_POST-FIX-11.md`, `_2026-08-27_POST-RUN20.md`, `_2026-09-02_POST-RFC043.md` — referenced by `.claude/workflows/zone-remediation-cycle.md`, `.claude/workflows/dead-code-discover-verify.js`, or `agents/rfcs|designs|tasks/*.md`.
+- `ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-11.md`, `_2026-08-11_RUN-2.md` — referenced only by the local, gitignored workflow files `.claude/workflows/zone-remediation-cycle.md` and `.claude/workflows/dead-code-discover-verify.js` (not in the repository; kept so those local workflows keep resolving).
+- `ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-24_POST-FIX-11.md` — referenced by `agents/rfcs/037`, `038`, `039` and `045`.
+- `ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-27_POST-RUN20.md` — referenced by `agents/designs/design-rfc040-verdict-garble-critical-zone-remediation.md` and its tasks file.
+- `ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-09-02_POST-RFC043.md` — referenced by the active `audit/zones/*.md` zone files (incl. `audit/zones/_index.md`) and the local `.claude/workflows/zone-post-verify-2.js`.
 - `REMEDIATION_SCORECARD_2026-08-27_POST-RUN20.md` — referenced by `agents/designs/design-rfc040-verdict-garble-critical-zone-remediation.md` and its tasks file.
 
-Total archived: 64 files, 14210 lines.
+Total archived: 64 files, 14210 lines (`wc -l`). Four files end without a trailing newline (`ARCHITECTURE_DEFECT_ZONES_AUDIT_2026-08-26_POST-FIX-12.md`, `REMEDIATION_SCORECARD_2026-09-01_POST-RFC041.md`, `REMEDIATION_SCORECARD_2026-09-02_POST-RFC043.md`, `ZONE_DELTA_2026-09-01_POST-RFC041.md`), so an editor shows one more line for each than `wc -l` counts (14214 total).

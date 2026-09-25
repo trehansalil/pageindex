@@ -1,5 +1,7 @@
 # OCR Spike Evaluation Report (RFC-036 D7)
 
+> **Historical (2026-09-25):** `scripts/ocr_spike_eval.py` and the `services/paddleocr-service`, `services/docling-ocr-service` and `services/paddleocr-vl-service` wrappers were deleted by RFC-051 D1; statements below that they "remain in the tree" no longer hold. Kept as a record only.
+
 **Decision:** [RFC-036 D7 — OCR engine evaluation spike](../agents/rfcs/036-run19-run19-landscape-writebarrier-enrichment-fixes.md#d7-ocr-engine-evaluation-spike--paddleocr-and-docling-ocr-service-wrappers)
 **Task:** [3.4 — Run spike evaluation and write comparison report](../agents/tasks/tasks-rfc036-run19-landscape-writebarrier-enrichment-fixes.md#3-4-d7-spike-evaluation)
 **Script:** `scripts/ocr_spike_eval.py`

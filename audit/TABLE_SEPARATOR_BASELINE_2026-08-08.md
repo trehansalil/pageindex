@@ -1,5 +1,7 @@
 # Table-Separator Baseline (2026-08-08)
 
+> **Historical (2026-09-25):** `scripts/table_separator_baseline.py` was deleted by RFC-051 D1. The commands below no longer run; this report is kept as a record only.
+
 Pre-redeploy read-only probe, RFC-034 D2.5. Window: 2026-07-30..2026-08-04.
 
 ## Status: NOT YET CAPTURED — script unable to reach remote MinIO from this sandbox
