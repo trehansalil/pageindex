@@ -132,16 +132,26 @@ The in-cluster docling-service pod moves Docling's RSS off the worker, not off
 the node: both land on the same single k3s node (`portfolio`, today 7.6 GB RAM,
 allocatable 7,937,228 Ki ≈ 7.57 GiB), next to redis, postgres and minio.
 
-**Infra decision (2026-09-25): resize the current server, not a second node.**
-The node stays single; its RAM is raised in place. The figures below are the
-**pre-resize** node, and the fit check must be redone against the resized
-allocatable. The resize happens **before** the G1 baseline arm (Task 9.1), so
-the baseline and post arms run on the same hardware — a resize between the two
-arms would contaminate the ≥30 % comparison.
+**Infra decision (2026-09-25, revised): an on-demand second node, not a
+resize.** Resizing `portfolio` was ruled out on cost, and the cx series was out
+of stock for migration in every datacenter. Instead a cx23 (2 vCPU / 4 GB,
+€0.0096/h incl. IPv4 while it exists, a ~€0.15/mo snapshot otherwise) joins
+the cluster as agent `docling-1` over a private network and runs only
+docling-service; `docling-node.sh up|down` creates and deletes it. A second
+copy, `docling-service-local`, can run on `portfolio` (replicas 0 unless it has
+≥16 GB). Both sit behind the one `docling-service` Service, which is also
+published at `https://docling.saliltrehan.com` behind the service's bearer
+token. Scheduled cx33↔cx43 resizing is on hold. The figures below are
+`portfolio` alone.
+
+The G1 post arm therefore runs on added hardware; the report must say so. The
+baseline arm is unaffected: the worker's `DOCLING_SERVICE_URL` is not switched
+until after it.
 
 | Pod | Replicas | Memory request | Memory limit | Concurrency knob |
 |---|---|---|---|---|
-| `docling-service` (`services/docling-service`, uvicorn `--workers 1`, :8080) | 1 | ~2.5Gi | ~3.5Gi | **not serialized** — see below; ~2 GB peak RSS per conversion per its README |
+| `docling-service` on `docling-1` (cx23, uvicorn `--workers 1`, :8080) | 1 while the node is up | 2Gi | 3Gi | `DOCLING_MAX_CONCURRENT=1` — see below; ~2 GB peak RSS per conversion per its README |
+| `docling-service-local` on `portfolio` | 0 (1 only at ≥16 GB) | ~2.5Gi | ~3.5Gi | same |
 | `pageindex-mcp-worker` | KEDA 1↔2 (`maxReplicaCount: 2`) | ~1Gi | ~1.5Gi | `PAGEINDEX_WORKER_MAX_JOBS=2` — the default once `config.docling_offload_configured()` is true (§4) |
 | worker admission floor | — | — | — | `MEM_ADMISSION_FLOOR_SERVICE_BYTES` = 800 MiB (838860800) |
 
@@ -150,15 +160,16 @@ does not serialize conversions on its own: both endpoints run the work via
 `asyncio.to_thread`. With KEDA at 2 worker replicas × `MAX_JOBS=2`, up to
 N = 4 requests can arrive at once. The service now admits
 `DOCLING_MAX_CONCURRENT` conversions (default 1) through a semaphore and
-queues the rest, so each pod peaks at one ~2 GB conversion and the ~3.5 Gi
-limit holds (option (a)). It also refuses to start without
+queues the rest, so each pod peaks at one ~2 GB conversion and its limit
+holds (option (a)). It also refuses to start without
 `DOCLING_SERVICE_BEARER_TOKEN`, since it is reachable over the internet
-(`docling.saliltrehan.com`, below).
+(`docling.saliltrehan.com`, above).
 
 Fit check against the node's scheduled requests on 2026-09-24 (2,904 Mi,
 including today's 512 Mi worker request): replacing that with 2 × 1 Gi
-workers and adding 2.5 Gi for docling-service gives ≈ 7,000 Mi of requests,
-≈ 90 % of the pre-resize allocatable — the reason for the resize. Limits are
+workers and adding 2.5 Gi for docling-service would give ≈ 7,000 Mi of
+requests, ≈ 90 % of allocatable — the reason docling-service moves to
+`docling-1`. Without it, `portfolio` holds ≈ 4,450 Mi (≈ 57 %). Limits are
 overcommitted (already 154 % today), and nothing keeps a pod inside its limit
 except the limit itself. The cgroup-aware admission gate (§4) is
 **best-effort**, not a guarantee: it checks a headroom floor once, releases
@@ -176,8 +187,9 @@ limit. The G1 run should watch total node memory, not only worker RSS
 
 The manifests are **not in this repo**: they live in the separate
 `hetzner-deployment-service` repo (`apps/pageindex-mcp/…`, see §3). The change
-is on its branch `feature/pageindex-docling-service`: a `docling-service`
-Deployment + Service, the configmap fix, worker resources, and a
+is on its branch `feature/pageindex-docling-service`: the two docling-service
+Deployments + Service, the public route (`docling-service-public.yaml`), the
+on-demand node tooling (`cluster/k3s/option-a-docling-node/`), the configmap fix, worker resources, and a
 `docling-service-image-updated` deploy route that
 `.github/workflows/build-push-docling-service.yml` here dispatches after
 publishing `ghcr.io/trehansalil/docling-service`. Merge it only **after** the
