@@ -296,6 +296,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
     expected_script: str | None = None,
     workers: int = 1,
     num_threads: int | None = None,
+    pages_with_tables: set[int] | None = None,
 ) -> tuple[str, list[PictureResult], dict[str, dict]]:
     """MIT-licensed layout-aware PDF route (RFC-003 D3 / HR4 AGPL escape).
 
@@ -375,6 +376,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
             expected_script=expected_script,
             workers=workers,
             num_threads=num_threads,
+            pages_with_tables=pages_with_tables,
         )
 
     if logger.isEnabledFor(logging.INFO):
@@ -391,8 +393,11 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
 
     # Reuse the process-cached converter (see _docling_converter): a fresh
     # DocumentConverter per call leaks ~250 MB/doc that torch never frees.
+    _do_table_structure = pages_with_tables is None or bool(pages_with_tables)
     converter = _docling_converter(
-        force_full_page_ocr=force_full_page_ocr, ocr_lang_override=ocr_lang_override
+        force_full_page_ocr=force_full_page_ocr,
+        ocr_lang_override=ocr_lang_override,
+        do_table_structure=_do_table_structure,
     )
     # RFC-035 D2 Phase 1: read-only landscape probe, tags pages for the future
     # rasterize-rotate-reextract fallback (Phase 2). Does not alter extraction.

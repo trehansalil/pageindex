@@ -47,6 +47,7 @@ _RFC029_TABLE_MIN_COLLAPSE_COLS: int = int(os.environ.get("RFC029_TABLE_MIN_COLL
 def _build_pdf_pipeline_options(
     force_full_page_ocr: bool = False,
     ocr_lang_override: list[str] | None = None,
+    do_table_structure: bool = True,
 ):
     """Build the CPU-only Docling PDF pipeline options.
 
@@ -89,8 +90,9 @@ def _build_pdf_pipeline_options(
 
     opts = PdfPipelineOptions()
     opts.do_ocr = do_ocr
-    opts.do_table_structure = True
-    opts.table_structure_options.mode = TableFormerMode.ACCURATE
+    opts.do_table_structure = do_table_structure
+    if do_table_structure:
+        opts.table_structure_options.mode = TableFormerMode.ACCURATE
     if do_ocr:
         # Fix 5: an explicit detected-language override beats the static env list.
         langs = ocr_lang_override or [
@@ -140,6 +142,7 @@ def _docling_converter(
     force_full_page_ocr: bool = False,
     ocr_lang_override: list[str] | None = None,
     for_image: bool = False,
+    do_table_structure: bool = True,
 ) -> DocumentConverter:
     """Return a cached CPU-only DocumentConverter, building it once per options key.
 
@@ -167,12 +170,14 @@ def _docling_converter(
         "force" if force_full_page_ocr else "",
         ",".join(ocr_lang_override) if ocr_lang_override else "",
         "image" if for_image else "pdf",
+        "no_tables" if not do_table_structure else "",
     )
     converter = _DOCLING_CONVERTER_CACHE.get(key)
     if converter is None:
         pipeline_options = _build_pdf_pipeline_options(
             force_full_page_ocr=force_full_page_ocr,
             ocr_lang_override=ocr_lang_override,
+            do_table_structure=do_table_structure,
         )
         input_format = InputFormat.IMAGE if for_image else InputFormat.PDF
         converter = DocumentConverter(
@@ -562,6 +567,7 @@ def _docling_chunk_worker(  # noqa: PLR0913
     ocr_lang_override: list[str] | None,
     expected_script: str | None = None,
     num_threads: int | None = None,
+    do_table_structure: bool = True,
 ) -> None:
     """Run ``pdf_to_markdown_docling`` in a child process (D0 fix).
 
@@ -588,6 +594,7 @@ def _docling_chunk_worker(  # noqa: PLR0913
                     force_full_page_ocr=force_full_page_ocr,
                     ocr_lang_override=ocr_lang_override,
                     expected_script=expected_script,
+                    do_table_structure=do_table_structure,
                 ),
             )
         )
@@ -606,6 +613,7 @@ def _run_docling_chunk_with_timeout(  # noqa: PLR0913
     timeout_s: float,
     expected_script: str | None = None,
     num_threads: int | None = None,
+    do_table_structure: bool = True,
 ) -> tuple[str, list[PictureResult]]:
     """Run one Docling chunk conversion in a killable subprocess (D0 fix).
 
@@ -626,6 +634,7 @@ def _run_docling_chunk_with_timeout(  # noqa: PLR0913
             ocr_lang_override,
             expected_script,
             num_threads,
+            do_table_structure,
         ),
         daemon=True,
     )
@@ -682,6 +691,7 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
     expected_script: str | None = None,
     workers: int = 1,
     num_threads: int | None = None,
+    pages_with_tables: set[int] | None = None,
 ) -> tuple[str, list[PictureResult], dict[str, dict]]:
     """RFC-027 D7 chunked-Docling route for PDFs exceeding MAX_DOCLING_PAGES.
 
@@ -723,6 +733,11 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
     )
 
     def convert(index: int, path: str) -> tuple[str, list[PictureResult]]:
+        start = starts[index]
+        chunk_end = min(start + max_pages, page_count)
+        chunk_has_tables = pages_with_tables is None or bool(
+            pages_with_tables & set(range(start, chunk_end))
+        )
         try:
             chunk_md, chunk_pics, _chunk_stages = _run_docling_chunk_with_timeout(
                 path,
@@ -731,6 +746,7 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
                 timeout_s=_CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S,
                 expected_script=expected_script,
                 num_threads=num_threads,
+                do_table_structure=chunk_has_tables,
             )
             return chunk_md, chunk_pics
         except FuturesTimeoutError:

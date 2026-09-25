@@ -87,6 +87,7 @@ class PdfConvertRequest(BaseModel):
     presigned_url: str
     force_full_page_ocr: bool = False
     ocr_lang_override: list[str] | None = None
+    pages_with_tables: list[int] | None = None
 
 
 class ImageConvertRequest(BaseModel):
@@ -202,6 +203,7 @@ async def convert_pdf(req: PdfConvertRequest):
         plan = plan_docling(await asyncio.to_thread(_pdf_page_count, tmp_path))
         logger.info("docling plan: %s", plan)
         async with _convert_slots:
+            _pages_set = set(req.pages_with_tables) if req.pages_with_tables is not None else None
             md, pic_results, _extraction_stages = await asyncio.to_thread(
                 pdf_to_markdown_docling,
                 tmp_path,
@@ -210,6 +212,7 @@ async def convert_pdf(req: PdfConvertRequest):
                 max_pages=plan.pages_per_chunk,
                 workers=plan.workers,
                 num_threads=plan.threads_per_worker,
+                pages_with_tables=_pages_set,
             )
         serialized_pics = [_serialize_picture_result(pr) for pr in pic_results]  # type: ignore[arg-type]
         return PdfConvertResponse(

@@ -102,6 +102,7 @@ async def _remote_pdf_to_markdown(
     force_full_page_ocr: bool = False,
     ocr_lang_override: list[str] | None = None,
     expected_script: str | None = None,
+    pages_with_tables: list[int] | None = None,
 ) -> tuple[str, list]:
     """Call the external Docling service to convert a PDF.
 
@@ -135,6 +136,7 @@ async def _remote_pdf_to_markdown(
         "force_full_page_ocr": force_full_page_ocr,
         "ocr_lang_override": ocr_lang_override,
         "expected_script": expected_script,
+        "pages_with_tables": pages_with_tables,
     }
     headers: dict[str, str] = {}
     if settings.docling_service_bearer_token:

@@ -883,6 +883,10 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     "staging_key_set": bool(self._staging_key),
                 },
             )
+            _pages_with_tables: list[int] | None = None
+            if pre_classification and "pages_with_tables" in pre_classification:
+                _pages_with_tables = pre_classification["pages_with_tables"]
+
             _transient_attempts: int = 0  # Zone-7: per-converter transient retry counter
             for idx, entry in enumerate(chain):
                 conv_name = entry.name
@@ -910,6 +914,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                                 force_full_page_ocr=True,
                                 ocr_lang_override=_ocr_lang_override,
                                 expected_script=expected_script,
+                                pages_with_tables=_pages_with_tables,
                             )
                         else:
                             if state.pre_garbled:
@@ -921,6 +926,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                             md_content, state.pic_results = await _remote_pdf_to_markdown(
                                 self._staging_key,
                                 expected_script=expected_script,
+                                pages_with_tables=_pages_with_tables,
                             )
                     elif force_full_page and _conv_supports_ocr:
                         decision(
@@ -940,6 +946,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                                 True,
                                 ocr_lang_override=_ocr_lang_override,
                                 expected_script=expected_script,
+                                pages_with_tables=set(_pages_with_tables) if _pages_with_tables is not None else None,
                             )
                         )
                         if stages_out:
@@ -961,11 +968,17 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                                 "active; deferring to Fix-3 retry path",
                                 filename,
                             )
+                        _table_kw: dict = {}
+                        if _conv_supports_ocr:
+                            _table_kw = {
+                                "pages_with_tables": set(_pages_with_tables) if _pages_with_tables is not None else None,
+                            }
                         md_content, state.pic_results, stages_out = _split_converter_output(
                             await asyncio.to_thread(
                                 conv_fn,
                                 file_path,
                                 expected_script=expected_script,
+                                **_table_kw,
                             )
                         )
                         if stages_out:

@@ -69,6 +69,7 @@ mappings:
       - test_bidi.py
       - test_config.py
       - test_converters.py
+      - test_selective_tableformer.py
 
   client/llm.py:
     coverage_threshold: 90
@@ -283,10 +284,12 @@ mappings:
       - test_bidi.py
       - test_recovery.py
       - test_density_gate.py
+      - test_selective_tableformer.py
 
   converters/preclassify.py:
     tests:
       - test_script.py
+      - test_selective_tableformer.py
 
   converters/docling_resources.py:
     tests:

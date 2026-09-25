@@ -63,6 +63,10 @@ class PreClassification:
     # --- Tesseract-ready language codes (mapped from detected_langs) ---
     ocr_langs: list[str] = field(default_factory=lambda: ["eng"])
 
+    # --- selective TableFormer (RFC-050 D8) ---
+    pages_with_tables: set[int] | None = None
+    detection_method: str | None = None
+
     elapsed_ms: float = 0.0
 
     def to_dict(self) -> dict:
@@ -89,6 +93,10 @@ class PreClassification:
             d["garbled_text_layer"] = True
             d["alpha_ratio"] = round(self.alpha_ratio, 4)
             d["junk_ratio"] = round(self.junk_ratio, 4)
+        if self.pages_with_tables is not None:
+            d["pages_with_tables"] = sorted(self.pages_with_tables)
+        if self.detection_method is not None:
+            d["detection_method"] = self.detection_method
         d["elapsed_ms"] = round(self.elapsed_ms, 1)
         return d
 
@@ -111,6 +119,8 @@ class PreClassification:
             alpha_ratio=d.get("alpha_ratio", 0.0),
             junk_ratio=d.get("junk_ratio", 0.0),
             ocr_langs=d.get("ocr_langs", ["eng"]),
+            pages_with_tables=set(d["pages_with_tables"]) if "pages_with_tables" in d else None,
+            detection_method=d.get("detection_method"),
             elapsed_ms=d.get("elapsed_ms", 0.0),
         )
 
@@ -351,6 +361,134 @@ def _iso_to_tess(iso_langs: list[str]) -> list[str]:
     return [_ISO_TO_TESS.get(lang, lang) for lang in iso_langs]
 
 
+def _page_has_ruled_table(page, *, min_h: int = 3, min_v: int = 3) -> bool:
+    """Detect ruled tables via vector geometry from ``page.get_cdrawings()``."""
+    h_count = 0
+    v_count = 0
+    for drawing in page.get_cdrawings():
+        for item in drawing.get("items", []):
+            kind = item[0]
+            if kind == "l":
+                # line item: ("l", Point(x0,y0), Point(x1,y1))
+                p1, p2 = item[1], item[2]
+                dx = abs(p2.x - p1.x)
+                dy = abs(p2.y - p1.y)
+                if dx > 20 and dy < 3:
+                    h_count += 1
+                elif dy > 20 and dx < 3:
+                    v_count += 1
+            elif kind == "re":
+                # rect item: ("re", Rect)
+                rect = item[1]
+                w = abs(rect.width)
+                h = abs(rect.height)
+                if w > 20 and h < 5:
+                    h_count += 1
+                elif h > 20 and w < 5:
+                    v_count += 1
+        if h_count >= min_h and v_count >= min_v:
+            return True
+    return h_count >= min_h and v_count >= min_v
+
+
+def _page_has_column_alignment(
+    page, *, min_columns: int = 2, min_blocks_per_col: int = 3, quantize_px: int = 12
+) -> bool:
+    """Detect table-like column alignment from text-block x-coordinates."""
+    blocks = page.get_text("blocks")
+    if not blocks:
+        return False
+    from collections import Counter
+
+    x_bins: Counter[int] = Counter()
+    for b in blocks:
+        x0 = int(round(b[0] / quantize_px)) * quantize_px
+        x_bins[x0] += 1
+    aligned_cols = sum(1 for cnt in x_bins.values() if cnt >= min_blocks_per_col)
+    return aligned_cols >= min_columns
+
+
+def _add_neighbor_padding(pages: set[int], page_count: int) -> set[int]:
+    """Include N-1 and N+1 around every detected table page."""
+    if not pages:
+        return pages
+    padded: set[int] = set()
+    for p in pages:
+        if p > 0:
+            padded.add(p - 1)
+        padded.add(p)
+        if p < page_count - 1:
+            padded.add(p + 1)
+    return padded
+
+
+def detect_pages_with_tables(
+    pdf_path: str,
+) -> tuple[set[int] | None, str | None]:
+    """Pre-extraction table detection via vector geometry + column alignment.
+
+    Returns ``(pages, detection_method)`` where *pages* is the set of
+    0-indexed page numbers likely containing tables (or ``None`` when
+    detection is unavailable) and *detection_method* summarises which
+    signals fired: ``"vector"``, ``"column_alignment"``,
+    ``"vector+column_alignment"``, or ``None``.
+    """
+    import os
+
+    from ..config import pipeline_config as _pc
+
+    if not _pc.allow_agpl_fallback:
+        return None, None
+
+    kill = os.getenv("TABLEFORMER_SKIP_ENABLED", "1").strip().lower()
+    if kill in ("0", "false", "no"):
+        return None, None
+
+    try:
+        import fitz
+    except ImportError:
+        return None, None
+
+    result: set[int] = set()
+    page_count = 0
+    saw_vector = False
+    saw_column = False
+    try:
+        with fitz.open(pdf_path) as doc:
+            page_count = len(doc)
+            for page_idx in range(page_count):
+                page = doc[page_idx]
+                if _page_has_ruled_table(page):
+                    result.add(page_idx)
+                    saw_vector = True
+                    continue
+                try:
+                    if _page_has_column_alignment(page):
+                        result.add(page_idx)
+                        saw_column = True
+                except Exception:
+                    logger.debug(
+                        "column-alignment detection failed on page %d of %s",
+                        page_idx, pdf_path, exc_info=True,
+                    )
+    except Exception:
+        logger.debug("detect_pages_with_tables failed for %s", pdf_path, exc_info=True)
+        return None, None
+
+    result = _add_neighbor_padding(result, page_count)
+
+    if saw_vector and saw_column:
+        method = "vector+column_alignment"
+    elif saw_vector:
+        method = "vector"
+    elif saw_column:
+        method = "column_alignment"
+    else:
+        method = None
+
+    return result, method
+
+
 # ---------------------------------------------------------------------------
 # Unified entry point
 # ---------------------------------------------------------------------------
@@ -454,6 +592,19 @@ def preclassify_document(
     except Exception:
         pass
 
+    # 5. selective TableFormer: detect pages with ruled tables (RFC-050 D8)
+    pages_with_tables: set[int] | None = None
+    detection_method: str | None = None
+    if pdf_type == "text_based":
+        try:
+            pages_with_tables, detection_method = detect_pages_with_tables(filepath)
+        except Exception:
+            logger.debug(
+                "preclassify_document: table detection failed for %s",
+                filepath,
+                exc_info=True,
+            )
+
     elapsed_ms = (time.monotonic() - t0) * 1000
     ocr_langs = _iso_to_tess(merged.detected_langs)
 
@@ -474,6 +625,8 @@ def preclassify_document(
         alpha_ratio=merged.alpha_ratio,
         junk_ratio=merged.junk_ratio,
         ocr_langs=ocr_langs,
+        pages_with_tables=pages_with_tables,
+        detection_method=detection_method,
         elapsed_ms=elapsed_ms,
     )
 

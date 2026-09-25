@@ -72,4 +72,11 @@
 #                  (one table-driven test incl. the cgroup readers) and the
 #                  parallel chunked route (order, picture pages, threads).
 #                  Nothing covered the chunked route before.
-958
+# 2026-09-25  942  ICR-97 RFC-050 test trim: -16. Collapsed
+#                  test_selective_tableformer.py from 36 to 20 by removing
+#                  redundant boundary-value variants (subsumed by threshold
+#                  tests), duplicate gate checks, inverse/edge-case variants,
+#                  and trivial Pydantic assignment tests. One test per
+#                  distinct code path retained. Measured with
+#                  `uv run pytest --collect-only -q`.
+942
