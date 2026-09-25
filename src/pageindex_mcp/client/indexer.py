@@ -2184,6 +2184,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 "row_records": _row_records,
                 "doc_description": flat_desc,
                 "flat_char_count": flat_char_count,
+                "node_count": 0,
                 "build_sha": CLIENT_BUILD_SHA,
                 "effective_config": _effective_cfg,
             }
@@ -2356,6 +2357,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 "sha256": sha256,
                 "doc_description": state.result.get("doc_description", ""),
                 "total_tree_chars": len(_flatten_tree_text(structure)),
+                "node_count": _tree_node_count(structure),
                 "build_sha": CLIENT_BUILD_SHA,
                 "effective_config": _effective_cfg,
                 "decider_version": "zone3_decide_rtl_v1",

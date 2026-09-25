@@ -76,9 +76,11 @@ ON CONFLICT (doc_id) DO UPDATE SET
         THEN EXCLUDED.sha256
         ELSE doc_registry.sha256
     END,
+    -- A writer with no count (the reconcile cron upserting a sidecar that
+    -- lacks node_count) must not erase the one the worker wrote.
     node_count = CASE
         WHEN EXCLUDED.processed_at >= COALESCE(doc_registry.processed_at, '')
-        THEN EXCLUDED.node_count
+        THEN COALESCE(EXCLUDED.node_count, doc_registry.node_count)
         ELSE doc_registry.node_count
     END,
 """
@@ -123,8 +125,11 @@ _UPSERT_VERDICT_OVERRIDE = """    -- force_verdict_override=True: bypass verdict
     verdict_computed_at = EXCLUDED.verdict_computed_at
 """
 
+# node_count rides along so the worker's sidecar backfill (which writes this
+# row) records it; a sidecar without it is re-enriched on every reconcile tick.
 _UPSERT_RETURNING = """
-RETURNING doc_id, verdict, pipeline_version, permanent_marginal, verdict_computed_at;
+RETURNING doc_id, verdict, pipeline_version, permanent_marginal, verdict_computed_at,
+    node_count;
 """
 
 _UPSERT_SQL = _UPSERT_PREAMBLE + _UPSERT_VERDICT_CAS + _UPSERT_RETURNING
