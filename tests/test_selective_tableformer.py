@@ -201,7 +201,10 @@ class TestChunkedDoclingTableStructure:
 
         monkeypatch.setattr(docling_conv, "_run_docling_chunk_with_timeout", fake_chunk)
         docling_conv._pdf_to_markdown_docling_chunked(
-            path, page_count=30, max_pages=10, pages_with_tables=None,
+            path,
+            page_count=30,
+            max_pages=10,
+            pages_with_tables=None,
         )
         assert all(seen), f"Expected all True, got {seen}"
         assert len(seen) == 3
@@ -231,10 +234,12 @@ class TestChunkedDoclingTableStructure:
         monkeypatch.setattr(docling_conv, "_run_docling_chunk_with_timeout", fake_chunk)
         # After neighbor padding, {0, 5} becomes {0, 1, 4, 5, 6}
         docling_conv._pdf_to_markdown_docling_chunked(
-            path, page_count=30, max_pages=10,
+            path,
+            page_count=30,
+            max_pages=10,
             pages_with_tables={0, 1, 4, 5, 6},
         )
-        assert seen[0] is True   # pages 0-9, tables on pages 0,1,4,5,6
+        assert seen[0] is True  # pages 0-9, tables on pages 0,1,4,5,6
         assert seen[1] is False  # pages 10-19, no tables
         assert seen[2] is False  # pages 20-29, no tables
 
@@ -304,7 +309,9 @@ class TestRemotePdfToMarkdownPayload:
                 docling_service_timeout_s=30,
             ),
         )
-        monkeypatch.setattr("pageindex_mcp.storage.presigned_get_url", lambda k: f"http://minio/{k}")
+        monkeypatch.setattr(
+            "pageindex_mcp.storage.presigned_get_url", lambda k: f"http://minio/{k}"
+        )
 
         async def fake_check(client):
             pass
@@ -443,9 +450,15 @@ class TestCascadeDetection:
         fake_doc = MagicMock()
         fake_doc.__len__ = MagicMock(return_value=4)
         fake_doc.__getitem__ = MagicMock(
-            side_effect=lambda idx: page_ruled if idx == 0 else page_col if idx == 2 else MagicMock(
-                get_cdrawings=MagicMock(return_value=[]),
-                get_text=MagicMock(return_value=[]),
+            side_effect=lambda idx: (
+                page_ruled
+                if idx == 0
+                else page_col
+                if idx == 2
+                else MagicMock(
+                    get_cdrawings=MagicMock(return_value=[]),
+                    get_text=MagicMock(return_value=[]),
+                )
             )
         )
         fake_doc.__enter__ = MagicMock(return_value=fake_doc)

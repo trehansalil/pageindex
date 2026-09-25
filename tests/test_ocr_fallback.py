@@ -813,4 +813,3 @@ def test_density_fallback_is_gated_on_all_five_conjuncts():
         f"  missing: {sorted(expected - gating_conjuncts)}\n"
         f"  added:   {sorted(gating_conjuncts - expected)}"
     )
-

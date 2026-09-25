@@ -469,7 +469,9 @@ def detect_pages_with_tables(
                 except Exception:
                     logger.debug(
                         "column-alignment detection failed on page %d of %s",
-                        page_idx, pdf_path, exc_info=True,
+                        page_idx,
+                        pdf_path,
+                        exc_info=True,
                     )
     except Exception:
         logger.debug("detect_pages_with_tables failed for %s", pdf_path, exc_info=True)

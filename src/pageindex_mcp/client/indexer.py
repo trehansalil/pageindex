@@ -946,7 +946,9 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                                 True,
                                 ocr_lang_override=_ocr_lang_override,
                                 expected_script=expected_script,
-                                pages_with_tables=set(_pages_with_tables) if _pages_with_tables is not None else None,
+                                pages_with_tables=set(_pages_with_tables)
+                                if _pages_with_tables is not None
+                                else None,
                             )
                         )
                         if stages_out:
@@ -971,7 +973,9 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         _table_kw: dict = {}
                         if _conv_supports_ocr:
                             _table_kw = {
-                                "pages_with_tables": set(_pages_with_tables) if _pages_with_tables is not None else None,
+                                "pages_with_tables": set(_pages_with_tables)
+                                if _pages_with_tables is not None
+                                else None,
                             }
                         md_content, state.pic_results, stages_out = _split_converter_output(
                             await asyncio.to_thread(
