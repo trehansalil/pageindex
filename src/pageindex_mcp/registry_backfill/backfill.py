@@ -83,11 +83,13 @@ def _list_meta_entries() -> tuple[list[tuple[str, str, str]], dict[str, str | No
 
 
 def _is_fat(meta: dict) -> bool:
-    """A fattened v2 sidecar carries both registry-critical fields, so it can be
+    """A fattened v2 sidecar carries the registry-critical fields, so it can be
     upserted WITHOUT a full-JSON GET (audit Finding 9 / C-3). The decision is by
     field presence, not the ``sidecar_version`` int, so it survives version drift.
+    A sidecar without ``node_count`` (written before it was added) is thin: the
+    one-off full-JSON GET fills the registry column and self-heals the sidecar.
     """
-    return "sha256" in meta and "doc_description" in meta
+    return "sha256" in meta and "doc_description" in meta and meta.get("node_count") is not None
 
 
 def _load_meta(object_key: str) -> dict | None:

@@ -922,6 +922,12 @@ def test_registry_sql_contract():
         ("upsert RETURNING: pipeline_version", returning, "pipeline_version"),
         ("upsert RETURNING: permanent_marginal", returning, "permanent_marginal"),
         ("upsert RETURNING: verdict_computed_at", returning, "verdict_computed_at"),
+        ("upsert RETURNING: node_count", returning, "node_count"),
+        (
+            "node_count: a writer without one keeps the stored count",
+            _UPSERT_SQL,
+            "COALESCE(EXCLUDED.node_count, doc_registry.node_count)",
+        ),
         ("verdict CAS: EXCLUDED PASS priority", _UPSERT_SQL, "EXCLUDED.verdict = 'PASS' THEN 3"),
         (
             "verdict CAS: incumbent PASS priority",
@@ -1818,7 +1824,7 @@ class TestDrainVerdictRetryQueueWiring:
 
 def _make_meta(key: str) -> dict:
     doc_id = key.removesuffix(".meta.json")
-    # Fat v2 sidecar (sha256 + doc_description present) so _enrich_one's
+    # Fat v2 sidecar (sha256 + doc_description + node_count) so _enrich_one's
     # _is_fat() fast path is taken and no full-JSON MinIO GET (via
     # read_registry_fields) is attempted — these tests mock upsert_doc /
     # _load_meta only, not the network calls behind the thin-sidecar
@@ -1828,6 +1834,7 @@ def _make_meta(key: str) -> dict:
         "doc_name": f"test-{doc_id}",
         "sha256": "0" * 64,
         "doc_description": "test description",
+        "node_count": 3,
     }
 
 
@@ -1876,8 +1883,16 @@ async def test_reconcile_thin_sidecar_self_heals(reconcile_env, monkeypatch):
     so subsequent ticks are O(Δ)."""
     import pageindex_mcp.worker.registry_mirror as _rm
 
-    thin = {"doc_id": "d2", "doc_name": "x"}
-    rich = {"doc_id": "d2", "doc_name": "x", "sha256": "h2", "doc_description": "dd"}
+    # sha256 + doc_description but no node_count: a sidecar written before
+    # node_count was added is thin too, or its registry column stays NULL.
+    thin = {"doc_id": "d2", "doc_name": "x", "sha256": "h", "doc_description": "d"}
+    rich = {
+        "doc_id": "d2",
+        "doc_name": "x",
+        "sha256": "h2",
+        "doc_description": "dd",
+        "node_count": 4,
+    }
     monkeypatch.setattr(
         rb, "_list_meta_entries", lambda: ([("processed/d2.meta.json", "e2", "d2")], {})
     )
@@ -1894,7 +1909,7 @@ async def test_reconcile_thin_sidecar_self_heals(reconcile_env, monkeypatch):
     assert read_rf.call_count == 1
     urr.assert_awaited_once()
     healed = urr.await_args.kwargs["registry_fields"]
-    assert healed["sha256"] == "h2"
+    assert (healed["sha256"], healed["node_count"]) == ("h2", 4)
 
     # §2b: the same heal covers a legacy ORPHAN -- processed/<id>.json with no
     # .meta.json at all: one read_registry_fields, one _upsert_registry_row.
@@ -1916,8 +1931,8 @@ async def test_reconcile_thin_sidecar_self_heals(reconcile_env, monkeypatch):
 async def test_reconcile_stores_etag_only_after_successful_upsert(reconcile_env, monkeypatch):
     """A doc whose upsert fails must NOT have its etag stored (so it retries next
     tick); the succeeding doc's etag IS stored."""
-    fat5 = {"doc_id": "d5", "doc_name": "x", "sha256": "h", "doc_description": "d"}
-    fat6 = {"doc_id": "d6", "doc_name": "y", "sha256": "h", "doc_description": "d"}
+    fat5 = {"doc_id": "d5", "doc_name": "x", "sha256": "h", "doc_description": "d", "node_count": 3}
+    fat6 = {"doc_id": "d6", "doc_name": "y", "sha256": "h", "doc_description": "d", "node_count": 3}
     monkeypatch.setattr(
         rb,
         "_list_meta_entries",
@@ -1948,7 +1963,7 @@ async def test_reconcile_stores_etag_only_after_successful_upsert(reconcile_env,
 async def test_reconcile_deletion_detection(reconcile_env, monkeypatch):
     """A registry doc_id absent from the MinIO listing is deleted, and the full
     live doc-id set is passed to reconcile_etag_prune so its etag is pruned."""
-    fat = {"doc_id": "d7", "doc_name": "x", "sha256": "h", "doc_description": "d"}
+    fat = {"doc_id": "d7", "doc_name": "x", "sha256": "h", "doc_description": "d", "node_count": 3}
     monkeypatch.setattr(
         rb, "_list_meta_entries", lambda: ([("processed/d7.meta.json", "e7", "d7")], {})
     )
@@ -2224,7 +2239,13 @@ async def test_reconcile_etag_diff_is_incremental(reconcile_env, monkeypatch):
         ("unchanged etag", "e3", {"d3": "e3"}, False, None),
         ("changed etag", "NEW", {"d3": "OLD"}, True, {"d3": "NEW"}),
     ):
-        fat = {"doc_id": "d3", "doc_name": "x", "sha256": "h", "doc_description": "d"}
+        fat = {
+            "doc_id": "d3",
+            "doc_name": "x",
+            "sha256": "h",
+            "doc_description": "d",
+            "node_count": 3,
+        }
         monkeypatch.setattr(
             rb,
             "_list_meta_entries",
