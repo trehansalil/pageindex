@@ -3065,3 +3065,25 @@ def test_chunked_docling_runs_chunks_in_parallel_in_page_order(tmp_path, monkeyp
     assert md == "<10>\n\n<10>\n\n<5>"
     assert [p["page"] for p in pics] == [1, 11, 21]
     assert running["peak"] == 3 and seen_threads == [2, 2, 2]
+
+    # The fake above skips the child; the child's own call must fit the real
+    # pipeline signature (it once passed a kwarg that only failed on a Mac run).
+    import inspect
+    import queue
+
+    from pageindex_mcp.converters import pipeline
+
+    real = inspect.signature(pipeline.pdf_to_markdown_docling)
+    tables = []
+
+    def fake_pipeline(*a, **kw):
+        real.bind(*a, **kw)
+        tables.append(kw.get("pages_with_tables"))
+        return "md", [], {}
+
+    monkeypatch.setattr(pipeline, "pdf_to_markdown_docling", fake_pipeline)
+    for on in (True, False):
+        q = queue.Queue()
+        docling_conv._docling_chunk_worker(q, path, False, None, do_table_structure=on)
+        assert q.get_nowait() == ("ok", ("md", [], {}))
+    assert tables == [None, set()]

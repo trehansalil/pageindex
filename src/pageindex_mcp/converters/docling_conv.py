@@ -594,7 +594,9 @@ def _docling_chunk_worker(  # noqa: PLR0913
                     force_full_page_ocr=force_full_page_ocr,
                     ocr_lang_override=ocr_lang_override,
                     expected_script=expected_script,
-                    do_table_structure=do_table_structure,
+                    # An empty set turns TableFormer off for this chunk;
+                    # None keeps it on for every page.
+                    pages_with_tables=None if do_table_structure else set(),
                 ),
             )
         )
