@@ -2997,6 +2997,7 @@ def test_plan_docling_sizes_from_cgroup_limits(monkeypatch):
         (292, 4, 6 * gib, 3, 1, 20),  # memory, not CPUs, caps the processes
         (292, 2, 3 * gib, 1, 2, 36),  # one process: chunked to fit memory
         (292, 8, 15 * gib, 8, 1, 19),  # an 8-vCPU node when cx33 is out of stock
+        (292, 14, 64 * gib, 14, 1, 11),  # Mac mini M4 Pro, native (no cgroup)
         (58, 4, 6783 * 1024**2, 1, 4, 58),  # below PARALLEL_MIN_PAGES: one pass
         (5, 4, 6 * gib, 1, 4, 5),
     ]
@@ -3017,6 +3018,11 @@ def test_plan_docling_sizes_from_cgroup_limits(monkeypatch):
     assert (dr.available_cpus(), dr.available_memory_bytes()) == (2, 3 * gib)
     files.update({"/sys/fs/cgroup/cpu.max": "max 100000", "/sys/fs/cgroup/memory.max": "max"})
     assert (dr.available_cpus(), dr.available_memory_bytes()) == (8, 8000000 * 1024)
+    # macOS: no /proc and no cgroup files, so the host's physical memory.
+    files.clear()
+    pages = {"SC_PHYS_PAGES": 4 * 1024**2, "SC_PAGE_SIZE": 16384}
+    monkeypatch.setattr(dr.os, "sysconf", pages.__getitem__)
+    assert dr.available_memory_bytes() == 64 * gib
 
 
 def test_chunked_docling_runs_chunks_in_parallel_in_page_order(tmp_path, monkeypatch):

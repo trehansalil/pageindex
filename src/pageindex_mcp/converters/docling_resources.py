@@ -99,6 +99,13 @@ def available_memory_bytes() -> int:
         if line.startswith("MemTotal:"):
             candidates.append(int(line.split()[1]) * 1024)
             break
+    if not candidates:
+        # No /proc on macOS (the service can run natively on a Mac, where
+        # Docker's VM would hide the host's cores).
+        try:
+            candidates.append(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE"))
+        except (OSError, ValueError, AttributeError):
+            pass
     for path in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
         raw = _read(path)
         if raw and raw != "max":
