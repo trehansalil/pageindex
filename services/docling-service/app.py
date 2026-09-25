@@ -12,9 +12,12 @@ import asyncio
 import base64
 import contextlib
 import hmac
+import ipaddress
 import logging
 import os
+import socket
 import tempfile
+import urllib.parse
 from contextlib import asynccontextmanager
 
 import httpx
@@ -30,6 +33,14 @@ BEARER_TOKEN = os.environ.get("DOCLING_SERVICE_BEARER_TOKEN", "")
 # token must stop startup rather than silently disable auth.
 ALLOW_ANONYMOUS = os.environ.get("DOCLING_SERVICE_ALLOW_ANONYMOUS", "") == "1"
 DOWNLOAD_TIMEOUT_S = int(os.environ.get("DOWNLOAD_TIMEOUT_S", "120"))
+# Refuse presigned URLs that resolve to a non-public address (loopback,
+# private, link-local, Tailscale's 100.64/10). For hosts where no NetworkPolicy
+# fences egress -- the native Mac copy behind docling.saliltrehan.com -- so a
+# token holder cannot make it fetch the host's own services or its LAN. Off by
+# default: the local compose copy downloads from MinIO at a private address.
+# Checked at resolve time only (a rebinding DNS answer could still race it);
+# httpx does not follow redirects, so a public URL cannot bounce inward.
+BLOCK_PRIVATE_URLS = os.environ.get("DOCLING_BLOCK_PRIVATE_URLS", "") == "1"
 # Conversions admitted at once. Each peaks at ~2 GB RSS, so the default of 1
 # makes the pod's memory limit hold however many workers call in parallel;
 # extra requests queue here instead of OOM-killing the pod.
@@ -145,8 +156,25 @@ app = FastAPI(title="Docling Conversion Service", lifespan=lifespan)
 # ---------------------------------------------------------------------------
 
 
+def _refuse_private_url(url: str) -> None:
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise HTTPException(status_code=400, detail="presigned_url must be an http(s) URL")
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        infos = socket.getaddrinfo(parts.hostname, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise HTTPException(status_code=400, detail="presigned_url host does not resolve") from exc
+    if any(not ipaddress.ip_address(info[4][0]).is_global for info in infos):
+        raise HTTPException(
+            status_code=400, detail="presigned_url resolves to a non-public address"
+        )
+
+
 async def _download_to_temp(url: str, suffix: str = ".pdf") -> str:
     """Download a file from a presigned URL to a temporary path."""
+    if BLOCK_PRIVATE_URLS:
+        await asyncio.to_thread(_refuse_private_url, url)
     tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
     try:
         async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT_S) as client:

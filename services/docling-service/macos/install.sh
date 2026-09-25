@@ -58,6 +58,7 @@ ip=\$(tailscale ip -4 2>/dev/null | head -1)
 export DOCLING_SERVICE_BEARER_TOKEN=\$(cat token)
 export DOCLING_ARTIFACTS_PATH="$ROOT/models" TESSDATA_PREFIX="$ROOT/tessdata"
 export DOCLING_DO_OCR=1 DOCLING_MAX_CONCURRENT=1 DOWNLOAD_TIMEOUT_S=120
+export DOCLING_BLOCK_PRIVATE_URLS=1  # no NetworkPolicy fences a Mac's egress
 export MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 export HF_HUB_OFFLINE=1 BUILD_SHA=\$(cat BUILD_SHA 2>/dev/null || echo unknown)
 exec caffeinate -i .venv/bin/uvicorn app:app --app-dir services/docling-service \\
