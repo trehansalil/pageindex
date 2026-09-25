@@ -8,8 +8,10 @@ The worker sends a presigned MinIO URL; this service downloads the file and
 runs conversion locally, returning markdown + picture results as JSON.
 """
 
+import asyncio
 import base64
 import contextlib
+import hmac
 import logging
 import os
 import tempfile
@@ -23,7 +25,16 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BEARER_TOKEN = os.environ.get("DOCLING_SERVICE_BEARER_TOKEN", "")
+# Anonymous access is an explicit opt-in for a local dev container only. The
+# service is reachable over the internet (docling.saliltrehan.com), so an unset
+# token must stop startup rather than silently disable auth.
+ALLOW_ANONYMOUS = os.environ.get("DOCLING_SERVICE_ALLOW_ANONYMOUS", "") == "1"
 DOWNLOAD_TIMEOUT_S = int(os.environ.get("DOWNLOAD_TIMEOUT_S", "120"))
+# Conversions admitted at once. Each peaks at ~2 GB RSS, so the default of 1
+# makes the pod's memory limit hold however many workers call in parallel;
+# extra requests queue here instead of OOM-killing the pod.
+MAX_CONCURRENT = max(1, int(os.environ.get("DOCLING_MAX_CONCURRENT", "1")))
+_convert_slots = asyncio.Semaphore(MAX_CONCURRENT)
 
 
 # ---------------------------------------------------------------------------
@@ -32,11 +43,11 @@ DOWNLOAD_TIMEOUT_S = int(os.environ.get("DOWNLOAD_TIMEOUT_S", "120"))
 
 
 def _verify_token(authorization: str | None = Header(None)) -> None:
-    if not BEARER_TOKEN:
+    if not BEARER_TOKEN and ALLOW_ANONYMOUS:
         return
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing bearer token")
-    if authorization[7:] != BEARER_TOKEN:
+    if not hmac.compare_digest(authorization[7:].encode(), BEARER_TOKEN.encode()):
         raise HTTPException(status_code=403, detail="Invalid bearer token")
 
 
@@ -82,6 +93,11 @@ class ImageConvertResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if not BEARER_TOKEN and not ALLOW_ANONYMOUS:
+        raise RuntimeError(
+            "DOCLING_SERVICE_BEARER_TOKEN is unset; refusing to start without auth "
+            "(set DOCLING_SERVICE_ALLOW_ANONYMOUS=1 for a local dev container only)"
+        )
     logger.info("Warming Docling converter cache...")
     try:
         from pageindex_mcp.converters import _docling_converter
@@ -152,18 +168,17 @@ async def version():
 
 @app.post("/convert/pdf", response_model=PdfConvertResponse, dependencies=[Depends(_verify_token)])
 async def convert_pdf(req: PdfConvertRequest):
-    import asyncio
-
     tmp_path = await _download_to_temp(req.presigned_url, suffix=".pdf")
     try:
         from pageindex_mcp.converters import pdf_to_markdown_docling
 
-        md, pic_results, _extraction_stages = await asyncio.to_thread(
-            pdf_to_markdown_docling,
-            tmp_path,
-            force_full_page_ocr=req.force_full_page_ocr,
-            ocr_lang_override=req.ocr_lang_override,
-        )
+        async with _convert_slots:
+            md, pic_results, _extraction_stages = await asyncio.to_thread(
+                pdf_to_markdown_docling,
+                tmp_path,
+                force_full_page_ocr=req.force_full_page_ocr,
+                ocr_lang_override=req.ocr_lang_override,
+            )
         serialized_pics = [_serialize_picture_result(pr) for pr in pic_results]  # type: ignore[arg-type]
         return PdfConvertResponse(
             markdown=md,
@@ -181,18 +196,17 @@ async def convert_pdf(req: PdfConvertRequest):
     "/convert/image", response_model=ImageConvertResponse, dependencies=[Depends(_verify_token)]
 )
 async def convert_image(req: ImageConvertRequest):
-    import asyncio
-
     suffix = ".png"
     tmp_path = await _download_to_temp(req.presigned_url, suffix=suffix)
     try:
         from pageindex_mcp.converters import image_to_markdown
 
-        md = await asyncio.to_thread(
-            image_to_markdown,
-            tmp_path,
-            ocr_lang_override=req.ocr_lang_override,
-        )
+        async with _convert_slots:
+            md = await asyncio.to_thread(
+                image_to_markdown,
+                tmp_path,
+                ocr_lang_override=req.ocr_lang_override,
+            )
         return ImageConvertResponse(markdown=md)
     except Exception as exc:
         logger.exception("Image conversion failed: %s", exc)

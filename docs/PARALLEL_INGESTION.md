@@ -145,18 +145,15 @@ arms would contaminate the ≥30 % comparison.
 | `pageindex-mcp-worker` | KEDA 1↔2 (`maxReplicaCount: 2`) | ~1Gi | ~1.5Gi | `PAGEINDEX_WORKER_MAX_JOBS=2` — the default once `config.docling_offload_configured()` is true (§4) |
 | worker admission floor | — | — | — | `MEM_ADMISSION_FLOOR_SERVICE_BYTES` = 800 MiB (838860800) |
 
-**docling-service concurrency — open item.** One uvicorn worker does **not**
-serialize conversions: both conversion endpoints run the work via
-`asyncio.to_thread` (`services/docling-service/app.py`) with no service-side
-limit, so concurrent requests convert concurrently in the same pod. With KEDA
-at 2 worker replicas × `MAX_JOBS=2`, up to **N = 4** conversions can be in
-flight at once — ~4 × 2 GB peak against a 3.5 Gi limit, i.e. an OOM kill of
-the service pod, not a queue. Before `MAX_JOBS=2` ships, one of these must
-hold: (a) the service caps its own concurrency (e.g. a semaphore of 1 around
-the conversion, which makes the ~3.5 Gi sizing above correct), or (b) the
-service limit is sized for N concurrent conversions (N × ~2 GB plus model
-baseline), which the resized node must then accommodate. The ~3.5 Gi figure
-assumes (a).
+**docling-service concurrency — resolved (2026-09-25).** One uvicorn worker
+does not serialize conversions on its own: both endpoints run the work via
+`asyncio.to_thread`. With KEDA at 2 worker replicas × `MAX_JOBS=2`, up to
+N = 4 requests can arrive at once. The service now admits
+`DOCLING_MAX_CONCURRENT` conversions (default 1) through a semaphore and
+queues the rest, so each pod peaks at one ~2 GB conversion and the ~3.5 Gi
+limit holds (option (a)). It also refuses to start without
+`DOCLING_SERVICE_BEARER_TOKEN`, since it is reachable over the internet
+(`docling.saliltrehan.com`, below).
 
 Fit check against the node's scheduled requests on 2026-09-24 (2,904 Mi,
 including today's 512 Mi worker request): replacing that with 2 × 1 Gi
