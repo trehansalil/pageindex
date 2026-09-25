@@ -32,7 +32,7 @@ governs:
 
 ## Overview
 
-**Current contract (2026-09-24, Iter 9 — MINIMAL scope, user decision.)** This design covers three concerns: (1) throughput — a cgroup-aware memory admission gate and a service-aware worker concurrency default, targeting the in-cluster `services/docling-service` pod; (2) a per-file dedup lock (D7, done — keyed on `sha256(filename)` since the hash cache is filename-keyed, not content-keyed) that closes an orphan-copy race before concurrency rises; and (3) persisting the tree builder's input markdown for persisted documents only (D3, slimmed), queryable via `get_document(doc_id, include="raw")`. The CLI replay (D4) and recovery method optimization (D5) from earlier iterations are **deferred** to a follow-up RFC — see their sections below, kept for reference rather than deleted.
+**Current contract (2026-09-25, Iter 11 — D8 cascade enhancement: two-stage native detection + neighbor padding + detection_method.)** This design covers four concerns: (1) throughput — a cgroup-aware memory admission gate and a service-aware worker concurrency default, targeting the in-cluster `services/docling-service` pod; (2) a per-file dedup lock (D7, done — keyed on `sha256(filename)` since the hash cache is filename-keyed, not content-keyed) that closes an orphan-copy race before concurrency rises; (3) persisting the tree builder's input markdown for persisted documents only (D3, slimmed), queryable via `get_document(doc_id, include="raw")`; and (4) **selective table structure processing (D8, new; amended Iter 11 — cascade)** — a two-stage native cascade table detector (vector-geometry for ruled tables via `get_cdrawings()` + text-block column-alignment for borderless tables via `get_text("blocks")`) with neighbor-page padding (±1) and three-tier confidence, that skips Docling's TableFormer ACCURATE model on documents/chunks without tables, reducing per-file extraction time for text-heavy PDFs. The CLI replay (D4) and recovery method optimization (D5) from earlier iterations are **deferred** to a follow-up RFC — see their sections below, kept for reference rather than deleted.
 
 <details><summary>Amendment history (Iter 1-8, collapsed)</summary>
 
@@ -543,6 +543,110 @@ Iteration 5 scoped a new `get_raw_output(doc_id)` tool to persisted documents on
 
 </details>
 
+### 5. Selective Table Structure Processing (New D8, Added: 2026-09-25)
+
+**Responsibility**: Detect which pages of a text-based PDF have ruled tables before Docling extraction, and skip the expensive TableFormer ACCURATE model on documents/chunks with no tables.
+
+**(Amendment 2026-09-25, Iter 11 — cascade enhancement):** The detection heuristic uses a two-stage native cascade to catch both ruled and borderless tables, with neighbor-page padding for safety margin.
+
+**Detection heuristic — two-stage cascade** (`converters/preclassify.py`):
+
+```python
+from collections import Counter
+
+def _page_has_ruled_table(page, min_h: int = 3, min_v: int = 3) -> bool:
+    """Stage 1a: vector-geometry — ruled tables with visible grid lines."""
+    h = v = 0
+    for d in page.get_cdrawings():
+        for item in d["items"]:
+            if item[0] == "l":  # line segment
+                p1, p2 = item[1], item[2]
+                if abs(p1[1] - p2[1]) < 1:   # horizontal
+                    h += 1
+                elif abs(p1[0] - p2[0]) < 1:  # vertical
+                    v += 1
+            elif item[0] == "re":  # rectangle (cell border/fill)
+                h += 2
+                v += 2
+    return h >= min_h and v >= min_v
+
+def _page_has_column_alignment(page, min_columns: int = 2, min_blocks_per_col: int = 3,
+                                quantize_px: int = 12) -> bool:
+    """Stage 1b: text-block column alignment — borderless tables with aligned columns."""
+    blocks = page.get_text("blocks")
+    x_positions = [round(b[0] / quantize_px) * quantize_px
+                   for b in blocks if b[4].strip()]  # b[4] is the text content
+    x_counts = Counter(x_positions)
+    aligned_columns = sum(count >= min_blocks_per_col for count in x_counts.values())
+    return aligned_columns >= min_columns
+
+def _add_neighbor_padding(pages: set[int], page_count: int) -> set[int]:
+    """Add ±1 page padding around every positive page (clamped to valid range)."""
+    padded = set(pages)
+    for p in pages:
+        if p > 0:
+            padded.add(p - 1)
+        if p < page_count - 1:
+            padded.add(p + 1)
+    return padded
+
+def detect_pages_with_tables(pdf_path: str) -> set[int] | None:
+    """Return 0-indexed page numbers with tables (ruled or borderless), or None when unavailable.
+
+    Two-stage native cascade:
+      1a. Vector-geometry (get_cdrawings) — catches ruled tables
+      1b. Column-alignment (get_text blocks) — catches borderless tables
+    Plus neighbor-page padding (±1) for cross-page table safety margin.
+    """
+    if os.environ.get("TABLEFORMER_SKIP_ENABLED", "1").lower() in ("0", "false", "no"):
+        return None
+    try:
+        import fitz
+    except ImportError:
+        return None
+    # allow_agpl_fallback check happens at call site in preclassify_document()
+    pages = set()
+    with fitz.open(pdf_path) as doc:
+        for i, page in enumerate(doc):
+            if _page_has_ruled_table(page) or _page_has_column_alignment(page):
+                pages.add(i)
+        pages = _add_neighbor_padding(pages, len(doc))
+    return pages
+```
+
+**Three-tier confidence model:**
+
+| Tier | Condition | Action |
+|------|-----------|--------|
+| Confident-yes | Vector-geometry fires (ruled lines) OR strong column-alignment (≥2 columns, ≥3 blocks each) | Page included in `pages_with_tables` |
+| Ambiguous | Weak column-alignment only (exactly 2 aligned columns with borderline row count) | Treated as positive — included in `pages_with_tables` (safe default) |
+| Confident-no | Neither signal fires AND no neighbor is positive | Page excluded |
+
+**Design rationale — optimize for high recall:** A false positive (running TableFormer on a page without tables) costs a little compute. A false negative (skipping TableFormer on a page that has a table) silently loses structured information. The cascade is deliberately permissive: ambiguous pages are treated as positive. The neighbor-page padding adds further safety for tables spanning page breaks.
+
+**Scope:** text-based pages only. Scanned pages never reach the Docling TableFormer pipeline (they go through OCR recovery). The cascade covers: (a) ruled tables via vector-geometry (German insurance T&C corpus), and (b) borderless/whitespace-aligned tables via column-alignment detection. **Not covered (deferred to D9):** tables embedded as images/screenshots (require visual detector on page thumbnails), and charts that superficially resemble tables.
+
+**Parameter threading (7 layers):**
+
+1. **`PreClassification`** (`preclassify.py`) — new fields `pages_with_tables: set[int] | None = None` and `detection_method: str | None = None`; `to_dict()` serializes `pages_with_tables` as `list[int]` when not `None` (omitted when `None`), includes `detection_method`; `from_dict()` deserializes back
+2. **`preclassify_document()`** — calls `detect_pages_with_tables(pdf_path)` after the existing PDF Inspector block, gated by `allow_agpl_fallback`; wrapped in `try/except Exception` → warning + `None`; sets `detection_method` based on which signals fired
+3. **Handshake JSON** — `pre_classification` dict already flows from `converters_cli` probe through `subprocess_mgr` to `index()` and `_convert_to_tree()`; `pages_with_tables` and `detection_method` ride along without new protocol fields
+4. **`indexer.py`** — extracts `_pages_with_tables: list[int] | None` from `pre_classification` dict; passes directly to remote calls; converts to `set[int]` at boundary for local converter calls. `_conv_supports_ocr` guard prevents TypeError on pymupdf4llm (only passes to docling converter)
+5. **`remote.py`** — `_remote_pdf_to_markdown()` accepts `pages_with_tables: list[int] | None`; includes in JSON payload directly
+6. **`app.py`** (docling-service) — `PdfConvertRequest` has `pages_with_tables: list[int] | None = None`; `convert_pdf` endpoint converts to `set[int]` at boundary before passing to `pdf_to_markdown_docling()`
+7. **`pdf_to_markdown_docling()`** (`pipeline.py`) — accepts only `pages_with_tables: set[int] | None`; computes `_do_table_structure` internally for the direct path (`pages_with_tables is None or bool(pages_with_tables)`); passes `pages_with_tables` to chunked path
+8. **`_build_pdf_pipeline_options()`** (`docling_conv.py`) — internal `do_table_structure: bool = True` parameter; when `False`, sets `opts.do_table_structure = False` and skips the `table_structure_options.mode` assignment
+9. **`_docling_converter()`** (`docling_conv.py`) — adds `"no_tables" if not do_table_structure else ""` as the 8th element of the cache key tuple; creates at most one additional cached converter instance (no-TableFormer variant)
+10. **Chunked path** — `_pdf_to_markdown_docling_chunked()` receives `pages_with_tables` and computes per-chunk `chunk_has_tables = pages_with_tables is None or bool(pages_with_tables & set(range(start, end)))`
+11. **Type boundary convention** — `list[int] | None` in JSON/handshake/remote contexts (indexer.py, remote.py, app.py); `set[int] | None` in internal converter contexts (pipeline.py, docling_conv.py). Conversion happens at layer boundaries
+
+**Gates:**
+- `allow_agpl_fallback=False` → detection returns `None` → all pages get TableFormer (no optimization)
+- `TABLEFORMER_SKIP_ENABLED=0` → detection returns `None` → all pages get TableFormer (kill switch)
+- Detection exception → logged warning, `None` → all pages get TableFormer (safe fallback)
+
+**Impact on G1:** Reduces per-file extraction time independently of the concurrency change (D1/D2). Complements `MAX_JOBS=2`: concurrency increases throughput by running more documents in parallel, while table skipping reduces the extraction time of each individual document. The G1 post arm (Task 9.2) captures the combined effect.
+
 ## Data Models
 
 ### Storage Layout (MinIO additions)
@@ -681,6 +785,12 @@ The quarantine replay reader SHALL live in `storage/documents.py`, the only file
 *For any* two concurrent ingests of identical file bytes (same filename), at most one SHALL mint a `doc_id` and persist; the other SHALL take the dedup-skip path once it observes the winner's hash-cache entry. *For any* single ingest with no contention, behavior is unchanged (lock acquired and released without a waiter). *For any* waiter whose wait budget expires while the lock is still held (including a holder whose parent died without releasing), the waiter SHALL NOT run the converter unlocked: the arq job is requeued and `preprocess_client` skips the file with a logged error; the stranded lock clears at TTL expiry. *Only* if Redis itself is unreachable does the pipeline fail open and proceed unlocked (bounded by finite socket timeouts) — the one case the property does not cover.
 
 **Validates: Requirement 6**
+
+### Property 9: Table Detection Equivalence (Added: 2026-09-25; amended 2026-09-25 Iter 11)
+
+*For any* text-based PDF where `detect_pages_with_tables()` returns a non-empty set, the pipeline SHALL produce byte-identical markdown output compared to the current unconditional `do_table_structure=True` path — the cascade is additive (it can only add pages to the positive set, never remove them from what ruled-table detection alone would find). The optimization only changes behavior for documents/chunks where no pages are positive after both cascade stages and neighbor padding; for those, the markdown difference is limited to the absence of (empty) table structures that TableFormer would have inferred on non-table content. *For any* document where `detect_pages_with_tables()` returns `None` (detection unavailable), behavior is identical to today. The neighbor-page padding and column-alignment stage are strictly recall-increasing — they can only widen `pages_with_tables`, never narrow it.
+
+**Validates: Requirement 7 (AC1–AC5, AC9)**
 
 ## Error Handling
 

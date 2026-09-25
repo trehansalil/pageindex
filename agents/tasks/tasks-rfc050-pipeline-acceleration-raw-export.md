@@ -31,7 +31,7 @@ governs:
 
 ## Overview
 
-**Current contract (2026-09-24, Iter 9 — regenerated, MINIMAL scope, user decision; corrected post-review, 2026-09-24.)** Implements RFC-050 across four waves, ~16h total: (1) stage-timing instrumentation and a pre-change baseline; (2) safety and correctness work that must land before concurrency rises — cgroup-aware admission gate (D1, working-set-based, not raw usage), service-aware `MAX_JOBS` default keyed on `config.docling_offload_configured()` (D2), a per-file dedup lock now living in the **parent** (`worker/subprocess_mgr.py`'s `_run_converter_subprocess`, not `index()`) around `_run_converter_child` (D7, new), reject reason/defects in quarantine metadata (D3b, new), and the 30-day quarantine TTL (D6); (3) pointing the worker at the in-cluster `services/docling-service` pod, enabling `MAX_JOBS=2`, and running the G1 validation gate; (4) raw output persistence for persisted documents (D3, slimmed), a doc-name-recovery fix for the `.extracted.md` sidecar-only case, and `get_document(doc_id, include="raw")`. Property tests cover 1, 2, 3, 3a (now trivial), 3b, 6, 7, 8. D4 (CLI replay) and D5 (recovery optimization) are **deferred** — their task lists are kept, unmodified in substance, under **Deferred (Iter 9)** at the bottom, for a follow-up RFC to pick up. **Open item (post-review, 2026-09-24):** `uv run arq ...` run directly loads `.env`, which in this dev checkout points `DOCLING_SERVICE_URL` at Scaleway — an operator-discipline gap (use `make up`, which stays local via `.env.active`), not a code defect; see RFC-050 Risks.
+**Current contract (2026-09-25, Iter 11 — amended, D8 cascade enhancement: two-stage native detection + neighbor padding + detection_method; corrected post-review, 2026-09-24.)** Implements RFC-050 across five waves (including Wave 2b), ~20h total: (1) stage-timing instrumentation and a pre-change baseline; (2) safety and correctness work that must land before concurrency rises — cgroup-aware admission gate (D1, working-set-based, not raw usage), service-aware `MAX_JOBS` default keyed on `config.docling_offload_configured()` (D2), a per-file dedup lock now living in the **parent** (`worker/subprocess_mgr.py`'s `_run_converter_subprocess`, not `index()`) around `_run_converter_child` (D7, new), reject reason/defects in quarantine metadata (D3b, new), and the 30-day quarantine TTL (D6); (3) pointing the worker at the in-cluster `services/docling-service` pod, enabling `MAX_JOBS=2`, and running the G1 validation gate; (4) raw output persistence for persisted documents (D3, slimmed), a doc-name-recovery fix for the `.extracted.md` sidecar-only case, and `get_document(doc_id, include="raw")`. Property tests cover 1, 2, 3, 3a (now trivial), 3b, 6, 7, 8. D4 (CLI replay) and D5 (recovery optimization) are **deferred** — their task lists are kept, unmodified in substance, under **Deferred (Iter 9)** at the bottom, for a follow-up RFC to pick up. **Open item (post-review, 2026-09-24):** `uv run arq ...` run directly loads `.env`, which in this dev checkout points `DOCLING_SERVICE_URL` at Scaleway — an operator-discipline gap (use `make up`, which stays local via `.env.active`), not a code defect; see RFC-050 Risks.
 
 <details><summary>Amendment history (Iter 1-9 pre-review, collapsed)</summary>
 
@@ -58,7 +58,7 @@ Iterations 1-8 built a 5-wave, 10-task-group, 37-41h plan (admission gate + conc
     - Record per-document and total wall-clock time and the Task 1.5 per-stage split
     - _Requirements: RFC-050 G1_
 
-  - [ ] 2. Checkpoint — Wave 1
+  - [x] 2. Checkpoint — Wave 1
     - Verify the stage-timing histogram and `decision()` record work end-to-end on one document
     - Verify the baseline numbers are recorded and reproducible (2 runs, median taken)
     - Ask the user if questions arise before proceeding.
@@ -129,6 +129,72 @@ Iterations 1-8 built a 5-wave, 10-task-group, 37-41h plan (admission gate + conc
     - Run `make test PYTEST_ARGS="tests/test_worker.py tests/test_quarantine.py -q" TEST_MEM_MAX=1500M`
     - Verify the dedup lock, TTL rule and D3b fields all pass their unit tests
     - Ask the user if questions arise before proceeding.
+
+- [ ] 4b. Wave 2b — Selective TableFormer (D8, Added: 2026-09-25)
+
+  - [x] 10.1 Table detection heuristic in preclassify (~1.5h) (implemented 2026-09-25, uncommitted; **amended 2026-09-25 Iter 11 — cascade enhancement pending**)
+    - Add `_page_has_ruled_table(page, min_h=3, min_v=3) -> bool` (private) and `detect_pages_with_tables(pdf_path: str) -> set[int] | None` (module-level) to `converters/preclassify.py`
+    - `detect_pages_with_tables` opens the PDF with `fitz`, iterates pages, calls `_page_has_ruled_table` on each, returns the set of 0-indexed page numbers with tables; returns `None` when `allow_agpl_fallback=False`, `fitz` is not importable, or `TABLEFORMER_SKIP_ENABLED` env var is `"0"`/`"false"`/`"no"`
+    - Add `pages_with_tables: set[int] | None = None` field to `PreClassification` dataclass; update `to_dict()` to serialize as `list[int]` when not `None` (omit when `None`); update `from_dict()` to deserialize back to `set[int] | None`
+    - Call `detect_pages_with_tables(pdf_path)` from `preclassify_document()` after the existing pdf-inspector block, assigning to `pre_class.pages_with_tables`; wrap in `try/except Exception` so a failure logs a warning and leaves the field as `None`
+    - _Requirements: RFC-050 R7 (AC1, AC6, AC7, AC8, AC9)_
+
+  - [x] 10.1a Cascade enhancement: column-alignment detection (~1h) (Added: 2026-09-25 Iter 11, implemented 2026-09-25, uncommitted)
+    - Add `_page_has_column_alignment(page, min_columns=2, min_blocks_per_col=3, quantize_px=12) -> bool` to `converters/preclassify.py`: extracts text blocks via `page.get_text("blocks")`, quantizes x-coordinates, counts positions with ≥`min_blocks_per_col` blocks; returns `True` when ≥`min_columns` such columns exist
+    - Update `detect_pages_with_tables()` to call `_page_has_column_alignment(page)` as a second stage alongside `_page_has_ruled_table(page)` — a page is positive if **either** signal fires
+    - Wrap `_page_has_column_alignment` call in its own `try/except` so a failure in text-block extraction falls back to vector-geometry-only detection, not `None`
+    - _Requirements: RFC-050 R7 (AC1, AC3, AC9)_
+
+  - [x] 10.1b Cascade enhancement: neighbor-page padding (~0.5h) (Added: 2026-09-25 Iter 11, implemented 2026-09-25, uncommitted)
+    - Add `_add_neighbor_padding(pages: set[int], page_count: int) -> set[int]` to `converters/preclassify.py`: for every page in the input set, include pages at index N-1 and N+1, clamped to `[0, page_count-1]`
+    - Call from `detect_pages_with_tables()` after both detection stages, before returning
+    - _Requirements: RFC-050 R7 (AC2)_
+
+  - [x] 10.1c Cascade enhancement: detection_method field + observability (~0.5h) (Added: 2026-09-25 Iter 11, implemented 2026-09-25, uncommitted)
+    - Add `detection_method: str | None = None` field to `PreClassification` dataclass
+    - Set it in `detect_pages_with_tables()` based on which signals fired per page: `"vector"`, `"column_alignment"`, `"vector+column_alignment"`, `"neighbor_pad"`, or `None` when detection unavailable
+    - Update `to_dict()` / `from_dict()` to serialize/deserialize the field
+    - Thread through handshake JSON alongside `pages_with_tables` (rides along in `pre_classification` dict)
+    - _Requirements: RFC-050 R7 (AC10)_
+
+  - [x] 10.2 Thread `do_table_structure` through the converter stack (~1h) (implemented 2026-09-25, uncommitted)
+    - `_build_pdf_pipeline_options()`: add `do_table_structure: bool = True` parameter; when `False`, set `opts.do_table_structure = False` instead of `True` (skip the `table_structure_options.mode` assignment too)
+    - `_docling_converter()`: add `do_table_structure: bool = True` parameter; include `"no_tables" if not do_table_structure else ""` as the 8th element of the cache key tuple; pass `do_table_structure` through to `_build_pdf_pipeline_options()`
+    - `pdf_to_markdown_docling()` (`pipeline.py`): add `do_table_structure: bool = True` parameter; pass it to `_docling_converter()`; compute the value at call time from `pages_with_tables` (if not `None` and empty, pass `False`)
+    - `_pdf_to_markdown_docling_chunked()` (`docling_conv.py`): add `pages_with_tables: set[int] | None = None` parameter; for each chunk, compute `chunk_has_tables = pages_with_tables is None or bool(pages_with_tables & set(range(start, end)))`; pass `do_table_structure=chunk_has_tables` to `_run_docling_chunk_with_timeout()` and thence to `pdf_to_markdown_docling()`
+    - `_run_docling_chunk_with_timeout()` and `_docling_chunk_worker()`: thread `do_table_structure` through
+    - _Requirements: RFC-050 R7 (AC2, AC3)_
+
+  - [x] 10.3 Thread through the remote/service path (~0.5h) (implemented 2026-09-25, uncommitted)
+    - `PdfConvertRequest` (`services/docling-service/app.py`): add `do_table_structure: bool = True` field
+    - `convert_pdf` endpoint: pass `req.do_table_structure` through to the `pdf_to_markdown_docling()` call
+    - `_remote_pdf_to_markdown` (`client/remote.py`): accept and include `do_table_structure` in the JSON payload
+    - The caller in `_convert_to_tree` (`client/indexer.py`) computes `do_table_structure` from the handshake's `pre_classification.pages_with_tables` and passes it to `_remote_pdf_to_markdown`
+    - _Requirements: RFC-050 R7 (AC2, AC3)_
+
+  - [x] 10.4 Tests for selective TableFormer (~1h) (implemented 2026-09-25, uncommitted; **amended 2026-09-25 Iter 11 — cascade tests pending**)
+    - Unit test: `_page_has_ruled_table` with a synthetic page containing horizontal/vertical lines returns `True`; a blank page returns `False`
+    - Unit test: `detect_pages_with_tables` returns `None` when `allow_agpl_fallback=False`; returns `None` when `TABLEFORMER_SKIP_ENABLED=0`; returns `set()` for a text-only PDF; returns `{0, 2}` for a PDF with tables on pages 0 and 2
+    - Unit test: `_build_pdf_pipeline_options(do_table_structure=False)` returns options with `opts.do_table_structure == False`
+    - Unit test: `_docling_converter(do_table_structure=False)` uses a different cache key than `_docling_converter(do_table_structure=True)` (two distinct converter instances)
+    - Unit test: `PreClassification.to_dict()` round-trips `pages_with_tables` correctly (set → list → set)
+    - Integration test (corpus validation): ingest a known table-bearing PDF and a known text-only PDF; verify the table-bearing one produces identical markdown with and without the optimization; verify the text-only one skips TableFormer (check log for the decision record)
+    - _Requirements: RFC-050 R7 — Property 9_
+
+  - [x] 10.4a Tests for cascade enhancements (~1h) (Added: 2026-09-25 Iter 11, implemented 2026-09-25, uncommitted)
+    - Unit test: `_page_has_column_alignment` with a synthetic page with ≥2 columns of aligned text blocks → `True`; with a single-column prose page → `False`; with multi-column prose that lacks row regularity → correctly distinguishes from table
+    - Unit test: `_add_neighbor_padding({2, 5}, page_count=10)` → `{1, 2, 3, 4, 5, 6}`; `{0}, page_count=3` → `{0, 1}` (lower clamp); `{2}, page_count=3` → `{1, 2}` (upper clamp); empty set → empty set
+    - Unit test: `detect_pages_with_tables` returns pages detected by column-alignment even when no ruled lines present (borderless table coverage)
+    - Unit test: `detect_pages_with_tables` includes neighbor pages of a positive page (padding coverage)
+    - Unit test: `PreClassification.to_dict()` round-trips `detection_method` correctly; `detection_method=None` when detection unavailable
+    - Unit test: column-alignment exception falls back to vector-geometry-only, not `None` (graceful degradation)
+    - Unit test: three-tier confidence — ambiguous page (weak column alignment) treated as positive
+    - _Requirements: RFC-050 R7 (AC1, AC2, AC3, AC9, AC10) — Property 9_
+
+  - [ ] 4c. Checkpoint — Wave 2b
+    - Run `make test` to verify no regressions
+    - Verify the `TABLEFORMER_SKIP_ENABLED=0` kill switch restores original behavior
+    - Ask the user if questions arise before proceeding
 
 - [ ] 5. Wave 3 — In-Cluster Docling Service + MAX_JOBS=2 + G1 Validation
 
@@ -233,6 +299,7 @@ Iterations 1-8 built a 5-wave, 10-task-group, 37-41h plan (admission gate + conc
   "waves": [
     { "id": 1, "tasks": ["1.5", "9.1", "2"], "label": "Stage timing + pre-change baseline (local Docling, MAX_JOBS=1)" },
     { "id": 2, "tasks": ["1.1", "1.2", "1.3", "1.4", "1.6", "1.7", "3.6", "3.7", "3.8", "4"], "label": "Safety before concurrency: cgroup-aware admission gate (D1), service-aware MAX_JOBS default (D2, not yet enabled), dedup lock (D7), reject metadata (D3b), quarantine TTL (D6)" },
+    { "id": "2b", "tasks": ["10.1", "10.1a", "10.1b", "10.1c", "10.2", "10.3", "10.4", "10.4a", "4c"], "label": "Selective TableFormer: two-stage cascade table detection (D8, Iter 11 — vector-geometry + column-alignment + neighbor padding + detection_method), parameter threading (local + remote), tests" },
     { "id": 3, "tasks": ["5.1", "9.2", "6"], "label": "Point at in-cluster docling service, enable MAX_JOBS=2, run the G1 gate (≥30%)" },
     { "id": 4, "tasks": ["3.1", "3.2", "3.3", "3.4", "3.5", "8"], "label": "Raw output persistence (2 sites only) + get_document(include=\"raw\")" },
     { "id": 5, "tasks": ["9"], "label": "Final checkpoint" }
