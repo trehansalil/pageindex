@@ -83,7 +83,13 @@ cat > "$PLIST" <<PL
 </dict></plist>
 PL
 
+# bootout returns before the old agent is gone; bootstrap fails with EIO
+# ("Input/output error") until it is.
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+for _ in $(seq 20); do
+  launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || break
+  sleep 1
+done
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 url="http://$(tailscale ip -4 2>/dev/null | head -1):8090/health"
 for _ in $(seq 60); do
