@@ -68,4 +68,8 @@
 #                  dropping 1 duplicate erasure test; the job-deadline fix
 #                  extends existing tests. Measured with
 #                  `bash scripts/gates/test_budget.sh`.
-956
+# 2026-09-25  958  ICR-97 RFC-050 docling sizing: +2. plan_docling matrix
+#                  (one table-driven test incl. the cgroup readers) and the
+#                  parallel chunked route (order, picture pages, threads).
+#                  Nothing covered the chunked route before.
+958

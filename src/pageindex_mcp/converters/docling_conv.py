@@ -15,6 +15,7 @@ import queue as queue_mod
 import re
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import TYPE_CHECKING, cast
 
@@ -554,12 +555,13 @@ def _repair_docling_tables(md: str, doc_name: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 
-def _docling_chunk_worker(
+def _docling_chunk_worker(  # noqa: PLR0913
     result_queue: multiprocessing.Queue,
     pdf_path: str,
     force_full_page_ocr: bool,
     ocr_lang_override: list[str] | None,
     expected_script: str | None = None,
+    num_threads: int | None = None,
 ) -> None:
     """Run ``pdf_to_markdown_docling`` in a child process (D0 fix).
 
@@ -567,7 +569,14 @@ def _docling_chunk_worker(
     ``terminate()`` it on timeout and guarantee the work actually stops --
     unlike a ``ThreadPoolExecutor`` thread, which keeps running past
     ``future.result(timeout=...)`` because that only abandons the wait.
+
+    ``num_threads`` is this child's share of the CPUs when several chunks run
+    at once; it is set before Docling (and torch) are imported in this fresh
+    spawned interpreter.
     """
+    if num_threads:
+        os.environ["DOCLING_NUM_THREADS"] = str(num_threads)
+        os.environ["OMP_NUM_THREADS"] = str(num_threads)
     from .pipeline import pdf_to_markdown_docling
 
     try:
@@ -589,13 +598,14 @@ def _docling_chunk_worker(
             result_queue.put(("error", RuntimeError(f"{type(exc).__name__}: {exc}")))
 
 
-def _run_docling_chunk_with_timeout(
+def _run_docling_chunk_with_timeout(  # noqa: PLR0913
     pdf_path: str,
     *,
     force_full_page_ocr: bool,
     ocr_lang_override: list[str] | None,
     timeout_s: float,
     expected_script: str | None = None,
+    num_threads: int | None = None,
 ) -> tuple[str, list[PictureResult]]:
     """Run one Docling chunk conversion in a killable subprocess (D0 fix).
 
@@ -609,7 +619,14 @@ def _run_docling_chunk_with_timeout(
     result_queue: multiprocessing.Queue = ctx.Queue()
     proc = ctx.Process(
         target=_docling_chunk_worker,
-        args=(result_queue, pdf_path, force_full_page_ocr, ocr_lang_override, expected_script),
+        args=(
+            result_queue,
+            pdf_path,
+            force_full_page_ocr,
+            ocr_lang_override,
+            expected_script,
+            num_threads,
+        ),
         daemon=True,
     )
     proc.start()
@@ -656,13 +673,15 @@ def _run_docling_chunk_with_timeout(
     return cast("tuple[str, list[PictureResult], dict[str, dict]]", payload)
 
 
-def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913
+def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
     pdf_path: str,
     page_count: int,
     max_pages: int,
     force_full_page_ocr: bool = False,
     ocr_lang_override: list[str] | None = None,
     expected_script: str | None = None,
+    workers: int = 1,
+    num_threads: int | None = None,
 ) -> tuple[str, list[PictureResult], dict[str, dict]]:
     """RFC-027 D7 chunked-Docling route for PDFs exceeding MAX_DOCLING_PAGES.
 
@@ -673,6 +692,10 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913
     independently, and concatenates the resulting markdown. Each chunk's page
     count is <= ``max_pages`` by construction, so the recursive call takes the
     direct single-pass route rather than re-entering this function.
+
+    ``workers`` chunks convert at once, each in its own child process with
+    ``num_threads`` threads (see ``docling_resources.plan_docling``); the
+    markdown is still joined in page order.
 
     Minor heading-level discontinuities at chunk joins are an accepted
     trade-off (RFC-027 D7 risk acceptance) -- the downstream tree-building
@@ -689,72 +712,92 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913
     import fitz  # PyMuPDF
 
     chunk_count = math.ceil(page_count / max_pages)
+    workers = max(1, min(workers, chunk_count))
     logger.info(
-        "chunked-Docling route: %s (%d pages) -> %d chunk(s) of <= %d pages",
+        "chunked-Docling route: %s (%d pages) -> %d chunk(s) of <= %d pages, %d at a time",
         pdf_path,
         page_count,
         chunk_count,
         max_pages,
+        workers,
     )
-    src = fitz.open(pdf_path)
-    md_parts: list[str] = []
-    pic_results: list[PictureResult] = []
-    try:
-        for i in range(chunk_count):
-            start = i * max_pages
-            end = min(start + max_pages, page_count)
-            # SIM115 rationale: the temp FILE must outlive this statement -- it is
-            # written, then re-opened by name below and unlinked in `finally`. A
-            # context manager would close/delete it before it is ever used.
-            tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)  # noqa: SIM115
-            tmp.close()
+
+    def convert(index: int, path: str) -> tuple[str, list[PictureResult]]:
+        try:
+            chunk_md, chunk_pics, _chunk_stages = _run_docling_chunk_with_timeout(
+                path,
+                force_full_page_ocr=force_full_page_ocr,
+                ocr_lang_override=ocr_lang_override,
+                timeout_s=_CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S,
+                expected_script=expected_script,
+                num_threads=num_threads,
+            )
+            return chunk_md, chunk_pics
+        except FuturesTimeoutError:
+            # RFC-027 D7: an individually heavy chunk still times out on the
+            # Docling pipeline -- fall back to pymupdf text-layer-only
+            # extraction (no tables/figures) rather than losing the chunk
+            # entirely. No pymupdf4llm (CLAUDE.md Hard Rule 4). The document
+            # lands MARGINAL downstream due to the resulting flat structure.
+            logger.warning(
+                "chunk %d/%d of %s timed out on Docling; falling back to "
+                "pymupdf text-layer extraction",
+                index + 1,
+                chunk_count,
+                pdf_path,
+            )
+            chunk_doc = fitz.open(path)
             try:
+                return "\n\n".join(page.get_text() or "" for page in chunk_doc), []
+            finally:
+                chunk_doc.close()
+
+    starts = [i * max_pages for i in range(chunk_count)]
+    paths: list[str] = []
+    try:
+        src = fitz.open(pdf_path)
+        try:
+            for start in starts:
+                # SIM115 rationale: the temp FILE must outlive this statement -- it
+                # is written, then re-opened by name in a chunk process and
+                # unlinked in `finally`. A context manager would delete it first.
+                tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)  # noqa: SIM115
+                tmp.close()
+                paths.append(tmp.name)
                 writer = fitz.open()
                 try:
-                    writer.insert_pdf(src, from_page=start, to_page=end - 1)
+                    writer.insert_pdf(
+                        src, from_page=start, to_page=min(start + max_pages, page_count) - 1
+                    )
                     writer.save(tmp.name)
                 finally:
                     writer.close()
-                try:
-                    chunk_md, chunk_pics, _chunk_stages = _run_docling_chunk_with_timeout(
-                        tmp.name,
-                        force_full_page_ocr=force_full_page_ocr,
-                        ocr_lang_override=ocr_lang_override,
-                        timeout_s=_CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S,
-                        expected_script=expected_script,
-                    )
-                except FuturesTimeoutError:
-                    # RFC-027 D7: an individually heavy chunk still times out on the
-                    # Docling pipeline -- fall back to pymupdf text-layer-only
-                    # extraction (no tables/figures) rather than losing the chunk
-                    # entirely. No pymupdf4llm (CLAUDE.md Hard Rule 4). The document
-                    # lands MARGINAL downstream due to the resulting flat structure.
-                    logger.warning(
-                        "chunk %d/%d of %s timed out on Docling; falling back to "
-                        "pymupdf text-layer extraction",
-                        i + 1,
-                        chunk_count,
-                        pdf_path,
-                    )
-                    chunk_doc = fitz.open(tmp.name)
-                    try:
-                        chunk_md = "\n\n".join(page.get_text() or "" for page in chunk_doc)
-                    finally:
-                        chunk_doc.close()
-                    chunk_pics = []
-            finally:
-                with contextlib.suppress(OSError):
-                    os.unlink(tmp.name)
-            md_parts.append(chunk_md)
-            for pic in chunk_pics:
-                # Re-base chunk-relative page numbers to document-level pages so
-                # the persisted PictureResult metadata (client.py block["page"])
-                # stays correct for chunks after the first.
-                if "page" in pic:
-                    pic["page"] = pic["page"] + start
-            pic_results.extend(chunk_pics)
+        finally:
+            src.close()
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(convert, i, path) for i, path in enumerate(paths)]
+            try:
+                results = [f.result() for f in futures]
+            except BaseException:
+                # A chunk failed: do not start the queued ones.
+                pool.shutdown(wait=True, cancel_futures=True)
+                raise
     finally:
-        src.close()
+        for path in paths:
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+
+    md_parts: list[str] = []
+    pic_results: list[PictureResult] = []
+    for start, (chunk_md, chunk_pics) in zip(starts, results, strict=True):
+        md_parts.append(chunk_md)
+        for pic in chunk_pics:
+            # Re-base chunk-relative page numbers to document-level pages so
+            # the persisted PictureResult metadata (client.py block["page"])
+            # stays correct for chunks after the first.
+            if "page" in pic:
+                pic["page"] = pic["page"] + start
+        pic_results.extend(chunk_pics)
     # Per-chunk stage tables are not merged -- out of scope for Zone 4 initial
     # landing. extraction_stages is empty for chunked/oversized PDFs.
     return "\n\n".join(md_parts), pic_results, {}

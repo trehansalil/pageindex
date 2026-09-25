@@ -2982,3 +2982,80 @@ def test_script_context_from_document_pf_detection_and_enrichment():
     assert enriched.had_presentation_forms is True
     assert enriched.dominant_script == ctx.dominant_script
     assert enriched.source == ctx.source
+
+
+def test_plan_docling_sizes_from_cgroup_limits(monkeypatch):
+    """``plan_docling`` derives processes, threads and chunk size from the
+    container's CPU and memory, and ``available_*`` read the cgroup v2 limits
+    (quota rounded down, "max" meaning unlimited)."""
+    from pageindex_mcp.converters import docling_resources as dr
+
+    gib = 1024**3
+    rows = [
+        # pages, cpus, memory -> workers, threads, pages_per_chunk
+        (292, 4, 6783 * 1024**2, 4, 1, 10),  # cx33 pod sized to the node
+        (292, 4, 6 * gib, 3, 1, 20),  # memory, not CPUs, caps the processes
+        (292, 2, 3 * gib, 1, 2, 36),  # one process: chunked to fit memory
+        (292, 8, 15 * gib, 8, 1, 19),  # an 8-vCPU node when cx33 is out of stock
+        (58, 4, 6783 * 1024**2, 1, 4, 58),  # below PARALLEL_MIN_PAGES: one pass
+        (5, 4, 6 * gib, 1, 4, 5),
+    ]
+    bad = []
+    for pages, cpus, mem, *want in rows:
+        p = dr.plan_docling(pages, cpus=cpus, memory_bytes=mem)
+        if [p.workers, p.threads_per_worker, p.pages_per_chunk] != want:
+            bad.append((pages, cpus, mem, p))
+    assert not bad, bad
+
+    files = {
+        "/proc/meminfo": "MemTotal: 8000000 kB",
+        "/sys/fs/cgroup/cpu.max": "250000 100000",
+        "/sys/fs/cgroup/memory.max": "3221225472",
+    }
+    monkeypatch.setattr(dr, "_read", files.get)
+    monkeypatch.setattr(dr.os, "sched_getaffinity", lambda _pid: set(range(8)), raising=False)
+    assert (dr.available_cpus(), dr.available_memory_bytes()) == (2, 3 * gib)
+    files.update({"/sys/fs/cgroup/cpu.max": "max 100000", "/sys/fs/cgroup/memory.max": "max"})
+    assert (dr.available_cpus(), dr.available_memory_bytes()) == (8, 8000000 * 1024)
+
+
+def test_chunked_docling_runs_chunks_in_parallel_in_page_order(tmp_path, monkeypatch):
+    """With ``workers`` > 1 the chunks convert concurrently, each child gets
+    ``num_threads``, and the markdown and picture pages come back in page
+    order whatever order the chunks finish in."""
+    import threading
+    import time
+
+    fitz = pytest.importorskip("fitz")
+    from pageindex_mcp.converters import docling_conv
+
+    doc = fitz.open()
+    for _ in range(25):
+        doc.new_page()
+    path = str(tmp_path / "big.pdf")
+    doc.save(path)
+    doc.close()
+
+    lock = threading.Lock()
+    running = {"now": 0, "peak": 0}
+    seen_threads = []
+
+    def fake_chunk(chunk_path, *, num_threads, **_kw):
+        with fitz.open(chunk_path) as chunk:
+            n = chunk.page_count
+        with lock:
+            running["now"] += 1
+            running["peak"] = max(running["peak"], running["now"])
+            seen_threads.append(num_threads)
+        time.sleep(0.2 if n == 10 else 0.0)  # full chunks finish after the short last one
+        with lock:
+            running["now"] -= 1
+        return f"<{n}>", [{"page": 1}], {}
+
+    monkeypatch.setattr(docling_conv, "_run_docling_chunk_with_timeout", fake_chunk)
+    md, pics, _ = docling_conv._pdf_to_markdown_docling_chunked(
+        path, page_count=25, max_pages=10, workers=3, num_threads=2
+    )
+    assert md == "<10>\n\n<10>\n\n<5>"
+    assert [p["page"] for p in pics] == [1, 11, 21]
+    assert running["peak"] == 3 and seen_threads == [2, 2, 2]

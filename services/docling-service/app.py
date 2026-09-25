@@ -36,6 +36,33 @@ DOWNLOAD_TIMEOUT_S = int(os.environ.get("DOWNLOAD_TIMEOUT_S", "120"))
 MAX_CONCURRENT = max(1, int(os.environ.get("DOCLING_MAX_CONCURRENT", "1")))
 _convert_slots = asyncio.Semaphore(MAX_CONCURRENT)
 
+# Sized from this container's cgroup limits, not from env: the node type
+# varies with what Hetzner has in stock, and the pod's limits follow the node
+# (docling-node.sh up). The plan assumes the one-at-a-time admission above.
+# A single-pass PDF runs in this process on every CPU; set
+# before torch is first imported, which reads OMP_NUM_THREADS once.
+from pageindex_mcp.converters.docling_resources import (  # noqa: E402
+    available_cpus,
+    available_memory_bytes,
+    plan_docling,
+)
+
+CPUS = available_cpus()
+os.environ["DOCLING_NUM_THREADS"] = str(CPUS)
+os.environ["OMP_NUM_THREADS"] = str(CPUS)
+logger.info(
+    "docling sizing: %d CPUs, %d MiB memory (cgroup limits)",
+    CPUS,
+    available_memory_bytes() // (1024 * 1024),
+)
+
+
+def _pdf_page_count(path: str) -> int:
+    import fitz  # PyMuPDF; already the chunked route's splitter
+
+    with fitz.open(path) as doc:
+        return doc.page_count
+
 
 # ---------------------------------------------------------------------------
 # Auth
@@ -172,12 +199,17 @@ async def convert_pdf(req: PdfConvertRequest):
     try:
         from pageindex_mcp.converters import pdf_to_markdown_docling
 
+        plan = plan_docling(await asyncio.to_thread(_pdf_page_count, tmp_path))
+        logger.info("docling plan: %s", plan)
         async with _convert_slots:
             md, pic_results, _extraction_stages = await asyncio.to_thread(
                 pdf_to_markdown_docling,
                 tmp_path,
                 force_full_page_ocr=req.force_full_page_ocr,
                 ocr_lang_override=req.ocr_lang_override,
+                max_pages=plan.pages_per_chunk,
+                workers=plan.workers,
+                num_threads=plan.threads_per_worker,
             )
         serialized_pics = [_serialize_picture_result(pr) for pr in pic_results]  # type: ignore[arg-type]
         return PdfConvertResponse(

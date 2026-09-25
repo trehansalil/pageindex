@@ -288,12 +288,14 @@ def _run_stages(
 # ---------------------------------------------------------------------------
 
 
-def pdf_to_markdown_docling(  # noqa: PLR0915, C901
+def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
     pdf_path: str,
     force_full_page_ocr: bool = False,
     ocr_lang_override: list[str] | None = None,
     max_pages: int | None = None,
     expected_script: str | None = None,
+    workers: int = 1,
+    num_threads: int | None = None,
 ) -> tuple[str, list[PictureResult], dict[str, dict]]:
     """MIT-licensed layout-aware PDF route (RFC-003 D3 / HR4 AGPL escape).
 
@@ -371,6 +373,8 @@ def pdf_to_markdown_docling(  # noqa: PLR0915, C901
             force_full_page_ocr=force_full_page_ocr,
             ocr_lang_override=ocr_lang_override,
             expected_script=expected_script,
+            workers=workers,
+            num_threads=num_threads,
         )
 
     if logger.isEnabledFor(logging.INFO):

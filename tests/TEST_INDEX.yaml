@@ -288,6 +288,10 @@ mappings:
     tests:
       - test_script.py
 
+  converters/docling_resources.py:
+    tests:
+      - test_converters.py
+
   converters/pipeline.py:
     tests:
       - test_config.py
