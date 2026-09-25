@@ -47,7 +47,8 @@ uv pip install "fastapi>=0.115.0" "uvicorn[standard]>=0.30.0" "httpx>=0.27.0"
 # launchd starts this at login and restarts it when it exits (e.g. Tailscale
 # was not up yet, so there was no address to bind). It listens on the
 # Tailscale address only, never on the LAN or the internet, and caffeinate
-# keeps the Mac from idle-sleeping mid-conversion.
+# keeps the Mac from idle-sleeping mid-conversion. Port 8090, since the local
+# compose stack's docling-service holds 8080.
 cat > run.sh <<RUN
 #!/usr/bin/env bash
 set -euo pipefail
@@ -60,7 +61,7 @@ export DOCLING_DO_OCR=1 DOCLING_MAX_CONCURRENT=1 DOWNLOAD_TIMEOUT_S=120
 export MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 export HF_HUB_OFFLINE=1 BUILD_SHA=\$(cat BUILD_SHA 2>/dev/null || echo unknown)
 exec caffeinate -i .venv/bin/uvicorn app:app --app-dir services/docling-service \\
-  --host "\$ip" --port 8080 --workers 1
+  --host "\$ip" --port 8090 --workers 1
 RUN
 chmod +x run.sh
 
@@ -83,7 +84,7 @@ PL
 
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
-url="http://$(tailscale ip -4 2>/dev/null | head -1):8080/health"
+url="http://$(tailscale ip -4 2>/dev/null | head -1):8090/health"
 for _ in $(seq 60); do
   if curl -fsS "$url" 2>/dev/null; then
     echo; echo "docling-service up at $url; logs: $ROOT/logs/service.log"; exit 0
