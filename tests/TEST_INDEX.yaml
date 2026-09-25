@@ -91,6 +91,9 @@ mappings:
       - test_bidi.py
       - test_staging_e2e.py
 
+  storage/ingest_lock.py:
+    tests:
+      - test_helpers_combined.py  # primary (RFC-050 D7)
   storage/documents.py:
     coverage_threshold: 90
     tests:
