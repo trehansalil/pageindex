@@ -1897,7 +1897,7 @@ class TestProcessDocumentJobStamping:
         async def fake_get_async_redis():
             return FakeRedis()
 
-        async def fake_wait_for_memory(redis):
+        async def fake_wait_for_memory(redis, **_kwargs):
             pass
 
         async def fake_run_converter_subprocess(

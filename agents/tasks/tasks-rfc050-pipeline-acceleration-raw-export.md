@@ -53,6 +53,7 @@ Iterations 1-8 built a 5-wave, 10-task-group, 37-41h plan (admission gate + conc
 
   - [ ] 9.1 Pre-RFC baseline timing measurement
     - Runs immediately after Task 1.5, before any Wave 2/3 change lands — the G1 protocol's baseline arm
+    - **Precondition — server resize first (infra decision 2026-09-25):** the current server is resized in place (no second node) **before** this baseline arm runs, so the baseline and post (Task 9.2) arms run on the same hardware. Record the node's allocatable memory with the result; if it differs between the two arms, the G1 comparison is void and the baseline must be re-run
     - **Protocol (the G1 protocol, shared with Task 9.2):** ingest via `make ingest` (worker path, `scripts/remote_ingest_test.py` → `POST /upload/files`); local Docling (no `DOCLING_SERVICE_URL`), `MAX_JOBS=1`; KEDA pinned to 1 worker replica; one fixed `.env.active`, recorded with the result; 2 runs, take the median
     - Record per-document and total wall-clock time and the Task 1.5 per-stage split
     - _Requirements: RFC-050 G1_
@@ -80,7 +81,7 @@ Iterations 1-8 built a 5-wave, 10-task-group, 37-41h plan (admission gate + conc
     - `resolve_max_jobs()` (`worker/lifecycle.py:31-50`) stays pure: add a `remote: bool` parameter, computed at the call site from `config.docling_offload_configured()` (not `settings.docling_service_url` alone); default to 2 when `remote` is true and `PAGEINDEX_WORKER_MAX_JOBS` is unset
     - `MAX_JOBS_CEILING` (4) already enforced — log a warning if clamped
     - **Not done (R2 AC4 deferred to Phase 3 with the worker `/metrics` scrape, user decision 2026-09-24):** no `pageindex_worker_max_jobs` Prometheus gauge was added
-    - This ships the logic only — `DOCLING_SERVICE_URL` is not yet pointed at the in-cluster service until Wave 3, so the default stays 1 in practice until then. Per-upload staging is unaffected by any of this — it is always present for arq jobs
+    - This ships the logic only — `DOCLING_SERVICE_URL` is not yet pointed at the in-cluster service until Wave 3, so the default stays 1 in practice until then **in profiles where offload is unconfigured** (`make up` / `.env.active` local). A bare `uv run arq ...` loads `.env`, whose Scaleway `DOCLING_SERVICE_URL` makes `config.docling_offload_configured()` true, so it selects 2 before Wave 3 (RFC-050 Risk 7 — use `make up`). Per-upload staging is unaffected by any of this — it is always present for arq jobs
     - _Requirements: RFC-050 R2_
 
   - [x] 1.4 Tests for 1.1-1.3 (implemented 2026-09-24, uncommitted)
@@ -91,14 +92,15 @@ Iterations 1-8 built a 5-wave, 10-task-group, 37-41h plan (admission gate + conc
 
   - [x] 1.6 (New, Iter 9) Per-file dedup lock (D7) (implemented 2026-09-24, uncommitted; **corrected post-review, 2026-09-24**)
     - **As implemented (post-review):** new module `storage/ingest_lock.py`, keyed on `sha256(basename(abspath(pdf_path)))` (not content sha256 — the hash cache is filename-keyed). Redis key `pageindex:ingest-lock:<sha256(basename(abspath(pdf_path)))>`, `SET NX PX <token>`. **Lives in the parent**: `worker/subprocess_mgr.py`'s `_run_converter_subprocess` acquires it around `_run_converter_child` and releases it in the parent's own `finally`, so a killed child (OOM/timeout) no longer strands it. `index()` no longer takes the lock; both `job.py` (arq) and `preprocess_client.py` are covered as callers of `_run_converter_subprocess`.
-    - TTL = `MAX_EFFECTIVE_TIMEOUT + kill grace + 60s` (upper bound — the parent can't know the child's effective timeout before the handshake). Wait = `min(INGEST_LOCK_MAX_WAIT_S` (default 900s)`, half of min(CHILD_TIMEOUT, MAX_EFFECTIVE_TIMEOUT))`; on expiry, proceeds unlocked with a warning. A cancellation during acquire does a token compare-and-delete then re-raises.
-    - Fail-open if Redis is down. Caveats: the wait counts against the arq `JOB_TIMEOUT` budget; a **parent** (worker pod) death strands the lock until TTL expiry (no external reaper). The `ingest_dedup_lock` decision point lives in a new `_WORKER_POINTS` table.
+    - TTL = `MAX_EFFECTIVE_TIMEOUT + kill grace + 60s` (upper bound — the parent can't know the child's effective timeout before the handshake). Wait = `min(INGEST_LOCK_MAX_WAIT_S, min(CHILD_TIMEOUT, MAX_EFFECTIVE_TIMEOUT) / 2, deadline_left / 2)` (`INGEST_LOCK_MAX_WAIT_S` default 900s). **Corrected post-review (PR #26):** on expiry while the lock is still held, the waiter never proceeds unlocked — the arq job is requeued (arq retry/defer) and `preprocess_client.py` skips the file with a logged error. A cancellation during acquire does a token compare-and-delete then re-raises. The arq deadline is recomputed after the converter handshake.
+    - Fail-open if Redis is down, bounded by finite socket/connect timeouts — the one case where G5 does not hold. Caveats: the wait counts against the arq `JOB_TIMEOUT` budget; a **parent** (worker pod) death strands the lock until TTL expiry (no external reaper). The `ingest_dedup_lock` decision point lives in a new `_WORKER_POINTS` table.
     - _Requirements: RFC-050 R6 — Property 7_
 
   - [x] 1.7 (New, Iter 9) Tests for the dedup lock (implemented 2026-09-24, uncommitted)
     - Two concurrent ingests of identical bytes → exactly one `doc_id` minted and persisted, the other dedup-skips
     - Single ingest, no contention → unchanged behavior
     - Redis unreachable → fail-open, proceeds unlocked
+    - Wait budget expires while held → arq requeue / `preprocess_client` skip, never unlocked (post-review; extend existing tests in-body — test budget frozen)
     - _Requirements: RFC-050 R6 — Property 7_
 
   - [x] 3.6 30-day quarantine TTL (D6) (implemented 2026-09-24, uncommitted)
@@ -139,7 +141,8 @@ Iterations 1-8 built a 5-wave, 10-task-group, 37-41h plan (admission gate + conc
     - _Requirements: RFC-050 G1, R1, R2 (user decision)_
 
   - [ ] 9.2 Post-RFC-050 timing measurement (G1 gate)
-    - Same G1 protocol as Task 9.1: `make ingest`, KEDA pinned to 1 replica, the same `.env.active` except `DOCLING_SERVICE_URL` and `MAX_JOBS`, 2 runs, median
+    - Same G1 protocol as Task 9.1: `make ingest`, KEDA pinned to 1 replica, the same `.env.active` except `DOCLING_SERVICE_URL` and `MAX_JOBS`, 2 runs, median — on the **same (already resized) hardware** as the baseline arm; confirm the recorded node allocatable matches Task 9.1's
+    - Before this arm runs with `MAX_JOBS=2`: resolve the docling-service concurrency open item (service-side cap, or limit sized for N concurrent conversions — `docs/PARALLEL_INGESTION.md` § Deployment sizing)
     - In-cluster docling service active, `MAX_JOBS=2`
     - Compare against the Task 9.1 baseline median: gate is **≥30% wall-clock reduction**; report the per-stage change from Task 1.5
     - _Requirements: RFC-050 G1_
@@ -152,7 +155,7 @@ Iterations 1-8 built a 5-wave, 10-task-group, 37-41h plan (admission gate + conc
 - [ ] 7. Wave 4 — Raw Output Persistence + get_document (D3)
 
   - [ ] 3.1 Wire `save_raw` into the two persist methods only
-    - In `_persist_tree_result` (`client/indexer.py:2407`) and `_persist_flat_result` (`:2226`), after the existing `save_raw(doc_id, filename, file_bytes)`, add `save_raw(doc_id, f"{filename}.extracted.md", state.md_content.encode("utf-8"))`, guarded by `if state.md_content is not None`
+    - In `_persist_tree_result` (`client/indexer.py:2407`) and `_persist_flat_result` (`:2226`), after the existing `save_raw(doc_id, filename, file_bytes)`, add `save_raw(doc_id, f"{filename}.extracted.md", state.md_content.encode("utf-8"))`, guarded by `if state.md_content is not None` and wrapped in `try/except Exception` → `logger.warning(..., exc_info=True)` so a failed sidecar upload never fails an otherwise successful ingest (best-effort; already in code at both sites)
     - Replace `save_raw`'s inline `.pdf`-or-octet-stream ternary (`storage/documents.py:838-854`) with a suffix map: `.pdf` → `application/pdf`, `.md` → `text/markdown`, default `application/octet-stream`
     - No reject-side write — rejected documents get D3b's reason/defects (Task 3.7) instead, never an `.extracted.md`
     - _Requirements: RFC-050 R3 (AC1) — Property 2_
@@ -192,7 +195,7 @@ Iterations 1-8 built a 5-wave, 10-task-group, 37-41h plan (admission gate + conc
   - Run `make test` (full suite, foreground, `TEST_MEM_MAX` set) and verify zero regressions
   - Verify the G1 gate (Task 9.2) — ≥30% median wall-clock reduction
   - Verify the quarantine lifecycle rule is present on the remote bucket (Task 3.6)
-  - Verify all 16 corpus documents have accessible raw output via `get_document(doc_id, include="raw")`
+  - Verify every **persisted** corpus document has accessible raw output via `get_document(doc_id, include="raw")` (non-null `raw_markdown`), and that every **rejected** input stays not-found (no `doc_id`; no `.extracted.md` anywhere) per Tasks 3.1/3.5
   - Ask the user if questions arise before proceeding.
 
 ## Deferred (Iter 9)

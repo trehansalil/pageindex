@@ -308,8 +308,11 @@ async def _run_converter_subprocess(
     the child's dedup check and ``hash_cache_set`` both run under it and a
     child killed by the OOM reaper / timeout / cancel cannot strand it. A
     duplicate that waited spawns its child afterwards; that child's dedup
-    check hits the cache and skips. Fail-open: a Redis outage or wait-budget
-    expiry runs the child unlocked. See :func:`_run_converter_child` for the
+    check hits the cache and skips. Fail-open only on a Redis outage (child
+    runs unlocked); wait-budget expiry while another holder still owns the
+    lock raises :class:`~pageindex_mcp.storage.ingest_lock.IngestLockBusy`
+    WITHOUT spawning the child (HR2) -- the arq job requeues, and
+    ``preprocess_client`` skips the file. See :func:`_run_converter_child` for the
     result contract and raised exceptions.
 
     ``deadline`` (``time.monotonic()`` seconds; the arq job passes its own,
@@ -318,24 +321,33 @@ async def _run_converter_subprocess(
     converter_timeout path instead of arq's cancel.
     """
     from ..obs.decisions import decision
-    from ..storage.ingest_lock import ingest_lock
+    from ..storage.ingest_lock import WAIT_TIMEOUT, IngestLockBusy, ingest_lock
 
     ttl_s, max_wait_s = _ingest_lock_budget(deadline)
     cache_key = os.path.basename(os.path.abspath(pdf_path))
-    async with ingest_lock(cache_key, ttl_s=ttl_s, max_wait_s=max_wait_s) as lock:
+    try:
+        async with ingest_lock(cache_key, ttl_s=ttl_s, max_wait_s=max_wait_s) as lock:
+            decision(
+                event="ingest_dedup_lock",
+                choice=lock.choice,
+                reason="per-file ingest lock held by the parent around the converter child",
+                attrs={"waited_ms": lock.waited_ms},
+            )
+            return await _run_converter_child(
+                pdf_path,
+                staging_key=staging_key,
+                job_start_config=job_start_config,
+                on_effective_timeout=on_effective_timeout,
+                deadline=deadline,
+            )
+    except IngestLockBusy as exc:  # raised only by the acquire, never the body
         decision(
             event="ingest_dedup_lock",
-            choice=lock.choice,
-            reason="per-file ingest lock held by the parent around the converter child",
-            attrs={"waited_ms": lock.waited_ms},
+            choice=WAIT_TIMEOUT,
+            reason="lock still held after the wait budget; deferred, never converted unlocked",
+            attrs={"waited_ms": exc.waited_ms},
         )
-        return await _run_converter_child(
-            pdf_path,
-            staging_key=staging_key,
-            job_start_config=job_start_config,
-            on_effective_timeout=on_effective_timeout,
-            deadline=deadline,
-        )
+        raise
 
 
 async def _run_converter_child(  # noqa: C901, PLR0915
@@ -483,6 +495,9 @@ async def _run_converter_child(  # noqa: C901, PLR0915
         ocr_multiplier=ocr_multiplier,
     )
     # RFC-050: clamped to the arq job deadline so the child times out first.
+    # Re-measured HERE, after the handshake (which can take up to 60s): the
+    # spawn-time deadline_left is stale by then.
+    deadline_left = _deadline_left(deadline)
     effective_timeout = min(budget.effective, deadline_left)
     if ocr_multiplier != 1.0:
         logger.info(
@@ -494,7 +509,13 @@ async def _run_converter_child(  # noqa: C901, PLR0915
         logger.warning(
             "effective_timeout %ss exceeds MAX_EFFECTIVE_TIMEOUT %ss; capping",
             budget.requested,
-            effective_timeout,
+            budget.effective,
+        )
+    if deadline_left < budget.effective:
+        logger.warning(
+            "effective_timeout %ss clamped to %.0fs left before the arq job deadline",
+            budget.effective,
+            deadline_left,
         )
 
     # RFC-038 D2: surface effective_timeout to the caller immediately after the
@@ -503,7 +524,11 @@ async def _run_converter_child(  # noqa: C901, PLR0915
     if on_effective_timeout is not None:
         await on_effective_timeout(effective_timeout)
 
-    remaining_budget = max(effective_timeout - (time.monotonic() - start), 5.0)
+    remaining_budget = max(budget.effective - (time.monotonic() - start), 5.0)
+    # The 5s floor must never carry the child past the arq deadline: with one
+    # set, the current remainder of that deadline is a hard ceiling (0 -> the
+    # asyncio.timeout fires at once and the converter_timeout path runs).
+    remaining_budget = min(remaining_budget, _deadline_left(deadline))
     stdout_bytes = b""
     try:
         # RFC-046 task 12.3: replaces proc.communicate(). communicate()

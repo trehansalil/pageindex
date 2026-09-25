@@ -186,11 +186,19 @@ def cgroup_accounting_active(
     )
 
 
-def resolve_admission_floor(offload_configured: bool | None = None) -> int:
+def resolve_admission_floor(
+    offload_configured: bool | None = None, filename: str | None = None
+) -> int:
     """The admission floor to use: the smaller service-mode floor when
     conversion is actually offloaded to the in-cluster Docling service
     (:func:`~pageindex_mcp.config.docling_offload_configured`, the default
-    when *offload_configured* is None), the local-conversion floor otherwise."""
+    when *offload_configured* is None), the local-conversion floor otherwise.
+
+    Only a PDF is offloaded (the indexer's ``use_remote`` lives on the PDF
+    route); DOCX/PPTX/images convert locally, so a *filename* that is not a
+    ``.pdf`` always gets the local floor."""
+    if filename is not None and not filename.lower().endswith(".pdf"):
+        return MEM_ADMISSION_FLOOR_BYTES
     if offload_configured is None:
         offload_configured = docling_offload_configured(settings)
     if offload_configured:
@@ -221,19 +229,22 @@ async def _release_lock(redis: Redis) -> None:
         logger.debug("admission lock release failed (TTL will reclaim)", exc_info=True)
 
 
-async def wait_for_memory(redis: Redis, floor: int | None = None) -> bool:
+async def wait_for_memory(
+    redis: Redis, floor: int | None = None, *, filename: str | None = None
+) -> bool:
     """Block until there's headroom for one conversion, or the wait cap elapses.
 
     ``floor`` defaults to :func:`resolve_admission_floor` (service floor when
-    Docling offload is configured, local floor otherwise) so existing callers
-    need no change to pick up RFC-050 D1.
+    Docling offload is configured and *filename* is a PDF, local floor
+    otherwise). Callers that know the upload's *filename* should pass it: a
+    non-PDF converts locally even when the service is configured.
 
     Returns True if it proceeded because headroom was available, False if it
     proceeded because the wait cap was hit (fail-open). Never raises for an
     expected operational error — the caller always proceeds afterwards.
     """
     if floor is None:
-        floor = resolve_admission_floor()
+        floor = resolve_admission_floor(filename=filename)
 
     loop = asyncio.get_event_loop()
     deadline = loop.time() + MEM_ADMISSION_MAX_WAIT_S

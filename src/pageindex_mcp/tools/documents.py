@@ -287,41 +287,48 @@ def get_document(doc_id: str, include: str = "") -> str:
     start = time.monotonic()
     logger.info("get_document called (doc_id=%s, include=%s)", doc_id, include)
 
-    if include not in ("", "raw"):
-        TOOL_ERRORS.labels(tool="get_document").inc()
-        logger.warning("get_document: invalid include value %r", include)
-        return json.dumps({"error": f"Invalid include value: {include!r}. Supported: '', 'raw'"})
-
+    # Validation, the doc read and the raw-markdown load are all timed, so
+    # every get_document call (including errors) lands in TOOL_DURATION.
+    raw_markdown: dict | None = None
     try:
-        data = get_doc(doc_id)
-    except Exception:
-        TOOL_ERRORS.labels(tool="get_document").inc()
-        logger.warning("get_document: doc %s not found", doc_id)
-        return json.dumps({"error": f"Document not found: {doc_id}"})
+        if include not in ("", "raw"):
+            TOOL_ERRORS.labels(tool="get_document").inc()
+            logger.warning("get_document: invalid include value %r", include)
+            return json.dumps(
+                {"error": f"Invalid include value: {include!r}. Supported: '', 'raw'"}
+            )
+
+        try:
+            data = get_doc(doc_id)
+        except Exception:
+            TOOL_ERRORS.labels(tool="get_document").inc()
+            logger.warning("get_document: doc %s not found", doc_id)
+            return json.dumps({"error": f"Document not found: {doc_id}"})
+
+        if include == "raw":
+            from ..storage.documents import load_extracted_md
+
+            try:
+                _raw_md = load_extracted_md(doc_id)
+            except Exception:
+                logger.warning(
+                    "get_document: load_extracted_md failed for %s", doc_id, exc_info=True
+                )
+                _raw_md = None
+            if _raw_md is None:
+                raw_markdown = {
+                    "raw_markdown": None,
+                    "raw_markdown_note": (
+                        "No extracted markdown available (legacy document, or a "
+                        ".md/.txt input that never went through extraction)."
+                    ),
+                }
+            else:
+                raw_markdown = {"raw_markdown": _raw_md}
     finally:
         elapsed = time.monotonic() - start
         TOOL_DURATION.labels(tool="get_document").observe(elapsed)
         logger.debug("get_document completed in %.3fs", elapsed)
-
-    raw_markdown: dict | None = None
-    if include == "raw":
-        from ..storage.documents import load_extracted_md
-
-        try:
-            _raw_md = load_extracted_md(doc_id)
-        except Exception:
-            logger.warning("get_document: load_extracted_md failed for %s", doc_id, exc_info=True)
-            _raw_md = None
-        if _raw_md is None:
-            raw_markdown = {
-                "raw_markdown": None,
-                "raw_markdown_note": (
-                    "No extracted markdown available (legacy document, or a "
-                    ".md/.txt input that never went through extraction)."
-                ),
-            }
-        else:
-            raw_markdown = {"raw_markdown": _raw_md}
 
     # FLAT-05-C2 (Step 5 integration): a flat doc carries a content_class and no
     # tree — return its verbalized blocks/row_records instead of an (empty) node

@@ -533,7 +533,7 @@ no registry row, so `delete_doc` cannot reach it. The operator path is by sha256
 
 No new MCP tool or HTTP route is added for this; it is deliberately an operator-only path.
 
-**Retention.** Current contract (2026-09-24, Iter 9): the 30-day quarantine lifecycle rule is now applied in code. `storage/minio_ops.py` provides a generic `ensure_prefix_expiry()` plus `register_bucket_init()`; `storage/documents.py` registers the rule `quarantine-30d` (`--prefix "quarantine/"`, `--expire-days` from `QUARANTINE_TTL_DAYS`, default 30, minimum 1), applied best-effort on first `get_minio()` via read-merge-write against the bucket's existing lifecycle config (never a blind overwrite of other rules), and it never raises on failure.
+**Retention.** Current contract (2026-09-24, Iter 9): the 30-day quarantine lifecycle rule is now applied in code. `storage/minio_ops.py` provides a generic `ensure_prefix_expiry()` plus `register_bucket_init()`; `storage/documents.py` registers the rule `quarantine-30d` (`--prefix "quarantine/"`, `--expire-days` from `QUARANTINE_TTL_DAYS`, default 30, clamped to [1, 30] so an override can shorten but never extend HR5's 30-day ceiling), applied best-effort on first `get_minio()` via read-merge-write against the bucket's existing lifecycle config (never a blind overwrite of other rules), and it never raises on failure.
 
 The manual `mc ilm rule add` step below is kept only as a fallback for buckets where the service account lacks lifecycle permission (`s3:PutLifecycleConfiguration`) and the in-code registration therefore no-ops:
 
@@ -554,9 +554,14 @@ mc ilm rule add --prefix "quarantine/" --noncurrent-expire-days 30 <alias>/<buck
 > outside RFC-049.
 
 **Backup policy (user decision 2026-09-24, RFC-050 Phase 6).** Only what cannot be re-derived is
-backed up: MinIO `uploads/` (the sources) and the Postgres registry. Everything else (`processed/`,
+backed up: MinIO `uploads/` (the sources) and the Postgres registry. The `uploads/` backup must
+filter out the RFC-050 `*.extracted.md` sidecars (e.g. `mc mirror --exclude "*.extracted.md"`) —
+they are re-derivable and would violate the source-only policy. Everything else (`processed/`,
 `figures/`, `verdicts/`, `quarantine/`, Redis, the hash cache) is rebuilt by re-ingest and is never
-backed up. Cadence nightly, retention **30 days**. Backups are not purged in place; instead
+backed up. **Quarantine is intentionally non-restorable:** a rejected document's staged input is
+deleted on terminal rejection and is not backed up, so there is no source to rebuild it from after a
+restore — by design (HR5 wants it gone within 30 days anyway). Cadence nightly, retention
+**30 days**. Backups are not purged in place; instead
 `delete_doc` / `erase_quarantine` append the erased `doc_id` / sha256 to an **erasure ledger**, and
 the ledger is replayed (the full cascade, per entry) against any restore **before** the restored
 data is served. The 30-day retention bounds how long an erased document can survive inside a
@@ -565,8 +570,9 @@ backup. **[high — AWS Bedrock RTBF guidance.]**
 > **Status (2026-09-24): policy decided, not implemented.** As of 2026-09-23 there is no `mc mirror`,
 > `pg_dump`, Velero schedule or snapshot job anywhere in `scripts/`, `Makefile`, the k8s manifests or
 > CI, and no ledger in code. The backup job, the ledger write in the cascade and the restore-time
-> replay are RFC-050 Phase 6 / operator work. Until they land, no backup exists and HR2's backup
-> step has no target.
+> replay are RFC-050 Phase 6 / operator work. Until they land, no scheduled backup exists; any
+> ad-hoc backup or snapshot that does exist **must be purged manually** on every erasure
+> (DESIGN.md § Erasure fan-out, step 6). That manual instruction stays until the ledger lands.
 
 ### LLM-provider data-residency routing  (ADR-005)
 

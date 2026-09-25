@@ -1138,7 +1138,36 @@ async def test_ingest_lock_release_is_safe_and_fail_open():
     broken.set.side_effect = ConnectionError("redis down")
     async with il.ingest_lock("d.pdf", redis_client=broken) as lock:
         assert lock.choice == il.REDIS_UNAVAILABLE
-    broken.eval.assert_not_called()
+    # Best-effort compare-and-delete even on the fail-open path: the SET may
+    # have applied before the reply was lost.
+    broken.eval.assert_called_once()
+
+    def set_then_drop(*args, **kwargs):
+        fr.set(*args, **kwargs)
+        raise ConnectionError("reply lost after SET applied")
+
+    lossy = MagicMock(wraps=fr)
+    lossy.set.side_effect = set_then_drop
+    async with il.ingest_lock("f.pdf", redis_client=lossy) as lock:
+        assert lock.choice == il.REDIS_UNAVAILABLE
+    assert fr.get(il.lock_key("f.pdf")) is None
+
+    # HR2: wait budget expiry while another holder owns the lock raises
+    # IngestLockBusy and never runs the body unlocked; the other holder's
+    # lock is untouched and the sleep never overshoots the budget.
+    fr.set(il.lock_key("g.pdf"), "other-holder")
+    t0 = asyncio.get_running_loop().time()
+    with pytest.raises(il.IngestLockBusy):
+        async with il.ingest_lock("g.pdf", redis_client=fr, poll_interval_s=5.0, max_wait_s=0.05):
+            pytest.fail("body must not run unlocked while another holder owns the lock")
+    assert asyncio.get_running_loop().time() - t0 < 1.0
+    assert fr.get(il.lock_key("g.pdf")) == "other-holder"
+
+    # The lock's own client carries finite socket/connect timeouts (building
+    # it does not connect).
+    kwargs = il._build_lock_redis().connection_pool.connection_kwargs
+    assert kwargs["socket_timeout"] == il.REDIS_SOCKET_TIMEOUT_S
+    assert kwargs["socket_connect_timeout"] == il.REDIS_SOCKET_TIMEOUT_S
 
     # Cancelled after the SET landed (held still False): compare-and-delete
     # with our token, then re-raise -- no orphan lock.
@@ -1176,6 +1205,8 @@ async def test_ingest_lock_held_by_parent_and_survives_child_death(monkeypatch, 
         raise ConverterOOMError(-9, "killed")
 
     monkeypatch.setattr(sm, "_run_converter_child", dying_child)
+    # conftest loads developer .env values; pin the default wait budget.
+    monkeypatch.delenv("INGEST_LOCK_MAX_WAIT_S", raising=False)
     with pytest.raises(ConverterOOMError):
         await sm._run_converter_subprocess(str(pdf))
 

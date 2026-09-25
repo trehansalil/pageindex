@@ -4,7 +4,9 @@ name: Build & Push Docling Service to GHCR
 # can pull it. Mirrors build-push.yml (pageindex-mcp) step for step; the
 # Scaleway workflow (deploy-docling-service.yml) is disabled and untouched.
 #
-# Master only: a push to a feature branch never builds or publishes.
+# Master only: a push to a feature branch never builds or publishes, and a
+# manual dispatch from a non-master ref runs the gates but skips build-push
+# (no `:latest`, no deploy event for unmerged code).
 on:
   push:
     branches: [master]
@@ -45,6 +47,7 @@ jobs:
 
   build-push:
     needs: test
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:
       contents: read

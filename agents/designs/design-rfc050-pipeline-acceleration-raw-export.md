@@ -167,7 +167,7 @@ sequenceDiagram
     SP->>M: save_flat_doc(doc_id, flat_json)
     SP->>M: save_raw(doc_id, .extracted.md)
   else REJECT
-    SP->>M: save_quarantine(sha256, ...) — garbling rejects only; .meta.json now carries reject_reason + defects (D3b)
+    SP->>M: save_quarantine(sha256, ...) — every REJECT; .meta.json carries reject_reason + all co-firing defects (D3b)
   end
   SP-->>W: result
 ```
@@ -290,11 +290,13 @@ async def release_dedup_lock(redis, pdf_path: str, token: str) -> None:
 # _run_converter_subprocess (worker/subprocess_mgr.py)
 async def _run_converter_subprocess(pdf_path: str, ...):
     ttl_ms = (MAX_EFFECTIVE_TIMEOUT + KILL_GRACE_S + 60) * 1000  # upper bound; child timeout unknown pre-handshake
-    max_wait_s = min(INGEST_LOCK_MAX_WAIT_S, min(CHILD_TIMEOUT, MAX_EFFECTIVE_TIMEOUT) / 2)
+    max_wait_s = min(INGEST_LOCK_MAX_WAIT_S, min(CHILD_TIMEOUT, MAX_EFFECTIVE_TIMEOUT) / 2, deadline_left / 2)
     token = await acquire_dedup_lock(redis, pdf_path, ttl_ms=ttl_ms)
     try:
         if token is None:
-            token = await _wait_for_lock_or_timeout(redis, pdf_path, max_wait_s)  # None on expiry -> proceed unlocked, warn
+            token = await _wait_for_lock_or_timeout(redis, pdf_path, max_wait_s)
+            # expiry while still held -> raise; arq requeues, preprocess_client skips + logs error
+            # (Redis unreachable -> fail open, finite socket timeouts)
         return await _run_converter_child(pdf_path, ...)
     except asyncio.CancelledError:
         if token is not None:
@@ -305,15 +307,15 @@ async def _run_converter_subprocess(pdf_path: str, ...):
             await release_dedup_lock(redis, pdf_path, token)
 ```
 
-**Flow:** `ttl_ms = (MAX_EFFECTIVE_TIMEOUT + kill grace + 60) * 1000` — an upper bound, since the parent can't know the child's effective timeout before the handshake. Before spawning the child, the parent acquires the lock. Holder: runs `_run_converter_child`, releases via the Lua compare-and-delete in its own `finally`, whether the child returns, times out or is OOM-killed. Waiter: polls up to `min(INGEST_LOCK_MAX_WAIT_S` (default 900s)`, half of min(CHILD_TIMEOUT, MAX_EFFECTIVE_TIMEOUT))`; on expiry, proceeds unlocked with a warning rather than blocking indefinitely — the wait counts against the arq `JOB_TIMEOUT` budget. A cancellation during acquire does a token compare-and-delete before re-raising. If Redis is unreachable, proceeds unlocked and logs a warning (fail-open) — availability over strict mutual exclusion. Caveats: a waiter's poll-wait still counts against the arq `JOB_TIMEOUT`; a **parent** (worker pod) death — as distinct from a child death — strands the lock until TTL expiry, since nothing external reaps it. The `ingest_dedup_lock` decision point lives in a new `_WORKER_POINTS` table (`obs/decision_points.py`), not the existing indexer-side decision table.
+**Flow:** `ttl_ms = (MAX_EFFECTIVE_TIMEOUT + kill grace + 60) * 1000` — an upper bound, since the parent can't know the child's effective timeout before the handshake. Before spawning the child, the parent acquires the lock. Holder: runs `_run_converter_child`, releases via the Lua compare-and-delete in its own `finally`, whether the child returns, times out or is OOM-killed. Waiter: polls up to `min(INGEST_LOCK_MAX_WAIT_S, min(CHILD_TIMEOUT, MAX_EFFECTIVE_TIMEOUT) / 2, deadline_left / 2)` (`INGEST_LOCK_MAX_WAIT_S` default 900s). **Corrected post-review (PR #26, HR2 beats availability):** on expiry while another holder still owns the lock, the waiter **never proceeds unlocked** — the arq job is requeued (arq retry/defer) and `preprocess_client.py` skips the file with a logged error. A cancellation during acquire does a token compare-and-delete before re-raising. If Redis is *unreachable*, the lock fails open (proceeds unlocked, logs a warning) with finite socket/connect timeouts — arq itself depends on Redis, so blocking here buys nothing. G5 therefore holds in every case except a Redis outage. The arq deadline is recomputed after the converter handshake, so the child timeout is clamped to what actually remains. Caveats: a waiter's poll-wait still counts against the arq `JOB_TIMEOUT`; a **parent** (worker pod) death — as distinct from a child death — strands the lock until TTL expiry, since nothing external reaps it. The `ingest_dedup_lock` decision point lives in a new `_WORKER_POINTS` table (`obs/decision_points.py`), not the existing indexer-side decision table.
 
 ### 2. Raw Output Persistence (save_raw)
 
 **Current contract (2026-09-24, Iter 9 — slimmed, MINIMAL scope):**
-- **What is written.** The tree builder's input markdown (post-stages, post-recovery `state.md_content`), at exactly **two** sites, guarded by `md_content is not None` and wrapped in `try/except` → `logger.warning`:
+- **What is written.** The tree builder's input markdown (post-stages, post-recovery `state.md_content`), at exactly **two** sites, guarded by `md_content is not None` and wrapped in `try/except` → `logger.warning` (implemented — a failed sidecar write never fails the ingest):
   - `_persist_tree_result` (`client/indexer.py:2407`) and `_persist_flat_result` (`:2226`): after the existing upload `save_raw`, write `save_raw(doc_id, f"{filename}.extracted.md", md)`.
 - **No state sidecar, no reject-side writes.** Both were cut with D4 (deferred, its only consumer).
-- **Content types.** `save_raw` replaces its inline `.pdf`-or-octet-stream ternary with a suffix map: `.pdf` → `application/pdf`, `.md` → `text/markdown`, anything else → `application/octet-stream`.
+- **Content types — outstanding (not implemented as of 2026-09-25).** `save_raw` (`storage/documents.py`) still uses its inline `.pdf`-or-octet-stream ternary, so `.extracted.md` is stored as `application/octet-stream`. Planned: a suffix map — `.pdf` → `application/pdf`, `.md` → `text/markdown`, anything else → `application/octet-stream` (Task 3.1).
 - **Erasure.** No change — `uploads/` prefix delete already covers it.
 - **Retention.** `quarantine/` (unaffected by this section — see §3b) expires after 30 days ([Property 3b](#property-3b-quarantine-expires-within-30-days-added-2026-09-24-iter-8)).
 
@@ -328,7 +330,7 @@ def save_quarantine(sha256: str, payload: dict, filenames: list[str], *,
     # .meta.json now includes: {"filenames": [...], "reject_reason": reject_reason, "defects": defects}
 ```
 
-Called at the two existing reject points — the `flat_garble_unrecovered` branch in `_persist_flat_result` (`:1924-1933`) and `case (False, Route.REJECT)` in `index()` (`:2762-2787`), for every reject reason, not only the garbling defects `save_quarantine` already handles. No new object, no new erasure key — the existing quarantine erasure (`_erase_quarantine`, `erase_quarantine`) and the 30-day TTL already cover `.meta.json` as a whole.
+Called at the two existing reject points — the `flat_garble_unrecovered` branch in `_persist_flat_result` (`:1924-1933`) and `case (False, Route.REJECT)` in `index()` (`:2762-2787`), for every reject reason (structural as well as garbling), not only the garbling defects `save_quarantine` already handles. `defects` records **all** gate defects that co-fired at the reject point, not only the one that chose the reason. The `.meta.json` key for the reason is `reject_reason` (the writer was renamed from `reason` post-review, PR #26). No new object, no new erasure key — the existing quarantine erasure (`_erase_quarantine`, `erase_quarantine`) and the 30-day TTL already cover `.meta.json` as a whole.
 
 <details><summary>§2 amendment history (Iterations 2-8, collapsed)</summary>
 
@@ -511,23 +513,28 @@ async def index(self, file_path, ..., replay: ReplayInput | None = None): ...
 
 **Current contract (2026-09-24, Iter 9 — reversed from the Iter 7 sixth-tool plan):**
 
+Implemented shape (`tools/documents.py`): `include` is an optional string, default `""`. `include="raw"` does **not** replace the response — it **adds** a `raw_markdown` field to the normal `get_document` JSON. Any other value returns the tool's usual `{"error": ...}` JSON.
+
 ```python
 @mcp.tool()
-async def get_document(doc_id: str, include: str | None = None) -> dict | str:
-    """Retrieve a processed document. include="raw" returns the persisted extraction markdown instead."""
+async def get_document(doc_id: str, include: str = "") -> str:  # JSON string, as before
+    if include not in ("", "raw"):
+        return json.dumps({"error": f"Invalid include value: {include!r}. Supported: '', 'raw'"})
+    ...  # existing document response built into `result`
     if include == "raw":
-        raw = storage.documents.load_raw(doc_id)
-        if raw is None:
-            raise ValueError(f"No raw output found for {doc_id}")
-        return raw.decode("utf-8")
-    # ... existing get_document(doc_id) behavior, unchanged when include is None
+        md = load_extracted_md(doc_id)          # storage.documents; None if absent
+        if md is None:
+            result.update({"raw_markdown": None, "raw_markdown_note": "..."})  # e.g. legacy doc
+        else:
+            result.update({"raw_markdown": md})
+    return json.dumps(result)
 ```
 
-**Scope:** `doc_id` only — persisted documents only. `load_raw` lists `uploads/<doc_id>/*.extracted.md` and never touches `quarantine/`, so a rejected document's sha256 (or any other string) returns not-found. Rejected-document output stays unserved (HR5) — trivially, since D3 (Iter 9) never writes it in the first place.
+**Scope:** `doc_id` only — persisted documents only. `load_extracted_md` lists `uploads/<doc_id>/*.extracted.md` and never touches `quarantine/`, so a rejected document's sha256 (or any other string) returns not-found. Rejected-document output stays unserved (HR5) — trivially, since D3 (Iter 9) never writes it in the first place.
 
 **Frozen surfaces (unchanged by this design):**
 - `FROZEN_SURFACE["tools"]` (`scripts/gates/source_invariants.py:501-507`, five names) is **not** modified — `get_document` already exists; only its signature gains an optional parameter, which is not a facade-frozen surface concern.
-- `load_raw` is imported from `storage.documents` directly and is not added to the storage package's frozen `__all__` (35 names, `source_invariants.py:461`).
+- `load_extracted_md` is imported from `storage.documents` directly and is not added to the storage package's frozen `__all__` (35 names, `source_invariants.py:461`).
 - `DESIGN.md` continues to document 5 registered tools plus 2 planned (`compare_tiers`, `find_clause_across_docs`); `get_document`'s entry gains the `include` parameter (Task 3.4).
 
 <details><summary>Amendment history</summary>
@@ -574,7 +581,7 @@ MEM_ADMISSION_FLOOR_SERVICE_BYTES: int = 800 * 1024 * 1024  # 800 MiB
 
 ### Content-Type Fix
 
-The existing `save_raw` function (`storage/documents.py:838-854`) uses an inline `.pdf`-or-octet-stream ternary. When called with `<filename>.extracted.md`, it sets `application/octet-stream` — semantically wrong. Replace it with a suffix → content-type map: `.pdf` → `application/pdf`, `.md` → `text/markdown`, default `application/octet-stream` (Task 3.1). **(Iter 9):** no `.json` entry needed — the state sidecar that would have used it is cut.
+The existing `save_raw` function (`storage/documents.py:838-854`) uses an inline `.pdf`-or-octet-stream ternary. When called with `<filename>.extracted.md`, it sets `application/octet-stream` — semantically wrong. Replace it with a suffix → content-type map: `.pdf` → `application/pdf`, `.md` → `text/markdown`, default `application/octet-stream` (Task 3.1 — **outstanding**: the ternary is still in place as of 2026-09-25). **(Iter 9):** no `.json` entry needed — the state sidecar that would have used it is cut.
 
 ## Correctness Properties
 
@@ -671,7 +678,7 @@ The quarantine replay reader SHALL live in `storage/documents.py`, the only file
 
 ### Property 7: Dedup Lock Mutual Exclusion (Added: 2026-09-24, Iter 9)
 
-*For any* two concurrent ingests of identical file bytes (same filename), at most one SHALL mint a `doc_id` and persist; the other SHALL take the dedup-skip path once it observes the winner's hash-cache entry. *For any* single ingest with no contention, behavior is unchanged (lock acquired and released without a waiter). *For any* holder that crashes without releasing (e.g. SIGKILL), a waiter blocks until the lock's TTL expires rather than forever; if Redis itself is unreachable, the pipeline fails open and proceeds unlocked.
+*For any* two concurrent ingests of identical file bytes (same filename), at most one SHALL mint a `doc_id` and persist; the other SHALL take the dedup-skip path once it observes the winner's hash-cache entry. *For any* single ingest with no contention, behavior is unchanged (lock acquired and released without a waiter). *For any* waiter whose wait budget expires while the lock is still held (including a holder whose parent died without releasing), the waiter SHALL NOT run the converter unlocked: the arq job is requeued and `preprocess_client` skips the file with a logged error; the stranded lock clears at TTL expiry. *Only* if Redis itself is unreachable does the pipeline fail open and proceed unlocked (bounded by finite socket timeouts) — the one case the property does not cover.
 
 **Validates: Requirement 6**
 
@@ -682,13 +689,15 @@ The quarantine replay reader SHALL live in `storage/documents.py`, the only file
 **Admission Gate:**
 - ~~Host RSS cannot be read → Fall back to `MEM_ADMISSION_FLOOR_BYTES` (conservative), log warning~~ **(Amendment 2026-09-24, Iter 8):** host memory cannot be read → the gate fails open and admits the job, as it does today (`worker/job.py:183`: "Fails open (proceeds) on any error"). The change does not alter this.
 - Redis connection lost during memory check → Retry with exponential backoff (existing behavior)
+- No headroom after `MEM_ADMISSION_MAX_WAIT_S` (default 120s) → fail open and admit. The gate is **best-effort admission** (a floor check whose lock is released before the job runs), not a guarantee a pod stays inside its limit; the cgroup limit is the hard cap and can still OOM-kill the worker.
 
 **Raw Output Persistence:**
 - MinIO write fails for raw output → Log error, continue with pipeline (raw output is diagnostic, not load-bearing for tree construction)
 - Raw file exceeds 50 MB → Log warning, persist anyway
 
 **Dedup Lock (New, Iter 9):**
-- Lock cannot be acquired within the retry budget (holder crashed) → proceed unlocked, log a warning; ingestion is not blocked
+- Lock cannot be acquired within the wait budget (holder still running, or its parent died) → never proceed unlocked: arq job requeued, `preprocess_client` skips the file and logs an error
+- Redis unreachable → fail open (proceed unlocked, log a warning), bounded by finite socket timeouts
 - Waiter acquires the lock after the holder released it, cache is now populated → dedup-skip path
 - Waiter acquires the lock, cache still empty (holder failed before persisting) → proceed to extract as the new holder
 
@@ -758,7 +767,7 @@ The quarantine replay reader SHALL live in `storage/documents.py`, the only file
 - MAX_JOBS set to 10 → clamped to 4 with warning
 - Raw output write fails → pipeline continues, tree/flat output still produced
 - `.md`/`.txt` input or the LibreOffice/all-converters-failed `page_index` route → no `.extracted.md` written, no exception
-- Dedup lock holder crashes mid-extraction → waiter's bounded retry times out, proceeds unlocked, logs a warning
+- Dedup lock holder's parent dies mid-extraction → waiter's bounded wait expires → arq requeue / `preprocess_client` skip with a logged error; a later attempt acquires once the lock's TTL lapses
 - Non-garbling reject reason (e.g. a structural gate failure, not RFC-049's garbling defects) → still gets `reject_reason`/`defects` in `.meta.json` via D3b, even though `save_quarantine`'s `.json` payload is garbling-only
 
 <details><summary>Deferred (Iter 9) — replay edge cases, kept for the follow-up RFC</summary>

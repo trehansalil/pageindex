@@ -844,10 +844,17 @@ class TestGetDocumentIncludeParam:
         for name, doc, sidecar, expected, expect_note in cases:
             with (
                 patch("pageindex_mcp.tools.documents.get_doc", return_value=doc),
-                patch("pageindex_mcp.tools.documents.flat_doc_view", lambda d: fake_flat_view),
+                patch(
+                    "pageindex_mcp.tools.documents.flat_doc_view",
+                    lambda d: fake_flat_view if "content_class" in d else None,
+                ),
                 patch("pageindex_mcp.storage.documents.load_extracted_md", return_value=sidecar),
             ):
                 body = json.loads(documents.get_document(doc["doc_id"], include="raw"))
+            # Tree docs must take the tree branch, flat docs the flat branch.
+            is_flat = "content_class" in doc
+            if ("blocks" in body) is not is_flat or ("top_level_sections" in body) is is_flat:
+                failures.append(f"{name}: wrong response branch, keys={sorted(body)}")
             if body.get("raw_markdown", "<missing>") != expected:
                 failures.append(f"{name}: raw_markdown={body.get('raw_markdown', '<missing>')!r}")
             if bool(body.get("raw_markdown_note")) is not expect_note:
@@ -901,6 +908,21 @@ class TestLoadExtractedMd:
         mock_mc.list_objects.return_value = iter([obj])
         with patch("pageindex_mcp.storage.documents._minio_ops.get_minio", return_value=mock_mc):
             assert load_extracted_md("doc-123") is None
+
+        # An upload that itself ends in .extracted.md is never returned in
+        # place of its sidecar, whatever the listing order.
+        mock_mc = MagicMock()
+        objs = []
+        for name in ("notes.extracted.md", "notes.extracted.md.extracted.md"):
+            o = MagicMock()
+            o.object_name = f"uploads/doc-123/{name}"
+            objs.append(o)
+        mock_mc.list_objects.return_value = iter(objs)
+        with patch("pageindex_mcp.storage.documents._minio_ops.get_minio", return_value=mock_mc):
+            load_extracted_md("doc-123")
+        assert mock_mc.get_object.call_args.args[1] == (
+            "uploads/doc-123/notes.extracted.md.extracted.md"
+        )
 
 
 # ===========================================================================

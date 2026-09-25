@@ -1877,7 +1877,7 @@ _WORKER_POINTS: tuple[DecisionPoint, ...] = (
         choices=(
             "acquired",
             "acquired_after_wait",
-            "wait_timeout_proceed_unlocked",
+            "wait_timeout_deferred",
             "redis_unavailable_proceed_unlocked",
         ),
         attrs=("waited_ms",),
@@ -1885,8 +1885,9 @@ _WORKER_POINTS: tuple[DecisionPoint, ...] = (
         "around the converter child, so the child's hash-cache dedup check and "
         "hash_cache_set run under it and a killed child cannot strand it. A "
         "waiter's child re-runs the dedup check, so a concurrent duplicate "
-        "dedup-skips instead of minting an orphan doc_id. The two *_unlocked "
-        "choices are fail-open degradations.",
+        "dedup-skips instead of minting an orphan doc_id. A wait-budget expiry "
+        "never proceeds unlocked (arq requeues, preprocess_client skips); only "
+        "a Redis outage fails open.",
     ),
 )
 

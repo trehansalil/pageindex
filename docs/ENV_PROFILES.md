@@ -205,16 +205,24 @@ PAGEINDEX_WORKER_MAX_JOBS=4 make worker   # explicit override, either profile
 There the conversion runs in your own process tree and the memory is yours to
 pay for.
 
-The value is clamped to `[1, 4]` (`MAX_JOBS_CEILING` in `worker/lifecycle.py`);
-anything higher, lower, or unparseable falls back to the memory-safe default
-(1) rather than being trusted, and a value above the ceiling is clamped to 4
-with a startup warning, so a typo or a stray profile setting cannot OOM the
-worker. Raising the ceiling is a deliberate code change.
+The value is clamped to `[1, 4]` (`MAX_JOBS_CEILING` in `worker/lifecycle.py`):
+a value below 1 or an unparseable one resolves to the memory-safe default (1);
+a value **above 4 resolves to 4** (with a startup warning), not to 1. So a
+typo such as `5` runs four jobs — with local Docling, leave the variable unset
+rather than relying on the clamp. Raising the ceiling is a deliberate code
+change.
+
+"Offloaded" means `DOCLING_SERVICE_URL` is set, docling is installed **and**
+Docling is the first PDF converter (`PDF_CONVERTER=docling`, the default, or
+`ALLOW_AGPL_FALLBACK=false`). With `PDF_CONVERTER=pymupdf4llm` the local
+PyMuPDF converter runs first, so the service-aware default (2) and the service
+floor do not apply.
 
 The memory-admission gate (`memory_admission.py`) mirrors this split: the
 floor used to decide whether a job may start is `MEM_ADMISSION_FLOOR_BYTES`
 (~2.2 GiB) normally, or the much smaller `MEM_ADMISSION_FLOOR_SERVICE_BYTES`
-(800 MiB default) when `DOCLING_SERVICE_URL` is set. The gate also now reads
+(800 MiB default) for a PDF job when conversion is offloaded (above); a
+DOCX/PPTX/image job converts locally and keeps the local floor. The gate also now reads
 the pod's cgroup memory limit (v2 `memory.max`/`memory.current`, falling back
 to v1) and uses `min(host MemAvailable, cgroup headroom)` when a finite cgroup
 limit exists, rather than only the host-wide reading. The resolved floor,

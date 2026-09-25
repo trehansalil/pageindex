@@ -353,14 +353,24 @@ _TRANSIENT_EXCEPTION_TYPES: tuple[type[BaseException], ...] = (
 
 def _quarantine_defects(state, *extra: str) -> list[str]:
     """RFC-050 D3b: defect CODES for quarantine/<sha256>.meta.json -- the
-    gate's first defect plus any explicit extra, deduped, never text."""
+    gate's first defect (primary, kept first), then every co-firing defect in
+    ``gate_result.all_defects`` (sorted, for a stable order), then any explicit
+    extra; deduped, never text."""
     codes: list[str] = []
+
+    def _add(code: str) -> None:
+        if code and code not in codes:
+            codes.append(code)
+
     first = getattr(state, "first_defect", None)
     if first is not None:
-        codes.append(getattr(first, "value", str(first)))
+        _add(getattr(first, "value", str(first)))
+    gate_result = getattr(state, "gate_result", None)
+    co_firing = getattr(gate_result, "all_defects", None) or ()
+    for code in sorted(getattr(d, "value", str(d)) for d in co_firing):
+        _add(code)
     for code in extra:
-        if code not in codes:
-            codes.append(code)
+        _add(code)
     return codes
 
 
@@ -601,6 +611,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         self.last_stage_timings: dict[str, float] | None = None
         self._tree_build_s: float = 0.0
         self._stage_s: dict[str, float] = {}
+        self._open_stage: tuple[str, float, float] | None = None
         self._staging_key: str | None = None
 
     # ------------------------------------------------------------------
@@ -1882,6 +1893,9 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         ),
                     ):
                         flat_md = vlm_md
+                        # RFC-050 D3: the raw sidecar must export the text
+                        # actually indexed, not the rejected first pass.
+                        state.md_content = vlm_md
                         state.pic_results = []
                         state.flat_garble_unrecovered = False
                         VLM_FALLBACK_TOTAL.labels(result="recovered").inc()
@@ -1947,7 +1961,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     sha256,
                     state.result,
                     [filename],
-                    reason="garbling",
+                    reject_reason="garbling",
                     defects=_quarantine_defects(state, TreeDefect.GARBLING.value),
                 )
             except Exception:
@@ -2629,10 +2643,11 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         # RFC-050 Task 1.5: per-stage wall clock (see _stage_add).
         self._tree_build_s = 0.0
         self._stage_s = {}
+        self._open_stage = None
 
         with bind_log_context(doc_sha8=sha256[:8]):
             try:
-                _t0, _tb0 = time.monotonic(), self._tree_build_s
+                self._stage_open("extraction")
                 await self._convert_to_tree(
                     state,
                     file_path,
@@ -2643,8 +2658,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     pre_classification=pre_classification,
                     script_context=script_context,
                 )
-                self._stage_add("extraction", _t0, _tb0)
-                _t0, _tb0 = time.monotonic(), self._tree_build_s
+                self._stage_open("recovery")
 
                 # Zone-3: enrich ScriptContext with post-conversion content text.
                 # _convert_to_tree populates state.md_content from the fitz probe /
@@ -2736,7 +2750,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 # re-derivation afterwards).
                 await self._recover_flat_prefer(state, filename, expected_script)
                 await self._recover_landscape_reroute(state, filename)
-                self._stage_add("recovery", _t0, _tb0)
+                self._stage_open(None)
 
                 # D2-C (RFC-049): force REJECT for garbled trees that survived
                 # recovery.  Without this, (False, Route.TREE) persists a
@@ -2836,24 +2850,28 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
 
                     case (False, Route.REJECT):
                         _reject_reason = state.first_defect.value
-                        if state.first_defect in {
+                        # RFC-050 D3b: every REJECT records its reason and
+                        # defects in quarantine/<sha256>.meta.json. The .json
+                        # payload stays garbling-only (RFC-049 D2-C policy);
+                        # other rejects are meta-only (payload=None).
+                        _garbling_reject = state.first_defect in {
                             TreeDefect.GARBLING,
                             TreeDefect.NODE_GARBLING,
-                        }:
-                            try:
-                                save_quarantine(
-                                    sha256,
-                                    state.result,
-                                    [filename],
-                                    reason=_reject_reason,
-                                    defects=_quarantine_defects(state),
-                                )
-                            except Exception:
-                                logger.warning(
-                                    "quarantine write failed for %s",
-                                    filename,
-                                    exc_info=True,
-                                )
+                        }
+                        try:
+                            save_quarantine(
+                                sha256,
+                                state.result if _garbling_reject else None,
+                                [filename],
+                                reject_reason=_reject_reason,
+                                defects=_quarantine_defects(state),
+                            )
+                        except Exception:
+                            logger.warning(
+                                "quarantine write failed for %s",
+                                filename,
+                                exc_info=True,
+                            )
                         LOW_QUALITY_TREES.labels(reason=_reject_reason).inc()
                         logger.warning(
                             "Rejecting low-quality tree for %s: reason=%s",
@@ -2896,6 +2914,9 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 )
 
             finally:
+                # Close a stage left open by a raise/timeout so partial
+                # timings are still published.
+                self._stage_open(None)
                 self._emit_stage_timings()
                 if state.tmp_lo_dir:
                     shutil.rmtree(state.tmp_lo_dir, ignore_errors=True)
@@ -2921,6 +2942,17 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
         nested = self._tree_build_s - tree_build_at_t0
         elapsed = max(0.0, time.monotonic() - t0 - nested)
         self._stage_s[stage] = self._stage_s.get(stage, 0.0) + elapsed
+
+    def _stage_open(self, stage: str | None) -> None:
+        """Close the currently open stage (if any) via _stage_add, then open
+        *stage* (None = open nothing). Called from index()'s finally too, so a
+        stage that raises or times out still contributes its partial time."""
+        current = getattr(self, "_open_stage", None)
+        if current is not None:
+            self._stage_add(*current)
+        self._open_stage = (
+            (stage, time.monotonic(), self._tree_build_s) if stage is not None else None
+        )
 
     def _emit_stage_timings(self) -> None:
         """Publish per-stage seconds for converters_cli (``stage_timings`` in

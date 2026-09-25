@@ -17,7 +17,19 @@
 # Sizing rationale: docs/PARALLEL_INGESTION.md § "Deployment sizing (RFC-050)".
 # Single node `portfolio`, 7.6 GB RAM (allocatable ~7.57 GiB), shared with
 # infra/{redis,postgres,minio}. Requests after this change are ~7,000 Mi,
-# about 90 % of allocatable.
+# about 90 % of the pre-resize allocatable. Infra decision 2026-09-25: the
+# current server is RESIZED in place (no second node), BEFORE the G1 baseline
+# arm, so both G1 arms run on the same hardware. Redo the fit check against
+# the resized allocatable.
+#
+# OPEN ITEM -- docling-service concurrency: one replica and one uvicorn worker
+# do NOT serialize conversions. Both conversion endpoints run the work via
+# asyncio.to_thread with no service-side limit, so up to N = (worker
+# replicas x MAX_JOBS) = 2 x 2 = 4 conversions can run at once in this pod
+# (~2 GB peak each). The 3584Mi limit below is only correct if the service
+# caps its own concurrency to 1 (e.g. a semaphore around the conversion);
+# otherwise size the limit for N concurrent conversions. One of the two must
+# hold before MAX_JOBS=2 ships.
 #
 # Live cluster state read on 2026-09-24 (kubectl, read-only). It matters for
 # this change:
@@ -50,7 +62,7 @@ metadata:
   namespace: pageindex-mcp
   labels: {app: docling-service}
 spec:
-  replicas: 1                      # one uvicorn worker, one conversion at a time
+  replicas: 1                      # one uvicorn worker -- does NOT serialize conversions (see OPEN ITEM above)
   strategy: {type: Recreate}       # never run two ~2 GB pods during a rollout
   selector:
     matchLabels: {app: docling-service}
@@ -70,7 +82,7 @@ spec:
                 secretKeyRef: {name: pageindex-mcp-secrets, key: DOCLING_SERVICE_BEARER_TOKEN}  # ASSUMED key
           resources:
             requests: {memory: 2560Mi, cpu: 500m}
-            limits:   {memory: 3584Mi}
+            limits:   {memory: 3584Mi}     # assumes a service-side concurrency cap of 1; else N x ~2 GB
           readinessProbe:
             httpGet: {path: /health, port: http}
             initialDelaySeconds: 20        # models warm at startup (~15-30s)

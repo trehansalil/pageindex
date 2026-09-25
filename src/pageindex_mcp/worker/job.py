@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 
 import redis.asyncio as aioredis
+from arq import Retry
 
 from ..cache import get_async_redis
 from ..config import effective_config_snapshot
@@ -27,7 +28,8 @@ from ..metrics import (
 )
 from ..obs import bind_log_context
 from ..storage import delete_staging, download_staging
-from .constants import CHILD_GRACE_SECONDS, JOB_TIMEOUT, REAP_GRACE
+from ..storage.ingest_lock import IngestLockBusy
+from .constants import CHILD_GRACE_SECONDS, JOB_TIMEOUT, MAX_EFFECTIVE_TIMEOUT, REAP_GRACE
 from .errors import (
     _CHILD_ERROR_REGISTRY,
     _DEFAULT_CHILD_CLASSIFICATION,
@@ -51,6 +53,13 @@ _WORKER_BUILD_SHA = os.environ.get("BUILD_SHA", "unknown")
 JOB_TTL = 86_400
 MAX_TRIES = 2
 DLQ_KEY = "pageindex:dlq"
+#: The timeout arq enforces on process_document_job: lifecycle.WorkerSettings
+#: registers it with ``func(..., timeout=MAX_EFFECTIVE_TIMEOUT + REAP_GRACE)``,
+#: which overrides the class-level job_timeout (JOB_TIMEOUT).
+_ARQ_FUNCTION_TIMEOUT = MAX_EFFECTIVE_TIMEOUT + REAP_GRACE
+#: RFC-050 D7: how long a job whose ingest-lock wait expired is deferred
+#: before arq re-runs it. arq counts the requeue against max_tries.
+INGEST_LOCK_REQUEUE_DEFER_S = 600
 
 
 async def _dlq_push_on_final_attempt(
@@ -110,7 +119,9 @@ async def process_document_job(  # noqa: C901, PLR0915
     # RFC-050: arq's job_timeout clock is already running. The memory-admission
     # and ingest-lock waits spend it too, so the child gets what is left (less
     # CHILD_GRACE_SECONDS) and still times out before arq cancels the job.
-    deadline = time.monotonic() + JOB_TIMEOUT - CHILD_GRACE_SECONDS
+    # Derived from the per-function timeout arq actually enforces
+    # (_ARQ_FUNCTION_TIMEOUT), so a raised MAX_EFFECTIVE_TIMEOUT is honoured.
+    deadline = time.monotonic() + _ARQ_FUNCTION_TIMEOUT - CHILD_GRACE_SECONDS
     run_id = ctx.get("run_id") or str(uuid.uuid4())
     # Extract filename from staging key: uploads/staging/<job_id>/<filename>
     # Derived before the bind, not thirteen lines into it: doc_name is the one
@@ -185,7 +196,8 @@ async def process_document_job(  # noqa: C901, PLR0915
             # Memory-admission gate: with up to 2 worker pods, wait until the node
             # has headroom for one ~1.9Gi conversion before spawning the child.
             # Fails open (proceeds) on any error or after the wait cap.
-            await wait_for_memory(redis)
+            # RFC-050: the filename selects the floor -- only a PDF is offloaded.
+            await wait_for_memory(redis, filename=filename)
 
             # RFC-038 D2: persist the real effective_timeout_at to Redis as soon as
             # the child's handshake reveals it — before the subprocess completes —
@@ -226,6 +238,55 @@ async def process_document_job(  # noqa: C901, PLR0915
                     on_effective_timeout=_persist_effective_timeout,
                     deadline=deadline,
                 )
+            except IngestLockBusy as exc:
+                # RFC-050 D7 / HR2: another job still holds this file's lock
+                # and the child was NOT spawned. Never convert unlocked --
+                # requeue while tries remain; on the last try record a
+                # terminal error + DLQ marker instead of letting arq exhaust
+                # max_tries silently.
+                job_try = ctx.get("job_try", 1)
+                if job_try < MAX_TRIES:
+                    await _set_job_status(
+                        redis,
+                        job_id,
+                        JobStatus.ERROR,
+                        ttl=JOB_TTL,
+                        reason="ingest_lock_busy",
+                        error=(
+                            f"{exc}; requeued in {INGEST_LOCK_REQUEUE_DEFER_S}s "
+                            f"(try {job_try}/{MAX_TRIES})"
+                        ),
+                        **job_start_fields,
+                    )
+                    logger.warning(
+                        "Ingest lock busy: job=%s requeued in %ss (try %s/%s)",
+                        job_id,
+                        INGEST_LOCK_REQUEUE_DEFER_S,
+                        job_try,
+                        MAX_TRIES,
+                    )
+                    raise Retry(defer=INGEST_LOCK_REQUEUE_DEFER_S) from exc
+                await _set_job_status(
+                    redis,
+                    job_id,
+                    JobStatus.ERROR,
+                    ttl=JOB_TTL,
+                    reason="ingest_lock_busy",
+                    error=f"{exc}; gave up after {MAX_TRIES} tries",
+                    **job_start_fields,
+                )
+                UPLOADS.labels(status="error").inc()
+                await _mirror_bridged_incr("uploads_total:error")
+                logger.error("Ingest lock busy on final try: job=%s; not converted", job_id)
+                await _dlq_push_on_final_attempt(
+                    redis,
+                    job_try=job_try,
+                    job_id=job_id,
+                    staging_key=staging_key,
+                    exc=exc,
+                )
+                cleanup_staging = True
+                return ""
             except ConverterOOMError as exc:
                 await _set_job_status(
                     redis,
@@ -413,6 +474,10 @@ async def process_document_job(  # noqa: C901, PLR0915
                 exc=exc,
             ):
                 cleanup_staging = True
+            raise
+        except Retry:
+            # Deliberate requeue (ingest lock busy): status already written;
+            # not an upload failure, keep staging for the next try.
             raise
         except Exception as exc:
             await _set_job_status(

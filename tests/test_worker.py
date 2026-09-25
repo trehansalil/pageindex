@@ -125,6 +125,37 @@ async def test_worker_01_c3_final_failure_pushed_to_dlq(fake_redis):
     assert entry["staging_key"] == staging_key
     assert "boom" in entry["error"]
 
+    # RFC-050 D7 / HR2: ingest lock still held after the wait budget -> the
+    # child never ran. Non-final try: arq Retry (requeue), status error with
+    # reason ingest_lock_busy, no DLQ, staging kept. Final try: terminal
+    # error + DLQ marker + staging purged, never a silent max_tries exhaust.
+    from arq import Retry
+
+    from pageindex_mcp.storage.ingest_lock import IngestLockBusy
+
+    lock_key = "uploads/staging/job-lock/report.pdf"
+    busy = AsyncMock(side_effect=IngestLockBusy("abc", 900_000))
+    delete_staging = MagicMock(return_value=True)
+    with (
+        patch("pageindex_mcp.worker.job._run_converter_subprocess", busy),
+        patch("pageindex_mcp.worker.job.download_staging"),
+        patch("pageindex_mcp.worker.job.delete_staging", delete_staging),
+        patch("pageindex_mcp.worker.job.shutil"),
+    ):
+        with pytest.raises(Retry):
+            await process_document_job({"redis": fake_redis, "job_try": 1}, lock_key, "job-lock")
+        state = await fake_redis.hgetall("pageindex:job:job-lock")
+        assert (state["status"], state["reason"]) == ("error", "ingest_lock_busy")
+        assert await fake_redis.llen(DLQ_KEY) == 1  # only job-dlq's entry
+        delete_staging.assert_not_called()
+
+        ctx_final = {"redis": fake_redis, "job_try": MAX_TRIES}
+        assert await process_document_job(ctx_final, lock_key, "job-lock") == ""
+    state = await fake_redis.hgetall("pageindex:job:job-lock")
+    assert (state["status"], state["reason"]) == ("error", "ingest_lock_busy")
+    assert json.loads(await fake_redis.lindex(DLQ_KEY, 1))["job_id"] == "job-lock"
+    delete_staging.assert_called_once_with(lock_key)
+
 
 async def test_process_document_job_generic_exception_not_dlq_on_non_final_try(fake_redis):
     staging_key = "uploads/staging/job-g2/report.pdf"
@@ -553,6 +584,19 @@ async def test_effective_timeout_capped_at_max_and_cap_is_configurable():
         result = await _run_converter_subprocess("/tmp/x.pdf")
     assert result["_effective_timeout"] == 100
 
+    # RFC-050: an arq deadline clamps the child's timeout to what is left of
+    # it, re-measured after the handshake; no fixed floor can exceed it.
+    with (
+        patch(
+            "pageindex_mcp.worker.subprocess_mgr.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=_fake_subprocess_with_handshake(handshake, stdout=stdout)),
+        ),
+        _preclassify_on(),
+        patch("pageindex_mcp.worker.subprocess_mgr.CONVERTER_PEAK_RSS_KIB"),
+    ):
+        result = await _run_converter_subprocess("/tmp/x.pdf", deadline=time.monotonic() + 3)
+    assert 0 < result["_effective_timeout"] <= 3
+
 
 # ── RFC-038 D2: early deadline persistence ───────────────────────────────────
 async def test_early_deadline_persisted_before_subprocess_completes(mock_redis):
@@ -970,8 +1014,19 @@ def test_rfc050_d2_resolve_max_jobs_matrix(monkeypatch):
         "settings",
         dataclasses.replace(lc.settings, docling_service_url="http://docling-service:8080"),
     )
+    from pageindex_mcp import config as cfg
+
+    docling_primary = dataclasses.replace(cfg.pipeline_config, pdf_converter="docling")
+    monkeypatch.setattr(cfg, "pipeline_config", docling_primary)
     if lc.resolve_max_jobs(None) != 2:
         failures.append("settings: URL + docling must give 2")
+    # PDF_CONVERTER=pymupdf4llm: local PyMuPDF runs first, so no offload -> 1.
+    monkeypatch.setattr(
+        cfg, "pipeline_config", dataclasses.replace(docling_primary, pdf_converter="pymupdf4llm")
+    )
+    if lc.resolve_max_jobs(None) != 1:
+        failures.append("settings: URL + pymupdf4llm primary must give 1")
+    monkeypatch.setattr(cfg, "pipeline_config", docling_primary)
 
     # URL set but no docling converter entry: the indexer never offloads
     # (use_remote needs the supports_ocr docling entry), so the default stays 1.

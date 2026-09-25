@@ -230,9 +230,9 @@ def _assert_quarantined(mocks, *, sha256, source_path):
     mocks["save_quarantine"].assert_called_once()
     args, kwargs = mocks["save_quarantine"].call_args
     # RFC-050 D3b: the reject reason + defect CODES ride along as keywords.
-    assert set(kwargs) == {"reason", "defects"}, f"unexpected kwargs {kwargs!r}"
-    assert kwargs["reason"] in {"garbling", "node_garbling"}
-    assert kwargs["reason"] in kwargs["defects"], kwargs
+    assert set(kwargs) == {"reject_reason", "defects"}, f"unexpected kwargs {kwargs!r}"
+    assert kwargs["reject_reason"] in {"garbling", "node_garbling"}
+    assert kwargs["reject_reason"] in kwargs["defects"], kwargs
     assert all(isinstance(d, str) for d in kwargs["defects"])
     assert args[0] == sha256, (
         f"quarantine must be keyed by the content sha256 {sha256[:12]}…, got {args[0]!r}"
@@ -508,19 +508,37 @@ class TestSaveQuarantine:
         mc.objects[meta_key] = json.dumps({"filenames": ["old.pdf"]}).encode()
 
         save_quarantine(
-            sha, {}, ["new.pdf"], reason="garbling", defects=["node_count_low", "garbling"]
+            sha,
+            {},
+            ["new.pdf"],
+            reject_reason="garbling",
+            defects=["node_count_low", "garbling"],
         )
         meta = json.loads(mc.objects[meta_key])
         assert meta == {
             "filenames": ["new.pdf", "old.pdf"],
-            "reason": "garbling",
+            "reject_reason": "garbling",
             "defects": ["node_count_low", "garbling"],
         }
 
         save_quarantine(sha, {}, ["third.pdf"])
         meta = json.loads(mc.objects[meta_key])
-        assert meta["reason"] == "garbling" and meta["defects"] == ["node_count_low", "garbling"]
+        assert meta["reject_reason"] == "garbling"
+        assert meta["defects"] == ["node_count_low", "garbling"]
         assert len(meta["filenames"]) == 3
+
+        # Non-garbling reject: meta-only (payload=None) -- the .json payload
+        # is neither written nor touched, and erasure still purges the meta.
+        meta_only = "d3b0002"
+        save_quarantine(
+            meta_only, None, ["s.pdf"], reject_reason="depth_low", defects=["depth_low"]
+        )
+        assert f"quarantine/{meta_only}.json" not in mc.objects
+        assert json.loads(mc.objects[f"quarantine/{meta_only}.meta.json"])["reject_reason"] == (
+            "depth_low"
+        )
+        assert erase_quarantine(meta_only) == []
+        assert not [k for k in mc.objects if k.startswith(f"quarantine/{meta_only}")]
 
         assert erase_quarantine(sha) == []
         assert not [k for k in mc.objects if k.startswith(f"quarantine/{sha}")]

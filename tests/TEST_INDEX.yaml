@@ -92,6 +92,7 @@ mappings:
       - test_staging_e2e.py
 
   storage/ingest_lock.py:
+    coverage_threshold: 90
     tests:
       - test_helpers_combined.py  # primary (RFC-050 D7)
   storage/documents.py:

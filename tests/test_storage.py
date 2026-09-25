@@ -856,6 +856,24 @@ async def test_delete_doc_recovers_doc_name_past_extracted_md_sidecar(mock_minio
     assert "uploads/sidecar01/katzen.pdf.extracted.md" in removed
     assert "preloaded/katzen.pdf" in removed
 
+    # An upload that itself ends in .extracted.md keeps its full name when its
+    # sidecar sits next to it (either listing order).
+    mock_minio.remove_object.reset_mock()
+    pair = [
+        MagicMock(object_name="uploads/sidecar02/notes.extracted.md.extracted.md"),
+        MagicMock(object_name="uploads/sidecar02/notes.extracted.md"),
+    ]
+    mock_minio.list_objects.side_effect = lambda _b, prefix="", **_k: (
+        list(pair) if prefix.startswith("uploads/") else []
+    )
+    with (
+        patch("pageindex_mcp.cache.doc_cache_delete"),
+        patch("pageindex_mcp.storage.reconcile_etag.reconcile_etag_delete"),
+        patch("pageindex_mcp.storage.hash_cache.hash_cache_delete") as mock_hc2,
+    ):
+        await delete_doc("sidecar02")
+    mock_hc2.assert_called_once_with("notes.extracted.md")
+
 
 # --- from test_minio_path_prefix.py ---
 
@@ -1072,6 +1090,17 @@ def test_hash_cache_roundtrip_and_staging_helpers(mock_minio, fake_cache_redis):
     assert call[0][1] == "uploads/staging/job-1/report.pdf"
     assert call.kwargs["content_type"] == "application/octet-stream"
     assert delete_staging("uploads/staging/job-1/report.pdf") is True
+
+    # save_raw content types: PDF upload, RFC-050 D3 markdown sidecar, other.
+    from pageindex_mcp.storage.documents import save_raw
+
+    for name, ctype in (
+        ("report.pdf", "application/pdf"),
+        ("report.pdf.extracted.md", "text/markdown"),
+        ("sheet.xlsx", "application/octet-stream"),
+    ):
+        save_raw("doc-1", name, b"x")
+        assert mock_minio.put_object.call_args.kwargs["content_type"] == ctype, name
 
     # The legacy MinIO hash-cache blob degrades to {} when absent.
     mock_minio.get_object.side_effect = _nosuchkey()
@@ -1563,6 +1592,12 @@ def test_resolve_admission_floor(monkeypatch):
         # URL set but no docling chain entry -> indexer never offloads -> local floor.
         (url, False, ma.MEM_ADMISSION_FLOOR_BYTES),
     ]
+    from pageindex_mcp import config as cfg
+
+    # Pin docling-primary so a developer .env PDF_CONVERTER cannot skew the matrix.
+    monkeypatch.setattr(
+        cfg, "pipeline_config", dataclasses.replace(cfg.pipeline_config, pdf_converter="docling")
+    )
     real_find_spec = importlib.util.find_spec
     base_settings = ma.settings
     failures = []
@@ -1581,6 +1616,36 @@ def test_resolve_admission_floor(monkeypatch):
             failures.append(f"url={docling_service_url!r} docling={have_docling}: got {got}")
         if ma.resolve_admission_floor(True) != ma.MEM_ADMISSION_FLOOR_SERVICE_BYTES:
             failures.append(f"url={docling_service_url!r}: explicit True must give service floor")
+        # Per-route: only a PDF is offloaded; DOCX/PPTX convert locally.
+        if ma.resolve_admission_floor(filename="a.PDF") != expected_floor:
+            failures.append(f"url={docling_service_url!r}: a.PDF must follow the predicate")
+        if ma.resolve_admission_floor(True, filename="a.docx") != ma.MEM_ADMISSION_FLOOR_BYTES:
+            failures.append(f"url={docling_service_url!r}: a.docx must keep the local floor")
+
+    # PDF_CONVERTER=pymupdf4llm puts the local AGPL converter first -> the
+    # heavy conversion is local -> local floor, unless AGPL fallback is off
+    # (then docling is the only chain entry and is offloaded).
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda n, *a: object() if n == "docling" else real_find_spec(n, *a),
+    )
+    patched = dataclasses.replace(base_settings, docling_service_url=url)
+    monkeypatch.setattr(ma, "settings", patched)
+    for pdf_converter, allow_agpl, expected_floor in (
+        ("docling", True, ma.MEM_ADMISSION_FLOOR_SERVICE_BYTES),
+        ("pymupdf4llm", True, ma.MEM_ADMISSION_FLOOR_BYTES),
+        ("pymupdf4llm", False, ma.MEM_ADMISSION_FLOOR_SERVICE_BYTES),
+    ):
+        monkeypatch.setattr(
+            cfg,
+            "pipeline_config",
+            dataclasses.replace(
+                cfg.pipeline_config, pdf_converter=pdf_converter, allow_agpl_fallback=allow_agpl
+            ),
+        )
+        if ma.resolve_admission_floor(filename="a.pdf") != expected_floor:
+            failures.append(f"PDF_CONVERTER={pdf_converter} agpl={allow_agpl}: wrong floor")
     assert not failures, failures
 
 
@@ -1752,9 +1817,15 @@ def test_ensure_quarantine_lifecycle(monkeypatch, caplog):
     """Merge + idempotency across three starting configs, then the never-raises
     contract: missing s3:Get/PutBucketLifecycleConfiguration permission degrades
     to a warning, not a broken get_minio()."""
-    from minio.commonconfig import ENABLED, Filter
+    from minio.commonconfig import DISABLED, ENABLED, Filter
     from minio.lifecycleconfig import Expiration, LifecycleConfig, Rule
 
+    from pageindex_mcp.storage.documents import _quarantine_ttl_days
+
+    # HR5 ceiling: the override is clamped to [1, 30]; junk/<1 -> default 30.
+    for raw, expected in (("365", 30), ("31", 30), ("7", 7), ("0", 30), ("x", 30)):
+        monkeypatch.setenv("QUARANTINE_TTL_DAYS", raw)
+        assert _quarantine_ttl_days() == expected, raw
     monkeypatch.delenv("QUARANTINE_TTL_DAYS", raising=False)
 
     def _applied(client):
@@ -1762,11 +1833,21 @@ def test_ensure_quarantine_lifecycle(monkeypatch, caplog):
         return call.args[1] if len(call.args) > 1 else call.kwargs["config"]
 
     other = Rule(
-        ENABLED, rule_filter=Filter(prefix="uploads/"), rule_id="uploads-90d",
+        ENABLED,
+        rule_filter=Filter(prefix="uploads/"),
+        rule_id="uploads-90d",
         expiration=Expiration(days=90),
     )
     present = Rule(
-        ENABLED, rule_filter=Filter(prefix="quarantine/"), rule_id="quarantine-30d",
+        ENABLED,
+        rule_filter=Filter(prefix="quarantine/"),
+        rule_id="quarantine-30d",
+        expiration=Expiration(days=30),
+    )
+    disabled = Rule(
+        DISABLED,
+        rule_filter=Filter(prefix="quarantine/"),
+        rule_id="quarantine-30d",
         expiration=Expiration(days=30),
     )
     cases = [
@@ -1774,6 +1855,8 @@ def test_ensure_quarantine_lifecycle(monkeypatch, caplog):
         ("empty_config_adds_rule", None, True, set()),
         ("unrelated_rule_kept_and_merged", LifecycleConfig([other]), True, {"uploads-90d"}),
         ("idempotent_second_call_noop", LifecycleConfig([present]), False, set()),
+        # A DISABLED rule with the same id/prefix/days never expires anything.
+        ("disabled_rule_replaced", LifecycleConfig([disabled]), True, set()),
     ]
     failures = []
     for name, existing, expect_set, kept in cases:
@@ -1792,6 +1875,7 @@ def test_ensure_quarantine_lifecycle(monkeypatch, caplog):
             len(q) == 1
             and q[0].rule_filter.prefix == "quarantine/"
             and q[0].expiration.days == 30
+            and q[0].status == ENABLED
             and others == kept
         ):
             failures.append(f"{name}: bad merged config {[r.rule_id for r in config.rules]}")

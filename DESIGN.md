@@ -513,7 +513,11 @@ fan-out operation, not a single API call.
 3. If the document was ingested via `preloaded/`, also remove `preloaded/<filename>`.
 4. **Delete the `doc_registry` row from Postgres: `DELETE FROM doc_registry WHERE doc_id = $1` (RFC-006 D3 / HR2). This is step 6 of `delete_doc()` in `storage.py` and runs automatically when `REGISTRY_ENABLED=true` and `POSTGRES_DSN` is set. Verify completion if `REGISTRY_ENABLED=false` — the row must still be purged manually.**
 5. Confirm with a `GET /upload/status` poll (or MinIO `stat`) that the objects are gone.
-6. Backups: the erased `doc_id`/sha256 goes to the erasure ledger, replayed on any restore (see *Backups and the erasure ledger*).
+6. Backups — **manual, until the RFC-050 Phase 6 ledger exists.** Nothing records erasures today.
+   Purge the `doc_id`'s `uploads/<doc_id>/` objects and its `doc_registry` row from **every existing
+   backup or snapshot** by hand (none is known to exist as of 2026-09-24; check anyway). Once Phase 6
+   lands, this step becomes: the erased `doc_id`/sha256 is appended to the erasure ledger and replayed
+   on any restore (see *Backups and the erasure ledger*).
 
 ### Documents that were rejected, not stored
 
@@ -531,7 +535,11 @@ The erasure path for these is by sha256:
 2. Run `scripts/erase-quarantine.sh <sha256>`. It validates the argument as 64 hex characters, calls
    `erase_quarantine(sha256)` — the same implementation the `delete_doc` cascade uses — and exits
    non-zero if any delete reported an error.
-3. Record the sha256 in the erasure ledger per HR2, so any backup restore replays it (see below).
+3. Backups: none needed for quarantine — `quarantine/` is never backed up, and a rejected document's
+   staged input is deleted on terminal rejection, so no backup holds it (quarantine is intentionally
+   non-restorable). If the same bytes were ever *persisted* under a `doc_id`, purge that `doc_id`
+   from existing backups manually per step 6 above. (Once the Phase 6 ledger exists, the sha256 is
+   recorded there too.)
 
 No MCP tool or HTTP route exposes this; it is an operator-only path, by design, because the
 quarantine store is unserved.
@@ -549,7 +557,10 @@ instead each erasure (`delete_doc`, `erase_quarantine`) appends its `doc_id` / s
 **erasure ledger**, and the ledger is replayed against any restore **before** the restored data is
 served. The 30-day retention (equal to the GDPR DSR deadline) bounds how long an erased document can
 survive in a backup. Until Phase 6 lands there is no backup job and no ledger — the automated
-fan-out above only touches the live MinIO bucket, Redis and Postgres.
+fan-out above only touches the live MinIO bucket, Redis and Postgres, so **any backup or snapshot
+that does exist must be purged manually** on every erasure (fan-out step 6). This manual instruction
+stays until the ledger write and restore-time replay are implemented. `quarantine/` is excluded from
+backups and is intentionally non-restorable: rejected inputs are not backed up.
 
 ### Design constraint
 

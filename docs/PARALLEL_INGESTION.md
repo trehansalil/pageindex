@@ -129,22 +129,45 @@ Steps 2 and 3 change production memory behaviour and need an explicit decision.
 ## Deployment sizing (RFC-050)
 
 The in-cluster docling-service pod moves Docling's RSS off the worker, not off
-the node: both land on the same single k3s node (`portfolio`, 7.6 GB RAM,
+the node: both land on the same single k3s node (`portfolio`, today 7.6 GB RAM,
 allocatable 7,937,228 Ki ≈ 7.57 GiB), next to redis, postgres and minio.
+
+**Infra decision (2026-09-25): resize the current server, not a second node.**
+The node stays single; its RAM is raised in place. The figures below are the
+**pre-resize** node, and the fit check must be redone against the resized
+allocatable. The resize happens **before** the G1 baseline arm (Task 9.1), so
+the baseline and post arms run on the same hardware — a resize between the two
+arms would contaminate the ≥30 % comparison.
 
 | Pod | Replicas | Memory request | Memory limit | Concurrency knob |
 |---|---|---|---|---|
-| `docling-service` (`services/docling-service`, uvicorn `--workers 1`, :8080) | 1 | ~2.5Gi | ~3.5Gi | one conversion at a time; ~2 GB peak RSS per its README |
+| `docling-service` (`services/docling-service`, uvicorn `--workers 1`, :8080) | 1 | ~2.5Gi | ~3.5Gi | **not serialized** — see below; ~2 GB peak RSS per conversion per its README |
 | `pageindex-mcp-worker` | KEDA 1↔2 (`maxReplicaCount: 2`) | ~1Gi | ~1.5Gi | `PAGEINDEX_WORKER_MAX_JOBS=2` — the default once `config.docling_offload_configured()` is true (§4) |
 | worker admission floor | — | — | — | `MEM_ADMISSION_FLOOR_SERVICE_BYTES` = 800 MiB (838860800) |
+
+**docling-service concurrency — open item.** One uvicorn worker does **not**
+serialize conversions: both conversion endpoints run the work via
+`asyncio.to_thread` (`services/docling-service/app.py`) with no service-side
+limit, so concurrent requests convert concurrently in the same pod. With KEDA
+at 2 worker replicas × `MAX_JOBS=2`, up to **N = 4** conversions can be in
+flight at once — ~4 × 2 GB peak against a 3.5 Gi limit, i.e. an OOM kill of
+the service pod, not a queue. Before `MAX_JOBS=2` ships, one of these must
+hold: (a) the service caps its own concurrency (e.g. a semaphore of 1 around
+the conversion, which makes the ~3.5 Gi sizing above correct), or (b) the
+service limit is sized for N concurrent conversions (N × ~2 GB plus model
+baseline), which the resized node must then accommodate. The ~3.5 Gi figure
+assumes (a).
 
 Fit check against the node's scheduled requests on 2026-09-24 (2,904 Mi,
 including today's 512 Mi worker request): replacing that with 2 × 1 Gi
 workers and adding 2.5 Gi for docling-service gives ≈ 7,000 Mi of requests,
-≈ 90 % of allocatable. A second KEDA replica still schedules, but with little
-room left, so anything else added to the node can leave it `Pending`. Limits
-are overcommitted (already 154 % today) — so the cgroup-aware admission gate
-(§4) is what holds a pod inside its limit, not the scheduler.
+≈ 90 % of the pre-resize allocatable — the reason for the resize. Limits are
+overcommitted (already 154 % today), and nothing keeps a pod inside its limit
+except the limit itself. The cgroup-aware admission gate (§4) is
+**best-effort**, not a guarantee: it checks a headroom floor once, releases
+its lock before the job runs, and after `MEM_ADMISSION_MAX_WAIT_S` (default
+120 s) proceeds fail-open even without headroom. The cgroup limit remains the
+only hard cap, and a pod that exceeds it is OOM-killed.
 
 Two figures are **assumptions, not measurements**. The 1.5 Gi worker limit
 assumes the service-path child peaks well under the 1.9–3.1 GiB local-Docling

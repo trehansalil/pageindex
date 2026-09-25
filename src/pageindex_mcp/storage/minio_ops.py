@@ -33,8 +33,8 @@ def ensure_prefix_expiry(client: Minio, bucket: str, rule_id: str, prefix: str, 
     minio-py's set_bucket_lifecycle REPLACES the whole configuration, so this
     is read-merge-write against whatever lifecycle config already exists:
     other rules are preserved, a stale rule with the same id is replaced, and
-    the call is a no-op when the rule is already present with the same
-    prefix/days (idempotent, safe to call on every get_minio()).
+    the call is a no-op when the rule is already present, ENABLED, with the
+    same prefix/days (idempotent, safe to call on every get_minio()).
 
     Never raises: a missing s3:GetBucketLifecycleConfiguration /
     PutBucketLifecycleConfiguration permission must not break ingestion.
@@ -54,7 +54,8 @@ def ensure_prefix_expiry(client: Minio, bucket: str, rule_id: str, prefix: str, 
                 if rule.rule_id == rule_id:
                     current_prefix = rule.rule_filter.prefix if rule.rule_filter else None
                     current_days = rule.expiration.days if rule.expiration else None
-                    if current_prefix == prefix and current_days == days:
+                    # A DISABLED rule never expires anything: replace it.
+                    if current_prefix == prefix and current_days == days and rule.status == ENABLED:
                         already_present = True
                     # else: drop it, the merged rule below replaces it
                 else:
