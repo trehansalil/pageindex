@@ -322,6 +322,7 @@ P0 ships first because every later acceptance criterion is verified through its 
 | Page-class OCR skip hides a corrupt text layer | Garble screen in the text-layer test (R2 AC5); HR5 `force_full_page_ocr` escalation unchanged (R3 AC4) |
 | FAST TableFormer degrades tables silently | R4 AC4 gate; default unchanged without evidence |
 | Loki exposed beyond the tailnet, or its query/delete API exposed on it | Gateway listens only on the Tailscale address and forwards only push and ready (403 otherwise); Tailscale ACLs |
+| Loki keeps doc identifiers after a DSR delete (HR2) | `delete_doc` step 8 `loki_logs` files in-cluster `/loki/api/v1/delete` requests for `doc_id`, `doc_sha8` and `doc_name_sha8` (`PAGEINDEX_LOKI_URL`); 72 h retention is the backstop; unset URL → `partial_purge` |
 | Loki disk: host at 83% | 72 h retention kept; drop noise (R1 AC3); alert at 90% |
 | The Mac's `BLOCK_PRIVATE_URLS=1` needs public presigned URLs | Unchanged from today's path; the coordinator presigns per shard with the same client |
 
