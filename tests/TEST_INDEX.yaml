@@ -574,6 +574,9 @@ mappings:
   obs/log_config.py:
     tests:
       - test_obs_logging.py primary
+  obs/loki.py:
+    tests:
+      - test_obs_logging.py primary
   obs/phases.py:
     tests:
       - test_obs_logging.py primary

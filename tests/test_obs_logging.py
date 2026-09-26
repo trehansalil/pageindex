@@ -865,6 +865,22 @@ def test_docling_service_binds_correlation_headers_and_logs_json(docling_service
         for m in docling_service_app.app.user_middleware
     )
 
+    # /health in_flight (the Mac updater restarts only at 0): /convert/* only.
+    in_flight: list = []
+
+    async def probe(scope, receive, send):
+        in_flight.append((await docling_service_app.health())["in_flight"])
+
+    counter = docling_service_app.InFlightMiddleware(probe)
+    asyncio.run(counter({"type": "http", "path": "/convert/pdf"}, None, None))
+    asyncio.run(counter({"type": "http", "path": "/health"}, None, None))
+    assert in_flight == [1, 0]
+    assert asyncio.run(docling_service_app.health()) == {"status": "ok", "in_flight": 0}
+    assert any(
+        m.cls is docling_service_app.InFlightMiddleware
+        for m in docling_service_app.app.user_middleware
+    )
+
     root = logging.getLogger()
     assert any(isinstance(h.formatter, obs.JsonFormatter) for h in root.handlers)
     for name in docling_service_app.UVICORN_LOGGERS:
@@ -946,15 +962,17 @@ class TestLogConfigEnvSurface:
 
     def test_defaults_and_env_overrides_are_resolved_at_import(self, monkeypatch, tmp_path):
         import importlib
-        from logging.handlers import WatchedFileHandler
+        from logging.handlers import RotatingFileHandler
 
         from pageindex_mcp.obs import log_config
+        from pageindex_mcp.obs.loki import LokiPushHandler
 
         env_vars = (
             "PAGEINDEX_LOG_LEVEL",
             "PAGEINDEX_LOG_DECISIONS",
             "PAGEINDEX_LOG_CONTENT",
             "PAGEINDEX_LOG_FILE",
+            "PAGEINDEX_LOKI_PUSH_URL",
         )
         root = logging.getLogger()
         saved_root = (list(root.handlers), root.level)
@@ -967,19 +985,29 @@ class TestLogConfigEnvSurface:
             assert mod.LOG_CONTENT_WIDENED is False
             assert mod.LOG_FILE is None
 
-            # RFC-052 task 1.10: the Mac service logs to a file newsyslog
-            # rotates; WatchedFileHandler follows the rename, JSON unchanged.
+            # RFC-052 task 1.10: the Mac service logs to a file it rotates
+            # itself (10 MB x 5, no newsyslog/sudo) and, with a push URL, also
+            # ships to Loki from the process. JSON unchanged in the file.
             log_file = tmp_path / "service.log"
             monkeypatch.setenv("PAGEINDEX_LOG_FILE", str(log_file))
+            monkeypatch.setenv("PAGEINDEX_LOKI_PUSH_URL", "http://127.0.0.1:9/loki/api/v1/push")
+            monkeypatch.setenv("DOCLING_BACKEND_NAME", "mac")
             mod = importlib.reload(log_config)
             mod.configure()
-            (handler,) = [h for h in root.handlers if getattr(h, mod.HANDLER_MARKER, False)]
-            assert isinstance(handler, WatchedFileHandler)
+            ours = [h for h in root.handlers if getattr(h, mod.HANDLER_MARKER, False)]
+            (handler,) = [h for h in ours if isinstance(h, RotatingFileHandler)]
+            assert (handler.maxBytes, handler.backupCount) == (10 * 1024 * 1024, 5)
+            (loki,) = [h for h in ours if isinstance(h, LokiPushHandler)]
+            assert loki.labels == {"host": "mac", "service": "docling-service"}
+            assert len(ours) == 2
             logging.getLogger("test.logfile").info("to file")
             handler.flush()
             assert json.loads(log_file.read_text().splitlines()[-1])["msg"] == "to file"
-            handler.close()
+            loki.shutdown_timeout = 0.1  # the endpoint is a closed port
+            for h in ours:
+                h.close()
             monkeypatch.delenv("PAGEINDEX_LOG_FILE")
+            monkeypatch.delenv("PAGEINDEX_LOKI_PUSH_URL")
 
             monkeypatch.setenv("PAGEINDEX_LOG_LEVEL", "debug")
             monkeypatch.setenv("PAGEINDEX_LOG_DECISIONS", "off")
@@ -1028,6 +1056,192 @@ class TestLogConfigEnvSurface:
             if _parse_switch(raw, default=True) is not exp
         ]
         assert not failures, "env parse mismatches:\n  " + "\n  ".join(failures)
+
+
+class _LokiSink:
+    """A Loki stand-in on 127.0.0.1 that records every pushed JSON body."""
+
+    def __init__(self, status: int = 204):
+        import http.server
+        import threading
+
+        bodies: list = []
+        self.bodies = bodies
+
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", 0))
+                bodies.append(json.loads(self.rfile.read(length)))
+                self.send_response(status)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_port}/loki/api/v1/push"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def values(self) -> list:
+        return [v for body in self.bodies for s in body["streams"] for v in s["values"]]
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def _loki_logger(url: str, **kwargs):
+    """A LokiPushHandler wired exactly as ``configure()`` wires it, on a
+    private non-propagating logger."""
+    import uuid
+
+    from pageindex_mcp import obs
+    from pageindex_mcp.obs.loki import LokiPushHandler
+
+    handler = LokiPushHandler(url, labels={"host": "mac", "service": "docling-service"}, **kwargs)
+    handler.setFormatter(obs.JsonFormatter())
+    handler.addFilter(obs.ContextFilter())
+    logger = logging.getLogger(f"test.loki.{uuid.uuid4().hex}")
+    logger.propagate = False
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(handler)
+    return handler, logger
+
+
+def _access_record(path: str) -> logging.LogRecord:
+    return logging.LogRecord(
+        "uvicorn.access", logging.INFO, __file__, 0, '%s - "%s %s HTTP/%s" %d',
+        ("100.64.0.1:5", "GET", path, "1.1", 200), None,
+    )  # fmt: skip
+
+
+class TestLokiPushHandler:
+    """RFC-052 task 1.10: the in-process Loki push that replaced Alloy."""
+
+    def test_batches_and_ships_ids_as_structured_metadata_not_labels(self):
+        from pageindex_mcp.obs import bind_log_context
+
+        sink = _LokiSink()
+        handler, logger = _loki_logger(sink.url, batch_size=3, flush_interval=60)
+        try:
+            with bind_log_context(job_id="j-1", doc_sha8="abcd1234", run_id="r-9"):
+                for i in range(6):
+                    logger.info("line %d", i)
+            for path in ("/health", "/metrics", "/convert/pdf"):  # probes dropped
+                handler.handle(_access_record(path))
+        finally:
+            handler.close()  # drains the last, partial batch
+            sink.close()
+
+        assert [len(body["streams"][0]["values"]) for body in sink.bodies] == [3, 3, 1]
+        streams = [s for body in sink.bodies for s in body["streams"]]
+        assert {tuple(sorted(s["stream"])) for s in streams} == {
+            ("host", "kind", "level", "service")
+        }
+        values = sink.values()
+        msgs = [json.loads(v[1])["msg"] for v in values]
+        assert msgs[:6] == [f"line {i}" for i in range(6)]
+        # Only the /convert/pdf access line survives (the formatter scrubs
+        # the path itself down to its basename).
+        assert len(msgs) == 7 and '"GET pdf HTTP/1.1"' in msgs[6]
+        ids = {"job_id": "j-1", "doc_sha8": "abcd1234", "run_id": "r-9"}
+        assert all(v[2] == ids for v in values[:6])
+        assert len(values[6]) == 2  # nothing bound -> no metadata element
+        assert all(int(v[0]) > 10**18 for v in values)  # unix nanoseconds
+
+    def test_full_queue_drops_oldest_and_counts(self):
+        sink = _LokiSink()
+        handler, logger = _loki_logger(sink.url, batch_size=100, flush_interval=60, max_queue=3)
+        try:
+            for i in range(5):
+                logger.info("line %d", i)
+            assert handler.dropped == 2
+        finally:
+            handler.close()
+            sink.close()
+        assert [json.loads(v[1])["msg"] for v in sink.values()] == ["line 2", "line 3", "line 4"]
+
+    @pytest.mark.parametrize("failure", ["connection_refused", "http_500"])
+    def test_endpoint_down_never_raises_and_reports_once(self, failure, capfd):
+        import socket
+        import time
+
+        sink = _LokiSink(status=500) if failure == "http_500" else None
+        if sink is None:
+            with socket.socket() as s:
+                s.bind(("127.0.0.1", 0))
+                port = s.getsockname()[1]
+            url = f"http://127.0.0.1:{port}/loki/api/v1/push"
+        else:
+            url = sink.url
+        handler, logger = _loki_logger(
+            url, batch_size=1, flush_interval=0.01, max_backoff=0.02, shutdown_timeout=1.0
+        )
+        try:
+            for i in range(20):
+                logger.info("line %d", i)  # must neither raise nor block
+            time.sleep(0.3)  # several failed attempts with backoff
+            if sink is not None:
+                assert len(sink.bodies) >= 2  # 5xx is retried
+        finally:
+            handler.close()
+            if sink is not None:
+                sink.close()
+        assert handler.sent == 0 and handler.dropped == 20
+        assert capfd.readouterr().err.count("loki push") == 1  # rate-limited
+
+    def test_erasure_delete_requests_are_windowed_escaped_and_never_echo_the_id(self):
+        """ERASE-01-C5 (HR2): one POST per identifier to the delete API, over
+        [now - lookback, now], with the needle quoted so it cannot widen the
+        selector; a refused or failed request is an error that does not quote
+        the identifier; an empty needle (which would match every line) is
+        refused before anything is sent."""
+        import urllib.error
+        import urllib.parse
+
+        from pageindex_mcp.obs.loki import erasure_line_filters, request_log_deletion
+
+        sent: list[urllib.request.Request] = []
+
+        class _Ok:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return b""
+
+        def _opener(request, timeout):
+            sent.append(request)
+            if len(sent) == 2:
+                raise urllib.error.HTTPError(request.full_url, 400, "bad", {}, None)
+            return _Ok()
+
+        hostile = 'doc-1234" } |= "'
+        needles = erasure_line_filters(hostile, doc_sha8="19aad2bc", doc_name_sha8="5108f1b2")
+        assert needles[1:] == ['"doc_sha8": "19aad2bc"', '"doc_name_sha8": "5108f1b2"']
+        errors = request_log_deletion(
+            "http://loki:3100/", [*needles, ""], lookback_s=3600, now=10_000, urlopen=_opener
+        )
+
+        assert len(sent) == 3  # the empty needle never left the process
+        queries = []
+        for request in sent:
+            assert request.get_method() == "POST"
+            url = urllib.parse.urlsplit(request.full_url)
+            assert url.path == "/loki/api/v1/delete"
+            params = dict(urllib.parse.parse_qsl(url.query))
+            assert (params["start"], params["end"]) == ("6400", "10000")
+            queries.append(params["query"])
+        assert queries[0] == '{service=~".+"} |= "doc-1234\\" } |= \\""'
+        assert queries[1] == '{service=~".+"} |= "\\"doc_sha8\\": \\"19aad2bc\\""'
+        assert errors == [
+            "request 2/4: Loki answered HTTP 400",
+            "request 4/4: refused a line filter shorter than 8",
+        ]
+        assert not any("19aad2bc" in e or "doc-1234" in e for e in errors)
 
 
 class TestDecisionsKillSwitch:

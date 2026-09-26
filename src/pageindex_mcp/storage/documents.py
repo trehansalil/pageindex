@@ -245,7 +245,8 @@ async def delete_doc(doc_id: str) -> dict:
        3. processed/<doc_id>.meta.json  4. Redis pageindex:doc:<doc_id>
        4b. reconcile-etag map entry  5. hash-cache entry for the filename
        6. Postgres registry row (awaited with a timeout, never fire-and-forget)
-       7. preloaded/<doc_name> raw object (NoSuchKey tolerated).
+       7. preloaded/<doc_name> raw object (NoSuchKey tolerated)
+       8. Loki log lines naming the doc (delete request; needs PAGEINDEX_LOKI_URL).
 
     Idempotent (C2: missing objects tolerated). Returns {"errors": [...]} --
     every individual store failure is reported to the caller, never raised
@@ -276,7 +277,7 @@ async def delete_doc(doc_id: str) -> dict:
                     f"_ERASURE_MANIFEST entry is {type(entry).__name__}, expected ErasureStep"
                 )
             try:
-                # Sync steps go to a worker thread so an HR2 cascade -- twelve
+                # Sync steps go to a worker thread so an HR2 cascade -- thirteen
                 # stores, each a blocking network round-trip -- does not pin
                 # the event loop. Awaiting the to_thread call keeps the
                 # manifest strictly sequential, which HR2 ordering requires.
@@ -721,8 +722,51 @@ def _erase_quarantine(ctx: ErasureContext) -> bool:
     return ok_data and ok_meta
 
 
+def _erase_loki_logs(ctx: ErasureContext) -> bool:
+    """Step 8: Loki log lines naming this document (RFC-052 / HR2).
+
+    Every obs JSON line carries ``doc_id`` / ``doc_sha8`` / ``doc_name_sha8``
+    -- promtail ships the cluster's, and the Mac docling-service pushes its own
+    -- so Loki is a derived store. One delete request per identifier goes to
+    the in-cluster Loki (``PAGEINDEX_LOKI_URL``); the Tailscale gateway is
+    push-only by design. Runs last: it needs ``ctx.sha256`` (resolved by the
+    verdicts step) and ``ctx.doc_name``, and every earlier step's own
+    ``ERASE <doc_id>`` lines fall inside the window. Both are used when known,
+    never required -- the ``doc_id`` request always goes out.
+
+    Unset URL -> not reached (``partial_purge``), so a deployment that forgot
+    to configure it cannot report a clean cascade. A rejected or failed
+    request -> ``errors``, like every other store.
+    """
+    if not settings.loki_url:
+        logger.info(
+            "ERASE %s step8: PAGEINDEX_LOKI_URL unset; Loki log lines are not purged",
+            ctx.doc_id,
+        )
+        return False
+
+    from ..obs.loki import erasure_line_filters, request_log_deletion  # lazy: obs dep
+    from ..obs.redact import hash_doc_name
+
+    needles = erasure_line_filters(
+        ctx.doc_id,
+        doc_sha8=ctx.sha256[:8] if ctx.sha256 else None,
+        doc_name_sha8=hash_doc_name(ctx.doc_name),
+    )
+    failures = request_log_deletion(
+        settings.loki_url,
+        needles,
+        lookback_s=settings.loki_erasure_lookback_h * 3600,
+    )
+    if failures:
+        ctx.errors.extend(f"loki: {failure}" for failure in failures)
+        return False
+    logger.info("ERASE %s step8: filed %d Loki delete request(s)", ctx.doc_id, len(needles))
+    return True
+
+
 # Ordering is the CLAUDE.md HR2 contract: uploads -> processed -> meta ->
-# quarantine -> Redis -> hash-cache -> registry -> preloaded.  Adding a
+# quarantine -> Redis -> hash-cache -> registry -> preloaded -> Loki.  Adding a
 # derived store is a one-line entry here plus its _erase_* coroutine; the
 # driver in delete_doc needs no change.
 _ERASURE_MANIFEST: tuple[ErasureStep, ...] = (
@@ -813,6 +857,16 @@ _ERASURE_MANIFEST: tuple[ErasureStep, ...] = (
         execute=_erase_preloaded,
         required=False,  # RFC-011 D2: not all docs have one
         consumes=frozenset({"ctx.doc_name"}),  # D4
+    ),
+    ErasureStep(
+        name="loki_logs",
+        step=8,
+        description="Loki log lines carrying doc_id / doc_sha8 / doc_name_sha8 (delete API)",
+        execute=_erase_loki_logs,
+        # Optional only because a deployment may ship no logs to Loki at all
+        # (PAGEINDEX_LOKI_URL unset). An unreached step still flips
+        # partial_purge and logs a WARNING; a failed request is an error.
+        required=False,
     ),
 )
 

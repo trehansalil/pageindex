@@ -42,7 +42,8 @@ def install_json_logging() -> None:
     it imports this module, so they are stripped here and left to propagate
     to root. Idempotent; called at import and again in ``lifespan`` in case a
     launcher re-applied its own config in between. /health and /metrics
-    access lines are kept -- as JSON, which promtail can drop by pattern.
+    access lines are kept -- as JSON, which promtail can drop by pattern (the
+    in-process Loki push, ``obs/loki.py``, drops them itself).
     """
     configure_obs_logging()
     for name in UVICORN_LOGGERS:
@@ -235,8 +236,35 @@ class CorrelationMiddleware:
             await self.app(scope, receive, send)
 
 
+#: /convert/* requests currently inside the app -- downloading, queued on
+#: ``_convert_slots`` or converting. Reported by /health so the Mac updater
+#: (``macos/update.sh``) restarts the service only when it is 0. Touched only
+#: on the event loop thread, so a plain int is safe.
+_in_flight = 0
+
+
+class InFlightMiddleware:
+    """Pure ASGI middleware counting in-flight /convert/* requests."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        global _in_flight
+
+        if scope.get("type") != "http" or not str(scope.get("path", "")).startswith("/convert/"):
+            await self.app(scope, receive, send)
+            return
+        _in_flight += 1
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _in_flight -= 1
+
+
 app = FastAPI(title="Docling Conversion Service", lifespan=lifespan)
 app.add_middleware(CorrelationMiddleware)
+app.add_middleware(InFlightMiddleware)
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +324,7 @@ def _serialize_picture_result(pr: dict) -> dict:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "in_flight": _in_flight}
 
 
 @app.get("/version")
