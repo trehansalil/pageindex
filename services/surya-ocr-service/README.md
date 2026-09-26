@@ -1,10 +1,10 @@
 # surya-ocr-service
 
-FastAPI wrapper around **Surya OCR** for the RFC-046 OCR engine evaluation.
-It exposes `/ocr/image` and `/ocr/pdf`, runs layout + recognition locally in
-the container, and returns the same JSON contract as the other two OCR
-services under evaluation (PP-OCRv5 on 8202, `paddleocr-vl-service` on
-8204), so the eval script can compare all three side by side.
+FastAPI wrapper around **Surya OCR**, originally built for the RFC-046 OCR
+engine evaluation. It exposes `/ocr/image` and `/ocr/pdf` and runs layout +
+recognition locally in the container. It is the sole remaining OCR sidecar:
+the other two evaluation services and the eval script that compared them
+were deleted by RFC-051.
 
 `app.py` is the only supported code path and the source of truth for how
 this service behaves.
@@ -27,8 +27,8 @@ see **ADR-006** in `ARCHITECTURE.md`. It holds only while this service stays
 what it is today — an internal-only evaluation sidecar behind no public
 ingress, built and deployed by no workflow in `.github/workflows/`.
 
-**Note the exposure this service actually has.** Unlike the other OCR
-sidecars it carries **no `profiles:` entry** in `docker-compose.yml` — the
+**Note the exposure this service actually has.** It carries **no
+`profiles:` entry** in `docker-compose.yml` — the
 `ocr-spike` gate was removed deliberately for RFC-048
 (`audit/CORPUS_REINGESTION_AUDIT_RUN-21_RFC048.md:31`). So both a bare
 `docker compose up` **and** `docker compose --profile app up` start it, and
@@ -40,9 +40,8 @@ nothing inside the service limits who can reach it — the **compose port
 mapping is the only bound**. It is published as `127.0.0.1:8207:8207`,
 loopback only. This matters: a plain `"8207:8207"` publishes on every host
 interface, which would put an AGPL-3.0 rasterizer on the LAN with no opt-in.
-Every consumer uses `http://localhost:8207`
-(`src/pageindex_mcp/config.py:351`, `scripts/ocr_spike_eval.py:47`), so the
-loopback binding costs nothing.
+The only consumer uses `http://localhost:8207`
+(`src/pageindex_mcp/config.py:351`), so the loopback binding costs nothing.
 
 **Widening that mapping, or putting this service behind any ingress, voids
 ADR-006** — swap the rasterizer to `pypdfium2` first.

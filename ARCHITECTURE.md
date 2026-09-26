@@ -767,6 +767,11 @@ The `validate_tree` thresholds must be **calibrated before** the gate is wired a
   current provider docs at deployment time.
 
 ### ADR-006 — PyMuPDF in the OCR sidecar services (HR4)
+- **Update (2026-09-24, RFC-051).** The `ocr-spike` evaluation trio — `services/paddleocr-service`,
+  `services/docling-ocr-service`, and `services/paddleocr-vl-service` — was removed as part of RFC-051
+  codebase trimming; `scripts/ocr_spike_eval.py`, their only consumer, was deleted with them.
+  `services/surya-ocr-service` remains live and continues to carry the AGPL exposure and terms recorded
+  below; the `paddleocr-vl-service` mentions below describe the sidecar as it existed before removal.
 - **Context.** The RFC-046 OCR engine evaluation added two FastAPI sidecars, `services/surya-ocr-service`
   and `services/paddleocr-vl-service`. Both rasterize PDF input for their `/ocr/pdf` endpoint through
   **PyMuPDF** (`fitz`): open the byte stream, read `page_count`, render each page to a PIL image
@@ -784,9 +789,10 @@ The `validate_tree` thresholds must be **calibrated before** the gate is wired a
   (`profiles: ["app"]`) does not start in the first case. It is the most easily-started AGPL surface in
   the compose file. Both containers listen on `0.0.0.0` internally (their Dockerfile `uvicorn --host`),
   so what actually bounds the exposure is the compose port mapping, and both are therefore published as
-  **`127.0.0.1:8204:8204` and `127.0.0.1:8207:8207`** — loopback only. A bare `"8207:8207"` publishes on
-  all host interfaces, which would put an AGPL rasterizer on the LAN with no opt-in; every consumer uses
-  `http://localhost:<port>` (`config.py:351`, `scripts/ocr_spike_eval.py:46-47`), so the narrowing costs
+  **`127.0.0.1:8204:8204` and `127.0.0.1:8207:8207`** — loopback only (the `8204` mapping went with
+  `paddleocr-vl-service` in RFC-051; only `127.0.0.1:8207:8207` remains). A bare `"8207:8207"` publishes on
+  all host interfaces, which would put an AGPL rasterizer on the LAN with no opt-in; the surviving 8207
+  consumer uses `http://localhost:8207` (`config.py:351`), so the narrowing costs
   nothing. Widening either mapping back to all interfaces is a change to this term, not a deployment
   detail;
   (2) **neither is built or deployed by any workflow** in `.github/workflows/`;

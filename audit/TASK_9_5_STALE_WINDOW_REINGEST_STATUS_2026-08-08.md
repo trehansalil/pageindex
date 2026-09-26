@@ -1,5 +1,7 @@
 # Task 9.5 / RFC-034 D12: Stale-Window Doc Re-ingestion — Status
 
+> **Historical (2026-09-25):** `scripts/table_separator_baseline.py` was deleted by RFC-051 D1. The commands below no longer run; this report is kept as a record only.
+
 ## Status: NOT EXECUTED — blocked on unmet prerequisites, no remote infra route from this sandbox
 
 RFC-034 D12 and Task 9.5 require, in order, before re-ingesting the German

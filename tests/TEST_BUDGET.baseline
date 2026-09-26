@@ -55,4 +55,9 @@
 #                  tests, folded tests/test_registry_backfill.py into
 #                  tests/test_registry.py (-2 exact duplicates). 28 -> 27
 #                  files. Measured with `uv run pytest --collect-only -q`.
-952
+# 2026-09-24  942  ICR-97 RFC-051 D1: -10. Deleted scripts/ocr_spike_eval.py
+#                  (sole consumer of the ocr-spike compose profile and its
+#                  three services) together with its 10 tests in
+#                  tests/test_ocr_fallback.py. Measured with
+#                  `pytest --collect-only -q`.
+942

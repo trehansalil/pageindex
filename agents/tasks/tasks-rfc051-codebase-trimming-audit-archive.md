@@ -30,9 +30,77 @@ governs:
 
 ## Overview
 
+**Current contract (2026-09-24, Iter 9)**
+
+Implements RFC-051 across two waves only: dead script deletion (`table_separator_baseline.py`, `ocr_spike_eval.py` + their compose/service/test residue) and an explicit-list stale audit archival. `facade_surface_measure.py` is kept. Test merge residue cleanup (D3) and decision_points.py YAML extraction (D4) are dropped; the hash-cache legacy removal moves to a separate operator task. Total effort ~3h.
+
+<details><summary>Amendment history (Iter 7-8 overview, superseded)</summary>
+
 Implements RFC-051 across four waves: dead script deletion, stale audit archival, test merge residue cleanup, and decision_points.py data extraction to YAML. All changes are subtractive or structural — no new features. Proceeds from lowest-risk deletions through archival to the highest-risk refactor (decision_points extraction), with full test suite verification at each checkpoint. Target: ~19,500–21,500 lines removed or archived.
 
+</details>
+
 ## Tasks
+
+**Current contract (2026-09-24, Iter 9)**
+
+- [ ] 1. Wave 1 — Dead Script Deletion (D1, minimal scope)
+
+  - [ ] 1.1 Verify zero callers
+    - For `scripts/table_separator_baseline.py` and `scripts/ocr_spike_eval.py`: run `search_graph` for zero code-graph references, and grep for zero string references (Python, YAML, Makefile).
+    - **(Amendment 2026-09-25, PR #25 review):** the zero-string-reference check also covers `docker-compose.yml`, `.github/` and live service READMEs (`services/surya-ocr-service/README.md`), and docstrings/comments in `tests/` — the retained `tests/test_ocr_fallback.py` header names the removed harness generically. Exempt as historical records, left unedited: prior RFC/design/task/plan files under `agents/`, reports under `audit/`, and the dated history comments in `tests/TEST_BUDGET.baseline`. `audit/` reports that still instruct running a deleted script (`audit/TASK_9_5_STALE_WINDOW_REINGEST_STATUS_2026-08-08.md`, `audit/TABLE_SEPARATOR_BASELINE_2026-08-08.md`, `audit/OCR_SPIKE_EVALUATION_REPORT.md`, `audit/DEAD_CODE_AUDIT_2026-09-07.md`) carry a historical marker instead.
+    - `facade_surface_measure.py` is OUT OF SCOPE — no verification needed, it is kept.
+    - `hash_cache_migrate.py` is OUT OF SCOPE — moved to a separate operator task (see Notes).
+    - Verify the `ocr-spike` service directories: grep for `paddleocr-service`, `paddleocr-vl-service` and `docling-ocr-service` outside `audit/`, `agents/` and `.git/`. Expected users: `docker-compose.yml:225-294`, `scripts/ocr_spike_eval.py`, `ARCHITECTURE.md:771-780`.
+    - _Requirements: [RFC-051 R1](../rfcs/051-codebase-trimming-audit-archive.md#requirement-1-dead-script-deletion) — [Property 1](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-1-zero-caller-guarantee)_
+
+  - [ ] 1.2 Remove `ocr_spike_eval.py`'s test/config references
+    - Remove the argv-building references in `tests/test_ocr_fallback.py` (lines 6, 15, 36, 824, 827, 922).
+    - Remove `tests/TEST_INDEX.yaml:627` (and any other `ocr_spike_eval` entry).
+    - Remove the `docker-compose.yml:225-294` `ocr-spike` profile block in full (`paddleocr-service`, `docling-ocr-service`, `paddleocr-vl-service`), stopping before the Surya comment at :296.
+    - `table_separator_baseline.py` has zero references — nothing to remove.
+    - Lower `tests/TEST_BUDGET.baseline` in the same commit only if the collected count leaves the ±15 band or crosses the floor (`scripts/gates/test_budget.sh`).
+    - _Requirements: [RFC-051 R1 (AC3, AC5)](../rfcs/051-codebase-trimming-audit-archive.md#requirement-1-dead-script-deletion) — [Property 1](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-1-zero-caller-guarantee)_
+
+  - [ ] 1.3 Delete the two scripts and the spike service directories
+    - Delete `scripts/table_separator_baseline.py` in its own commit: `chore: remove dead script table_separator_baseline.py (RFC-051 D1)`.
+    - Delete `scripts/ocr_spike_eval.py` together with its test/config cleanup (1.2) in one commit: `chore: remove dead script ocr_spike_eval.py + ocr-spike profile (RFC-051 D1)`.
+    - In that same commit, delete `services/paddleocr-service/`, `services/paddleocr-vl-service/` and `services/docling-ocr-service/` (provided 1.1's grep found no other user), and update `ARCHITECTURE.md:771-780` to record the removal of the AGPL-relevant spike services.
+    - Keep the `helpers/arbitrate.py:31-32` engine enum values (`"paddleocr"`, `"paddleocr-vl"`) — they are enum values, not service references.
+    - Do NOT touch `services/surya-ocr-service/`.
+    - `facade_surface_measure.py` and `hash_cache_migrate.py` are not deleted by this task.
+    - _Requirements: [RFC-051 R1 (AC1, AC3)](../rfcs/051-codebase-trimming-audit-archive.md#requirement-1-dead-script-deletion) — [Property 1](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-1-zero-caller-guarantee)_
+
+- [ ] 2. Checkpoint — Wave 1
+  - Run `make test` to verify zero regressions after script deletions.
+  - Ask the user if questions arise before proceeding.
+
+- [ ] 3. Wave 2 — Audit Archive (D2, explicit reviewed list)
+
+  - [ ] 3.1 Build the explicit reviewed file list
+    - For each individual candidate file (NOT a category rule), grep `scripts/`, `tests/`, `.github/`, the `Makefile` and `.claude/skills/` (including glob patterns) plus active RFC/design/task references. Only files that clear the grep go on the list.
+    - Exclude the pinned files outright: `audit/zones/_index.md`, `audit/zones/ZONE_OWNERSHIP.yaml`, `audit/CORPUS_REINGESTION_AUDIT_RUN-*`, `audit/FACADE_SURFACE_MANIFEST_*`.
+    - Record, per entry: path, reason for archival, superseding artifact.
+    - _Requirements: [RFC-051 R2](../rfcs/051-codebase-trimming-audit-archive.md#requirement-2-audit-archive) — [Property 3](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-3-no-active-reference-breakage)_
+
+  - [ ] 3.2 Create archive directory structure and MANIFEST.md
+    - Create `audit/archive/` mirroring the source directory structure for the reviewed-list entries only.
+    - Create `audit/archive/MANIFEST.md` from the 3.1 list: path, reason, superseding artifact.
+    - _Requirements: [RFC-051 R2 (AC2, AC5)](../rfcs/051-codebase-trimming-audit-archive.md#requirement-2-audit-archive) — [Property 2](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-2-archive-completeness)_
+
+  - [ ] 3.3 Move the reviewed-list files to archive
+    - Use `git mv` for each file to preserve history.
+    - One commit: `chore: archive reviewed stale audit artifacts (RFC-051 D2)`.
+    - _Requirements: [RFC-051 R2 (AC1)](../rfcs/051-codebase-trimming-audit-archive.md#requirement-2-audit-archive) — [Property 2](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-2-archive-completeness)_
+
+- [ ] 4. Final Checkpoint
+  - Run `make test` (full suite, via `make test`) and verify zero regressions.
+  - Report the two counts: lines deleted (script + spike-service directories) and lines archived (whatever the reviewed list totals — no ≥15,000 quota).
+  - Verify `audit/archive/MANIFEST.md` is complete.
+  - Note in the report: `hash_cache_migrate.py` deletion and the legacy hash-cache code removal are OUT of this RFC — tracked as a separate operator task (see Notes for the recipe). `facade_surface_measure.py`, test-merge-residue cleanup (D3) and `decision_points.py` YAML extraction (D4) are all out of scope / dropped.
+  - Ask the user if questions arise before proceeding.
+
+<details><summary>Amendment history (Iter 7-8 nine-task, four-wave plan — Waves 3 and 4, and the hash-cache/facade steps inside Wave 1, are dropped or moved in Iter 9)</summary>
 
 - [ ] 1. Wave 1 — Dead Script Deletion (D1)
 
@@ -54,7 +122,7 @@ Implements RFC-051 across four waves: dead script deletion, stale audit archival
       - **TEST_INDEX.** Also remove `tests/TEST_INDEX.yaml:610` (`hash_cache_migrate`) and `:624` (`facade_surface_measure`), alongside L627.
       - **Hash-cache migration gate.** Before deleting `hash_cache_migrate.py`, confirm the migration has completed on every deployment (local, k3s remote); record the evidence in the commit message. ~~In the same commit, remove the legacy MinIO-blob fallback in `hash_cache_get` (`storage/hash_cache.py:80-94`).~~ If completion can't be confirmed, skip this script, leave its whitelist entries, and note the deferral in RFC-051 Consequences.
       - **Test budget.** Every commit that removes collected tests lowers `tests/TEST_BUDGET.baseline`, with a justification line, so `scripts/gates/test_budget.sh` passes. If RFC-050 has already raised the baseline, rebase onto its value. **(Amendment 2026-09-24, Iter 8):** the gate allows ±15 around the baseline. Lower the baseline only when the collected count leaves that band or crosses the floor. Every commit must pass the gate.
-    - **(Amendment 2026-09-24, Iter 8) Hash cache: delete the blob, then the code** ([Property 6](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-6-no-unreachable-hash-cache-store-added-2026-09-24-iter-8)):
+    - **(Amendment 2026-09-24, Iter 8) Hash cache: delete the blob, then the code** ([Property 6](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-6-no-unreachable-hash-cache-store--moved-out-iter-9)):
       1. **Operator step, per deployment (local, k3s remote).**
          - Confirm every entry of `hashes/processed_hashes.json` is present in `HASH_CACHE_KEY`.
          - Erasure check: no document erased since the migration is still listed in the blob. Purge any that are.
@@ -73,7 +141,7 @@ Implements RFC-051 across four waves: dead script deletion, stale audit archival
       - update `ARCHITECTURE.md:771-780` to record their removal
       - keep the `helpers/arbitrate.py:31-32` engine enum values (`"paddleocr"`, `"paddleocr-vl"`)
       - do not touch `services/surya-ocr-service/`
-    - _Requirements: [RFC-051 R1 (AC3, AC4, AC5)](../rfcs/051-codebase-trimming-audit-archive.md#requirement-1-dead-script-deletion) — [Property 1](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-1-zero-caller-guarantee), [Property 5](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-5-test-coverage-preservation), [Property 6](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-6-no-unreachable-hash-cache-store-added-2026-09-24-iter-8)_
+    - _Requirements: [RFC-051 R1 (AC3, AC4, AC5)](../rfcs/051-codebase-trimming-audit-archive.md#requirement-1-dead-script-deletion) — [Property 1](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-1-zero-caller-guarantee), [Property 5](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-5-test-coverage-preservation--dropped-iter-9), [Property 6](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-6-no-unreachable-hash-cache-store--moved-out-iter-9)_
 
   - [ ] 1.3 Delete confirmed dead scripts
     - Delete each script in a separate commit with message: `chore: remove dead script <name> (RFC-051 D1)`
@@ -118,7 +186,7 @@ Implements RFC-051 across four waves: dead script deletion, stale audit archival
     - Delete the two dead helpers in `tests/test_verdict.py` identified in obs 111166
     - Verify zero callers via grep before deletion
     - **(Amendment 2026-09-24, Iter 7):** the helpers are `_borderline_ratio_tree` and `_other_s3error`. Both are already absent from `tests/test_verdict.py` (grep 2026-09-24), so this is a verify-only step: re-run the grep and tick the box. Do NOT touch the live `_other_s3error` in `tests/test_storage.py:53` (3 call sites).
-    - _Requirements: [RFC-051 R3 (AC1)](../rfcs/051-codebase-trimming-audit-archive.md#requirement-3-test-merge-residue-cleanup) — [Property 5](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-5-test-coverage-preservation)_
+    - _Requirements: [RFC-051 R3 (AC1)](../rfcs/051-codebase-trimming-audit-archive.md#requirement-3-test-merge-residue-cleanup) — [Property 5](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-5-test-coverage-preservation--dropped-iter-9)_
 
   - [ ] 5.2 Analyze test overlap between converter test files
     - Compare test coverage of `test_converters.py` (77 tests) vs `test_helpers_combined.py` (36 tests)
@@ -126,14 +194,14 @@ Implements RFC-051 across four waves: dead script deletion, stale audit archival
     - Document overlap analysis with specific test function names
     - **(Amendment 2026-09-24, Iter 7):** start only after RFC-050 Wave 2 has landed. RFC-050 Task 3.1b adds tests to `test_helpers_combined.py`.
     - **(Amendment 2026-09-24, Iter 8):** the precondition is pinned to RFC-050 tasks 3.1a and 3.1b.
-    - _Requirements: [RFC-051 R3 (AC2, AC4)](../rfcs/051-codebase-trimming-audit-archive.md#requirement-3-test-merge-residue-cleanup) — [Property 5](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-5-test-coverage-preservation)_
+    - _Requirements: [RFC-051 R3 (AC2, AC4)](../rfcs/051-codebase-trimming-audit-archive.md#requirement-3-test-merge-residue-cleanup) — [Property 5](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-5-test-coverage-preservation--dropped-iter-9)_
 
   - [ ] 5.3 Consolidate redundant tests
     - Remove tests confirmed as redundant by coverage analysis
     - Preserve tests covering unique code paths (AC3)
     - Commit: `chore: consolidate redundant converter tests (RFC-051 D3)`
     - **(Amendment 2026-09-24, Iter 7):** lower `tests/TEST_BUDGET.baseline` in the same commit, with justification (R1 AC5) **(Iter 8: only when the count leaves the ±15 band or crosses the floor)**
-    - _Requirements: [RFC-051 R3 (AC2, AC3)](../rfcs/051-codebase-trimming-audit-archive.md#requirement-3-test-merge-residue-cleanup) — [Property 5](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-5-test-coverage-preservation)_
+    - _Requirements: [RFC-051 R3 (AC2, AC3)](../rfcs/051-codebase-trimming-audit-archive.md#requirement-3-test-merge-residue-cleanup) — [Property 5](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-5-test-coverage-preservation--dropped-iter-9)_
 
 - [ ] 6. Checkpoint — Wave 3
   - Run `make test` to verify zero regressions after test cleanup
@@ -184,7 +252,7 @@ Implements RFC-051 across four waves: dead script deletion, stale audit archival
       - There is no line cap.
     - Load YAML at import time
     - Expose identical public API (same function signatures, same return types)
-    - _Requirements: [RFC-051 R4 (AC2, AC3)](../rfcs/051-codebase-trimming-audit-archive.md#requirement-4-decision-points-data-extraction) — [Property 4](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-4-api-equivalence)_
+    - _Requirements: [RFC-051 R4 (AC2, AC3)](../rfcs/051-codebase-trimming-audit-archive.md#requirement-4-decision-points-data-extraction) — [Property 4](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-4-api-equivalence--dropped-iter-9)_
 
   - [ ] 7.4 Write equivalence and validation tests
     - Test: YAML-backed API returns identical results to frozen snapshot for all IDs
@@ -195,7 +263,7 @@ Implements RFC-051 across four waves: dead script deletion, stale audit archival
       - ~~Test that the installed wheel imports the module (7.2).~~ **(Iter 8: a CI step, not a collected test; see 7.2)**
       - Raise `tests/TEST_BUDGET.baseline` for the added tests, with justification. **(Iter 8: only if the count leaves the ±15 band)**
     - **(Amendment 2026-09-24, Iter 8):** also test that all 13 `__all__` names match the 7.1 snapshot, and that an unknown `phase` name in the YAML fails at import.
-    - _Requirements: [RFC-051 R4 (AC3, AC5)](../rfcs/051-codebase-trimming-audit-archive.md#requirement-4-decision-points-data-extraction) — [Property 4](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-4-api-equivalence)_
+    - _Requirements: [RFC-051 R4 (AC3, AC5)](../rfcs/051-codebase-trimming-audit-archive.md#requirement-4-decision-points-data-extraction) — [Property 4](../designs/design-rfc051-codebase-trimming-audit-archive.md#property-4-api-equivalence--dropped-iter-9)_
 
 - [ ] 8. Checkpoint — Wave 4
   - Run `make test` to verify zero regressions after decision_points refactor
@@ -210,7 +278,24 @@ Implements RFC-051 across four waves: dead script deletion, stale audit archival
   - Verify `audit/archive/MANIFEST.md` is complete
   - Ask the user if questions arise before proceeding.
 
+</details>
+
 ## Notes
+
+**Current contract (2026-09-24, Iter 9)**
+
+- Two waves only (D1, D2), neither with an external dependency. The cross-RFC ordering on RFC-050 tasks `1.5`/`3.1a`/`3.1b` existed only to gate D3/D4, which are dropped, so it no longer applies to anything in this file.
+- Effort: ~3h total (Wave 1 ~1.5h, Wave 2 ~1.5h) — down from 12-13h across four waves.
+- `hash_cache_migrate.py` and the legacy hash-cache code (`storage/hash_cache.py` fallback, loader, lock helpers, `_purge_legacy_hash_entry`, `HASH_OBJECT`, the `FROZEN_SURFACE`→`REMOVED_SURFACE` move) are a **separate operator task**, out of this RFC's task list. Recipe for that task (preserved from Iter 8, unchanged):
+  1. Per deployment (local, k3s remote): confirm every `hashes/processed_hashes.json` entry is present in `HASH_CACHE_KEY`; erasure-check that no document erased since migration is still listed in the blob; delete the blob (`python -m pageindex_mcp.hash_cache_migrate` without `--dry-run`, or remove the object directly); record `stat_object` → `NoSuchKey`.
+  2. One commit: delete `hash_cache_migrate.py` and its 6 `static.sh` whitelist entries; delete `HASH_OBJECT`, the legacy lock helpers, `_load_legacy_minio_hash_cache`, the `hash_cache_get` fallback and `_purge_legacy_hash_entry` from `storage/hash_cache.py`; drop the `storage/__init__.py` re-exports; move `HASH_OBJECT`/`_load_legacy_minio_hash_cache` from `FROZEN_SURFACE["storage"]` to `REMOVED_SURFACE["storage"]`; delete the legacy-loader/purge tests, keeping the `hash_cache_delete` → Redis `hdel` assertion.
+  3. Standing, unconfirmed-on-k3s observation: `hashes/processed_hashes.json` returns `NoSuchKey` on the working bucket. Confirm on k3s remote before running step 1 there — this is evidence toward, not proof of, migration completion.
+- `facade_surface_measure.py` is kept — no task in this file touches it, verifies it, or deletes it.
+- Test merge residue cleanup (D3) and decision_points.py YAML extraction (D4) are dropped in full — nothing to schedule.
+- All file moves use `git mv` to preserve history.
+- Dead script verification uses both code-graph (search_graph) and text search (grep) for defense in depth.
+
+<details><summary>Amendment history (Iter 7-8 notes, superseded)</summary>
 
 - ~~Each wave is independently shippable — later waves do not depend on earlier ones~~ **(Amendment 2026-09-24, Iter 7 — aligned with the dependency graph):**
   - Waves run sequentially, each gated by its checkpoint, as the graph below shows.
@@ -231,7 +316,26 @@ Implements RFC-051 across four waves: dead script deletion, stale audit archival
 - The decision_points YAML extraction is the highest-risk task; the frozen snapshot test provides a safety net
 - Observations 111166 and 111182 document the specific dead test helpers
 
+</details>
+
 ## Task Dependency Graph
+
+**Current contract (2026-09-24, Iter 9)**
+
+```json
+{
+  "waves": [
+    { "id": 0, "tasks": ["1.1"], "label": "Verify dead scripts (table_separator_baseline.py, ocr_spike_eval.py) + spike service dirs" },
+    { "id": 1, "tasks": ["1.2", "1.3", "2"], "label": "Remove ocr_spike_eval.py test/config refs + delete both scripts + spike service dirs + checkpoint" },
+    { "id": 2, "tasks": ["3.1", "3.2"], "label": "Build explicit reviewed archive list + prepare archive dir + MANIFEST.md" },
+    { "id": 3, "tasks": ["3.3", "4"], "label": "Archive move + final checkpoint" }
+  ]
+}
+```
+
+No external dependencies. `hash_cache_migrate.py` / legacy hash-cache removal is not on this graph — see Notes for its recipe as a separate operator task.
+
+<details><summary>Amendment history (Iter 7-8 nine-task, four-wave dependency graph, superseded)</summary>
 
 ```json
 {
@@ -248,3 +352,5 @@ Implements RFC-051 across four waves: dead script deletion, stale audit archival
   ]
 }
 ```
+
+</details>

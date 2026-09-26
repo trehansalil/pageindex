@@ -204,7 +204,7 @@ decision about the public API surface, not a mechanical cleanup.
 
 **Alive (14).** `BULK_PROFILE` (~30 references), `HeuristicRegistry.get` (7 call sites), `reset_verdict_thresholds` (already adjudicated 2026-09-06), `PictureRegion` (protected — and still carrying the unresolved Zone-4 governance question from Run 3), `WRITE_BARRIER_EXHAUSTED` (docstring documents deliberate retention for `/metrics` stability), three ERA001 comment blocks, and the CLI scripts `ingest_via_server.py`, `stress_test.py`, `test.py`, `scripts/minio_helper.py`, `scripts/prebake_tessdata.sh`, `hash_cache_migrate.py` (protected).
 
-`scripts/table_separator_baseline.py` came back **unsure** from the cascade skeptic: no in-repo invoker, but an active runbook instruction references it.
+`scripts/table_separator_baseline.py` came back **unsure** from the cascade skeptic: no in-repo invoker, but an active runbook instruction references it. *(Historical, 2026-09-25: the script was deleted by RFC-051 D1 and that runbook, `audit/TASK_9_5_STALE_WINDOW_REINGEST_STATUS_2026-08-08.md`, is now marked historical.)*
 
 ---
 
