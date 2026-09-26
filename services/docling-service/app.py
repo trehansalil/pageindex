@@ -15,6 +15,7 @@ import hmac
 import ipaddress
 import logging
 import os
+import re
 import socket
 import tempfile
 import urllib.parse
@@ -24,7 +25,34 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
-logging.basicConfig(level=logging.INFO)
+from pageindex_mcp.obs.context import bind_log_context
+from pageindex_mcp.obs.log_config import configure as configure_obs_logging
+
+# RFC-052 R1 AC6: every line this service writes -- its own, docling's, and
+# uvicorn's -- is one obs JSON envelope (pageindex_mcp.obs.formatter.JsonFormatter
+# plus the ContextFilter that stamps job_id/doc_sha8/run_id from the context the
+# middleware below binds). Loki parses one format for the cluster and the Mac.
+UVICORN_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access")
+
+
+def install_json_logging() -> None:
+    """Route the root and uvicorn loggers through the obs JSON handler.
+
+    uvicorn configures its loggers (own handlers, ``propagate=False``) before
+    it imports this module, so they are stripped here and left to propagate
+    to root. Idempotent; called at import and again in ``lifespan`` in case a
+    launcher re-applied its own config in between. /health and /metrics
+    access lines are kept -- as JSON, which promtail can drop by pattern.
+    """
+    configure_obs_logging()
+    for name in UVICORN_LOGGERS:
+        uv_logger = logging.getLogger(name)
+        for handler in list(uv_logger.handlers):
+            uv_logger.removeHandler(handler)
+        uv_logger.propagate = True
+
+
+install_json_logging()
 logger = logging.getLogger(__name__)
 
 BEARER_TOKEN = os.environ.get("DOCLING_SERVICE_BEARER_TOKEN", "")
@@ -137,6 +165,7 @@ async def lifespan(app: FastAPI):
             "DOCLING_SERVICE_BEARER_TOKEN is unset; refusing to start without auth "
             "(set DOCLING_SERVICE_ALLOW_ANONYMOUS=1 for a local dev container only)"
         )
+    install_json_logging()
     logger.info("Warming Docling converter cache...")
     try:
         from pageindex_mcp.converters import _docling_converter
@@ -148,7 +177,66 @@ async def lifespan(app: FastAPI):
     yield
 
 
+# ---------------------------------------------------------------------------
+# Correlation middleware (RFC-052 R1 AC6, D3)
+# ---------------------------------------------------------------------------
+
+#: Request header -> obs context field. ``shard`` is not an envelope field; it
+#: is read back by the ``docling_chunk`` record (converters/docling_conv.py).
+CORRELATION_HEADERS: dict[bytes, str] = {
+    b"x-job-id": "job_id",
+    b"x-doc-sha8": "doc_sha8",
+    b"x-run-id": "run_id",
+    b"x-shard": "shard",
+}
+# The middleware runs before auth, so a header is untrusted input headed for
+# every log line of the request: bound its length and charset rather than
+# let an unauthenticated caller write arbitrary text into Loki.
+_CORRELATION_VALUE = re.compile(r"[A-Za-z0-9_.:/-]{1,128}")
+
+
+def correlation_fields(headers) -> dict[str, str]:
+    """Correlation fields from raw ASGI ``(name, value)`` header pairs.
+
+    Missing, empty, ``"None"`` or malformed values are dropped -- binding
+    them would make an unrelated request match a Grafana ``job_id`` query.
+    """
+    fields: dict[str, str] = {}
+    for raw_name, raw_value in headers:
+        field = CORRELATION_HEADERS.get(raw_name.lower())
+        if field is None:
+            continue
+        value = raw_value.decode("latin-1").strip()
+        if value.lower() == "none" or not _CORRELATION_VALUE.fullmatch(value):
+            continue
+        fields[field] = value
+    return fields
+
+
+class CorrelationMiddleware:
+    """Pure ASGI middleware: binds the correlation headers for the request.
+
+    Pure ASGI (not ``BaseHTTPMiddleware``) so the endpoint runs in this same
+    task and sees the binding; ``asyncio.to_thread`` then copies it into the
+    conversion thread, and ``_pdf_to_markdown_docling_chunked`` hands it on to
+    each spawned chunk child explicitly. ``bind_log_context`` resets it in a
+    ``finally``, so nothing leaks into the next request.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        fields = correlation_fields(scope.get("headers") or [])
+        with bind_log_context(**fields):
+            await self.app(scope, receive, send)
+
+
 app = FastAPI(title="Docling Conversion Service", lifespan=lifespan)
+app.add_middleware(CorrelationMiddleware)
 
 
 # ---------------------------------------------------------------------------

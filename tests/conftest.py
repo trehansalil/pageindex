@@ -188,3 +188,33 @@ def fake_cache_redis(fake_redis_sync):
     """
     with patch("pageindex_mcp.cache._redis_sync", fake_redis_sync):
         yield fake_redis_sync
+
+
+@pytest.fixture
+def docling_service_app():
+    """Import ``services/docling-service/app.py`` fresh, then undo its side effects.
+
+    Importing it installs the obs JSON handler on the root logger and strips
+    uvicorn's handlers (RFC-052 task 1.6). Left in place, that handler would
+    write JSON to stderr for every later test in the session; restored here.
+    """
+    import logging
+    import sys
+
+    loggers = [logging.getLogger()] + [
+        logging.getLogger(n) for n in ("uvicorn", "uvicorn.error", "uvicorn.access")
+    ]
+    saved = [(lg, list(lg.handlers), lg.level, lg.propagate) for lg in loggers]
+    sys.path.insert(0, "services/docling-service")
+    sys.modules.pop("app", None)
+    try:
+        import app  # type: ignore[import-not-found]
+
+        yield app
+    finally:
+        sys.path.remove("services/docling-service")
+        sys.modules.pop("app", None)
+        for lg, handlers, level, propagate in saved:
+            lg.handlers[:] = handlers
+            lg.setLevel(level)
+            lg.propagate = propagate
