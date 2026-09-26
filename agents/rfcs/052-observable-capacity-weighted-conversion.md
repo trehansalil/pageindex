@@ -140,7 +140,7 @@ Defects:
 #### Acceptance Criteria
 
 1. Promtail relabelling SHALL set `container` from `__meta_kubernetes_pod_container_name` and `pod` from the pod name. The json stage SHALL map `logger: logger` and parse `ts` with a `timestamp` stage.
-2. `job_id`, `doc_id`, `doc_sha8` and `run_id` SHALL be extracted as **structured metadata**, not labels. Only `level`, `kind` and `service` SHALL be labels. No label SHALL have more than about 50 values per day.
+2. `job_id`, `doc_id`, `doc_sha8` and `run_id` SHALL be extracted as **structured metadata**, not labels. Of the fields extracted from the log line, only `level` and `kind` SHALL become labels, and each SHALL have no more than about 50 values per day. Kubernetes discovery labels (`namespace`, `service`, `container`, `pod`, `host`, `stream`) are exempt: `pod` takes about 1,440 values per day because the per-minute `infra` cron creates a new pod each run, which is the same stream count as before (the old `container` label held the pod name).
 3. Promtail SHALL drop gunicorn access lines for `/metrics` and `/health`, and arq's duplicate plain-text console lines, either at source or in the pipeline.
 4. Promtail SHALL tolerate `dedicated=docling:NoSchedule`, so that it runs on docling-1 and pushes to `loki.infra:3100` over the private network.
 5. The `docling-node-controller` `tick` container's output SHALL reach Loki. Line counts SHALL be non-zero over one hour of ticks.

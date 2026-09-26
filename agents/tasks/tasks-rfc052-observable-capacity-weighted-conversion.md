@@ -44,18 +44,19 @@ Infra manifests live in `/root/hetzner-deployment-service` and ship as a compani
 ## Tasks
 
 - [ ] 1. P0: Log correlation (`ICR-97-rfc52-log-correlation`)
-  - [ ] 1.1 Promtail config: fix the container/pod relabels, the json map (`logger`, `ts`), and the timestamp stage. Add structured metadata for the IDs and drop stages for `/metrics`, `/health` and arq duplicates. _R1 AC1-3_
+  - [x] 1.1 Promtail config: fix the container/pod relabels, the json map (`logger`, `ts`), and the timestamp stage. Add structured metadata for the IDs and drop stages for `/metrics`, `/health` and arq duplicates. _R1 AC1-3_
   - [ ] 1.2 Promtail DaemonSet: add the docling taint toleration, then verify a stream from docling-1 while it is up. _R1 AC4_
   - [ ] 1.3 Node controller: make the `tick` container log to stdout, not only a file or stderr that is lost. Verify it in Loki. _R1 AC5_
-  - [ ] 1.4 Stop the duplicate arq console handler at source (worker logging setup). _R1 AC3_
-  - [ ] 1.5 Send the `X-Job-Id`/`X-Doc-Sha8`/`X-Run-Id`/`X-Shard` headers from `client/remote.py`. _R1 AC6_
-  - [ ] 1.6 docling-service: header middleware plus `bind_log_context`, and `JsonFormatter` on the root and uvicorn loggers. _R1 AC6_
-  - [ ] 1.7 Write a `docling_chunk` record per chunk in `converters/docling_conv.py`'s chunked path, and one for the single-shot path. Peak RSS comes from the child's `resource.getrusage`. _R1 AC7_
-  - [ ] 1.8 Preclassify: log the page-set summary at INFO, including the method. Raise the detection-failure log from debug to WARNING. _R1 AC8, R2 AC7_
+  - [x] 1.4 Stop the duplicate arq console handler at source (worker logging setup). _R1 AC3_
+  - [x] 1.5 Send the `X-Job-Id`/`X-Doc-Sha8`/`X-Run-Id`/`X-Shard` headers from `client/remote.py`. _R1 AC6_
+  - [x] 1.6 docling-service: header middleware plus `bind_log_context`, and `JsonFormatter` on the root and uvicorn loggers. _R1 AC6_
+  - [x] 1.7 Write a `docling_chunk` record per chunk in `converters/docling_conv.py`'s chunked path, and one for the single-shot path. Peak RSS comes from the child's `resource.getrusage`. _R1 AC7_
+  - [x] 1.8 Preclassify: log the page-set summary at INFO, including the method. Raise the detection-failure log from debug to WARNING. _R1 AC8, R2 AC7_
   - [ ] 1.9 **Operator:** add the Loki Tailscale NodePort Service, the iptables rule limiting it to `tailscale0`, and the external probe proving it is closed publicly. _R1 AC9, D2_
   - [ ] 1.10 **Operator (Mac):** Alloy launchd agent, newsyslog rotation, and redeploy the Mac service with JSON logging. _R1 AC9_
-  - [ ] 1.11 Provision the "PageIndex Logs" dashboard JSON: the `$job_id` variable plus log, chunk-timeline and error panels. _R1 AC10_
+  - [x] 1.11 Provision the "PageIndex Logs" dashboard JSON: the `$job_id` variable plus log, chunk-timeline and error panels. _R1 AC10_
   - [ ] 1.12 Measure the extra RAM on portfolio (≤ 150 MiB), and check that one pocketbook `job_id` renders end to end. _R1 AC11, G1_
+  - Status 2026-09-26: 1.2 and 1.3 are done in config and await live verification in 1.12. 1.9 and 1.10 are prepared (`cluster/k3s/loki-tailscale/` in the infra repo; `services/docling-service/macos/install-logging.sh`), not run.
 - [ ] 2. Checkpoint P0: `make test`, open the PR, and ask the user before continuing.
 
 - [ ] 3. P1: Page-class detection (`ICR-97-rfc52-page-class-detection`)
