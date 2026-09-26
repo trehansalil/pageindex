@@ -1862,6 +1862,53 @@ class TestRemotePdfExpectedScriptPayload:
             )
 
 
+class TestRemoteCorrelationHeaders:
+    @pytest.mark.asyncio
+    async def test_headers_come_from_the_obs_context_and_absent_fields_are_omitted(self):
+        """RFC-052 R1 AC6: X-Job-Id/X-Doc-Sha8/X-Run-Id mirror the bound obs
+        context and X-Shard is the single-shard "1/1:0-<last page>". A field
+        that is not bound (or an unknown page count) omits its header -- it is
+        never sent as "None", which the service would bind as a real id."""
+        from pageindex_mcp.client import _remote_image_to_markdown, _remote_pdf_to_markdown
+        from pageindex_mcp.obs import bind_log_context
+
+        fake_settings = _make_docling_settings(pii_corpus=False)
+
+        async def _headers(call, **ctx):
+            fake_client = _CapturingDoclingAsyncClient()
+            _reset_remote_version_cache()
+            with (
+                patch("pageindex_mcp.client.remote.settings", fake_settings),
+                patch("pageindex_mcp.config.settings", fake_settings),
+                patch("httpx.AsyncClient", return_value=fake_client),
+                patch(
+                    "pageindex_mcp.storage.presigned_get_url",
+                    return_value="https://minio/key?sig=abc",
+                ),
+                bind_log_context(**ctx),
+            ):
+                await call()
+            (post,) = [p for p in fake_client.posts if "/convert/" in p["url"]]
+            return post["headers"]
+
+        full = await _headers(
+            lambda: _remote_pdf_to_markdown("staging/key.pdf", page_count=140),
+            job_id="j-1",
+            doc_sha8="abcd1234",
+            run_id="r-9",
+        )
+        assert full == {
+            "X-Job-Id": "j-1",
+            "X-Doc-Sha8": "abcd1234",
+            "X-Run-Id": "r-9",
+            "X-Shard": "1/1:0-139",
+        }
+        sparse = await _headers(lambda: _remote_pdf_to_markdown("staging/key.pdf"), job_id="j-2")
+        assert sparse == {"X-Job-Id": "j-2"}
+        image = await _headers(lambda: _remote_image_to_markdown("staging/key.png"), job_id="j-3")
+        assert image == {"X-Job-Id": "j-3", "X-Shard": "1/1:0-0"}
+
+
 class TestRemoteDoclingVersionEnforcement:
     """``REMOTE_VERSION_ENFORCE`` upgrades the pipeline_version skew check from
     advisory to blocking, so a stale remote converter cannot silently produce

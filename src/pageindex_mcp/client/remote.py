@@ -96,6 +96,42 @@ def _converter_contract(converter_name: str | None) -> str | None:
         return None
 
 
+#: RFC-052 R1 AC6 / D3: correlation header -> obs context field. docling-service
+#: binds these back into its own log context, so one ``job_id`` finds the
+#: worker's lines and the remote conversion's lines alike.
+_CORRELATION_HEADERS: tuple[tuple[str, str], ...] = (
+    ("X-Job-Id", "job_id"),
+    ("X-Doc-Sha8", "doc_sha8"),
+    ("X-Run-Id", "run_id"),
+)
+
+
+def _correlation_headers(page_count: int | None = None) -> dict[str, str]:
+    """Correlation headers from the current obs log context (RFC-052 R1 AC6).
+
+    A field that is not bound is OMITTED -- never sent as ``"None"`` or ``""``,
+    which the service would bind as a real value and every Grafana query on
+    that id would then match.
+
+    ``X-Shard`` is ``"<i>/<n>:<start>-<end>"`` with 0-based, inclusive page
+    bounds (the same convention as ``docling_chunk``'s ``page_start`` /
+    ``page_end``). Until the capacity split (RFC-052 P3) a document is always
+    one shard, so it is ``"1/1:0-<page_count - 1>"``; with no known page count
+    the header is omitted rather than guessed.
+    """
+    from ..obs.context import current_context
+
+    ctx = current_context()
+    headers: dict[str, str] = {}
+    for header, field in _CORRELATION_HEADERS:
+        value = ctx.get(field)
+        if value is not None and str(value) != "":
+            headers[header] = str(value)
+    if isinstance(page_count, int) and not isinstance(page_count, bool) and page_count > 0:
+        headers["X-Shard"] = f"1/1:0-{page_count - 1}"
+    return headers
+
+
 async def _remote_pdf_to_markdown(
     staging_key: str,
     *,
@@ -103,6 +139,7 @@ async def _remote_pdf_to_markdown(
     ocr_lang_override: list[str] | None = None,
     expected_script: str | None = None,
     pages_with_tables: list[int] | None = None,
+    page_count: int | None = None,
 ) -> tuple[str, list]:
     """Call the external Docling service to convert a PDF.
 
@@ -116,6 +153,9 @@ async def _remote_pdf_to_markdown(
     so a server-side garble check can use it instead of re-inferring the script
     from the extracted text.  A remote build that does not know the key ignores
     it, so sending it is safe against both old and new Docling services.
+
+    ``page_count`` (when known) only shapes the ``X-Shard`` correlation header;
+    it never changes the payload. See ``_correlation_headers``.
     """
     import base64
 
@@ -138,7 +178,7 @@ async def _remote_pdf_to_markdown(
         "expected_script": expected_script,
         "pages_with_tables": pages_with_tables,
     }
-    headers: dict[str, str] = {}
+    headers: dict[str, str] = _correlation_headers(page_count)
     if settings.docling_service_bearer_token:
         headers["Authorization"] = f"Bearer {settings.docling_service_bearer_token}"
     async with httpx.AsyncClient(timeout=settings.docling_service_timeout_s) as client:
@@ -183,7 +223,8 @@ async def _remote_image_to_markdown(
         "presigned_url": url,
         "ocr_lang_override": ocr_lang_override,
     }
-    headers: dict[str, str] = {}
+    # An image is a single page: always one shard, page 0.
+    headers: dict[str, str] = _correlation_headers(page_count=1)
     if settings.docling_service_bearer_token:
         headers["Authorization"] = f"Bearer {settings.docling_service_bearer_token}"
     async with httpx.AsyncClient(timeout=settings.docling_service_timeout_s) as client:

@@ -915,6 +915,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                                 ocr_lang_override=_ocr_lang_override,
                                 expected_script=expected_script,
                                 pages_with_tables=_pages_with_tables,
+                                page_count=state.pdf_page_count,
                             )
                         else:
                             if state.pre_garbled:
@@ -927,6 +928,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                                 self._staging_key,
                                 expected_script=expected_script,
                                 pages_with_tables=_pages_with_tables,
+                                page_count=state.pdf_page_count,
                             )
                     elif force_full_page and _conv_supports_ocr:
                         decision(

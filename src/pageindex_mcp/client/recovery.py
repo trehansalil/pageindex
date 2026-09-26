@@ -483,6 +483,7 @@ class RecoveryMixin:
                     force_full_page_ocr=True,
                     ocr_lang_override=langs,
                     expected_script=expected_script,
+                    page_count=state.pdf_page_count,
                 )
             else:
                 decision(
