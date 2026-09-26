@@ -163,6 +163,17 @@ class Settings:
     surya_fallback_enabled: bool
     surya_service_url: str
     surya_fallback_timeout_s: float
+    # HR2 / RFC-052: Loki is a derived store -- every log line carries the
+    # correlation ids (doc_id, doc_sha8, doc_name_sha8), from promtail in the
+    # cluster and from the Mac docling-service's in-process push. delete_doc's
+    # ``loki_logs`` step files a delete request against this base URL (the
+    # in-cluster Loki, NOT the push-only Tailscale gateway). Unset means "this
+    # deployment ships no logs to Loki": the step is then not reached and the
+    # cascade reports partial_purge=True, never a silent success.
+    loki_url: str | None = None
+    # Width of the delete request's time window, ending now. Must be >= the
+    # Loki retention_period (72h in infra); anything older is already gone.
+    loki_erasure_lookback_h: int = 168
     # Zone-4 Phase 3: registry_verdict_authority removed — Postgres is now the
     # sole verdict authority.  MinIO sidecar is archival-only (best-effort
     # backfill).  See _upsert_registry_row in worker/registry_mirror.py.
@@ -352,6 +363,10 @@ def _load_settings() -> Settings:
             "/"
         ),
         surya_fallback_timeout_s=float(os.environ.get("SURYA_FALLBACK_TIMEOUT_S", "120")),
+        loki_url=(os.environ.get("PAGEINDEX_LOKI_URL") or "").strip().rstrip("/") or None,
+        loki_erasure_lookback_h=max(
+            1, int(os.environ.get("PAGEINDEX_LOKI_ERASURE_LOOKBACK_H", "168"))
+        ),
     )
 
 

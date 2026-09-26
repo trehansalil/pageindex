@@ -1190,6 +1190,59 @@ class TestLokiPushHandler:
         assert handler.sent == 0 and handler.dropped == 20
         assert capfd.readouterr().err.count("loki push") == 1  # rate-limited
 
+    def test_erasure_delete_requests_are_windowed_escaped_and_never_echo_the_id(self):
+        """ERASE-01-C5 (HR2): one POST per identifier to the delete API, over
+        [now - lookback, now], with the needle quoted so it cannot widen the
+        selector; a refused or failed request is an error that does not quote
+        the identifier; an empty needle (which would match every line) is
+        refused before anything is sent."""
+        import urllib.error
+        import urllib.parse
+
+        from pageindex_mcp.obs.loki import erasure_line_filters, request_log_deletion
+
+        sent: list[urllib.request.Request] = []
+
+        class _Ok:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return b""
+
+        def _opener(request, timeout):
+            sent.append(request)
+            if len(sent) == 2:
+                raise urllib.error.HTTPError(request.full_url, 400, "bad", {}, None)
+            return _Ok()
+
+        hostile = 'doc-1234" } |= "'
+        needles = erasure_line_filters(hostile, doc_sha8="19aad2bc", doc_name_sha8="5108f1b2")
+        assert needles[1:] == ['"doc_sha8": "19aad2bc"', '"doc_name_sha8": "5108f1b2"']
+        errors = request_log_deletion(
+            "http://loki:3100/", [*needles, ""], lookback_s=3600, now=10_000, urlopen=_opener
+        )
+
+        assert len(sent) == 3  # the empty needle never left the process
+        queries = []
+        for request in sent:
+            assert request.get_method() == "POST"
+            url = urllib.parse.urlsplit(request.full_url)
+            assert url.path == "/loki/api/v1/delete"
+            params = dict(urllib.parse.parse_qsl(url.query))
+            assert (params["start"], params["end"]) == ("6400", "10000")
+            queries.append(params["query"])
+        assert queries[0] == '{service=~".+"} |= "doc-1234\\" } |= \\""'
+        assert queries[1] == '{service=~".+"} |= "\\"doc_sha8\\": \\"19aad2bc\\""'
+        assert errors == [
+            "request 2/4: Loki answered HTTP 400",
+            "request 4/4: refused a line filter shorter than 8",
+        ]
+        assert not any("19aad2bc" in e or "doc-1234" in e for e in errors)
+
 
 class TestDecisionsKillSwitch:
     """PAGEINDEX_LOG_DECISIONS=off silences the decision layer without

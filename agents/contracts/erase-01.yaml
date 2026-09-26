@@ -35,3 +35,9 @@ contracts:
     trigger: "delete_doc(doc_id) runs the _ERASURE_MANIFEST and the quarantine step's sha256 is available"
     effect: "quarantine/<sha256>.json and quarantine/<sha256>.meta.json are removed by _erase_quarantine; the step is required=False (quarantine may not exist for every doc); idempotent on NoSuchKey"
     boundary: "sha256 must be discovered before the quarantine step runs (meta_json sidecar read provides it)"
+
+  - id: ERASE-01-C5
+    desc: "The erasure cascade files Loki delete requests for every log line that names the document"
+    trigger: "delete_doc(doc_id) runs the _ERASURE_MANIFEST with PAGEINDEX_LOKI_URL set to the in-cluster Loki"
+    effect: "_erase_loki_logs POSTs one /loki/api/v1/delete request per known identifier (doc_id always; the doc_sha8 and doc_name_sha8 JSON pairs when ctx.sha256 / ctx.doc_name are known) over [now - PAGEINDEX_LOKI_ERASURE_LOOKBACK_H, now], each needle quoted so it cannot widen the selector; a refused or failed request lands in errors as 'loki: ...' without quoting the identifier; with the URL unset the step is not reached and partial_purge is True"
+    boundary: "Runs last (step 8) so ctx.sha256 and ctx.doc_name are resolved and the cascade's own ERASE lines fall inside the window; Loki's retention_period (72h) is the backstop for anything a request misses"
