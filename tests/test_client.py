@@ -1270,6 +1270,86 @@ class TestPersistFlatResultRawMarkdownSidecar:
         assert any("extracted.md sidecar" in r.message for r in caplog.records)
 
 
+class _InMemoryMinio:
+    """Object store keyed by name: enough of the MinIO client for a persist ->
+    load -> erase round trip through the real storage functions."""
+
+    def __init__(self):
+        self.objects: dict[str, bytes] = {}
+
+    def put_object(self, bucket, key, data, length, content_type=None, **_kw):
+        self.objects[key] = data.read()
+
+    def _missing(self):
+        return S3Error("NoSuchKey", "NoSuchKey", "", "", "", "")
+
+    def get_object(self, bucket, key, **_kw):
+        if key not in self.objects:
+            raise self._missing()
+        body = self.objects[key]
+        return SimpleNamespace(read=lambda: body, close=lambda: None, release_conn=lambda: None)
+
+    def stat_object(self, bucket, key, **_kw):
+        if key not in self.objects:
+            raise self._missing()
+        return SimpleNamespace(object_name=key, size=len(self.objects[key]), etag="e")
+
+    def list_objects(self, bucket, prefix="", recursive=False, **_kw):
+        keys = sorted(k for k in self.objects if k.startswith(prefix))
+        return [SimpleNamespace(object_name=k) for k in keys]
+
+    def remove_object(self, bucket, key, **_kw):
+        if key not in self.objects:
+            raise self._missing()
+        del self.objects[key]
+
+
+@pytest.mark.asyncio
+async def test_raw_markdown_round_trip_persist_serve_erase(monkeypatch):
+    """RFC-050 Task 3.5 / HR2: a tree ingest writes uploads/<doc_id>/<name>.extracted.md
+    through the real save_raw, get_document(include="raw") serves it, and
+    delete_doc leaves no object carrying the doc_id in any prefix."""
+    from pageindex_mcp.storage import documents as _docs
+    from pageindex_mcp.storage import minio_ops
+
+    store = _InMemoryMinio()
+    monkeypatch.setattr(minio_ops, "get_minio", lambda: store)
+
+    state = _make_persist_state(md_content="# Heading\n\nextracted body")
+    client = CustomPageIndexClient.__new__(CustomPageIndexClient)
+    with (
+        patch.object(_idx, "hash_cache_set"),
+        patch.object(_idx, "clear_quarantine"),
+        patch.object(_idx, "compute_verdict") as mock_verdict,
+    ):
+        mock_verdict.return_value.verdict = "PASS"
+        mock_verdict.return_value.reason = "ok"
+        mock_verdict.return_value.promotion_paths_matched = []
+        doc_id = await client._persist_tree_result(
+            state, "report.pdf", ".pdf", None, "deadbeef" * 8, b"%PDF bytes", None, {}, None
+        )
+
+    sidecar_key = f"uploads/{doc_id}/report.pdf.extracted.md"
+    assert store.objects[sidecar_key] == b"# Heading\n\nextracted body"
+    assert store.objects[f"uploads/{doc_id}/report.pdf"] == b"%PDF bytes"
+    assert _docs.load_extracted_md(doc_id) == "# Heading\n\nextracted body"
+
+    with patch("pageindex_mcp.tools.documents.get_doc", side_effect=_docs.load_doc):
+        body = json.loads(documents.get_document(doc_id, include="raw"))
+    assert body["raw_markdown"] == "# Heading\n\nextracted body"
+
+    with (
+        patch("pageindex_mcp.cache.doc_cache_delete"),
+        patch("pageindex_mcp.storage.reconcile_etag.reconcile_etag_delete"),
+        patch("pageindex_mcp.storage.hash_cache.hash_cache_delete") as mock_hc,
+    ):
+        await _docs.delete_doc(doc_id)
+
+    mock_hc.assert_called_once_with("report.pdf")
+    assert [k for k in store.objects if doc_id in k] == []
+    assert _docs.load_extracted_md(doc_id) is None
+
+
 # ===========================================================================
 # helpers.heuristic_registry  (RFC-041 D5 — Property 5)
 # ===========================================================================

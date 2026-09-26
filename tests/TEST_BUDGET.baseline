@@ -79,4 +79,9 @@
 #                  and trivial Pydantic assignment tests. One test per
 #                  distinct code path retained. Measured with
 #                  `uv run pytest --collect-only -q`.
-978
+# 2026-09-26  979  ICR-97 RFC-050 Task 3.5: +1. One persist -> serve -> erase
+#                  round trip for the raw-markdown sidecar through the real
+#                  save_raw / load_extracted_md / get_document / delete_doc
+#                  against an in-memory MinIO (HR2). Measured with
+#                  `bash scripts/gates/test_budget.sh`.
+979

@@ -63,7 +63,7 @@ Iterations 1-8 built a 5-wave, 10-task-group, 37-41h plan (admission gate + conc
     - Verify the baseline numbers are recorded and reproducible (2 runs, median taken)
     - Ask the user if questions arise before proceeding.
 
-- [ ] 3. Wave 2 — Safety Before Concurrency (D1, D2, D7, D3b, D6)
+- [x] 3. Wave 2 — Safety Before Concurrency (D1, D2, D7, D3b, D6)
 
   - [x] 1.1 Cgroup-aware `available` + `MEM_ADMISSION_FLOOR_SERVICE_BYTES` (D1) (implemented 2026-09-24, uncommitted; **corrected post-review, 2026-09-24**)
     - Add `_cgroup_headroom()` to `memory_admission.py`: cgroup v2 `memory.max − working_set` when `memory.max` is numeric; v1 fallback `memory.limit_in_bytes − working_set`; `None` if neither is readable. `working_set = current − inactive_file` (v2: `inactive_file` from `memory.stat`; v1: `total_inactive_file` from the same file) — matching kubelet's headroom calculation instead of subtracting raw `memory.current`/`usage_in_bytes`; falls back to the raw-usage subtraction when the stat can't be parsed
@@ -125,7 +125,7 @@ Iterations 1-8 built a 5-wave, 10-task-group, 37-41h plan (admission gate + conc
     - **Fix:** `worker/job.py` computes `deadline = start + JOB_TIMEOUT − CHILD_GRACE_SECONDS` and passes it down; the child timeout is clamped to what remains, and the ingest-lock wait is capped at `remaining / 2`. `preprocess_client.py` passes no deadline (unchanged behaviour)
     - _Requirements: RFC-050 R1, R6_
 
-  - [ ] 4. Checkpoint — Wave 2
+  - [x] 4. Checkpoint — Wave 2
     - Run `make test PYTEST_ARGS="tests/test_worker.py tests/test_quarantine.py -q" TEST_MEM_MAX=1500M`
     - Verify the dedup lock, TTL rule and D3b fields all pass their unit tests
     - Ask the user if questions arise before proceeding.
@@ -220,31 +220,31 @@ Iterations 1-8 built a 5-wave, 10-task-group, 37-41h plan (admission gate + conc
 
 - [ ] 7. Wave 4 — Raw Output Persistence + get_document (D3)
 
-  - [ ] 3.1 Wire `save_raw` into the two persist methods only
+  - [x] 3.1 Wire `save_raw` into the two persist methods only (implemented in f31f386 on the RFC-050 branch; **not deployed** — live image sha-721cfd1 is master, so the 2026-09-25 pocketbook ingest wrote no sidecar)
     - In `_persist_tree_result` (`client/indexer.py:2407`) and `_persist_flat_result` (`:2226`), after the existing `save_raw(doc_id, filename, file_bytes)`, add `save_raw(doc_id, f"{filename}.extracted.md", state.md_content.encode("utf-8"))`, guarded by `if state.md_content is not None` and wrapped in `try/except Exception` → `logger.warning(..., exc_info=True)` so a failed sidecar upload never fails an otherwise successful ingest (best-effort; already in code at both sites)
     - Replace `save_raw`'s inline `.pdf`-or-octet-stream ternary (`storage/documents.py:838-854`) with a suffix map: `.pdf` → `application/pdf`, `.md` → `text/markdown`, default `application/octet-stream`
     - No reject-side write — rejected documents get D3b's reason/defects (Task 3.7) instead, never an `.extracted.md`
     - _Requirements: RFC-050 R3 (AC1) — Property 2_
 
-  - [ ] 3.2 Verify erasure cascade covers raw output
+  - [x] 3.2 Verify erasure cascade covers raw output (implemented in f31f386 on the RFC-050 branch; **not deployed** — live image sha-721cfd1 is master, so the 2026-09-25 pocketbook ingest wrote no sidecar); covered by the `uploads/` prefix delete + `test_delete_doc_recovers_doc_name_past_extracted_md_sidecar`
     - Confirm `_ERASURE_MANIFEST`'s `uploads/` prefix delete (`storage/documents.py:383-415`) already covers `*.extracted.md` — no new manifest entry needed
     - Integration test: ingest doc → verify `*.extracted.md` exists → `delete_doc` → verify it is removed
     - **(New, post-review 2026-09-24)** Fix the doc-name recovery helper to strip the `.extracted.md` suffix (in addition to existing known suffixes), covering the sidecar-only case where `uploads/<doc_id>/` holds only `<filename>.extracted.md` and the original upload is already gone or never persisted
     - _Requirements: RFC-050 R3 (AC3) — Property 3_
 
-  - [ ] 3.3 Add `load_raw` to the storage layer
+  - [x] 3.3 Add `load_raw` to the storage layer (implemented in f31f386 on the RFC-050 branch; **not deployed** — live image sha-721cfd1 is master, so the 2026-09-25 pocketbook ingest wrote no sidecar); **named `load_extracted_md`**, not `load_raw`
     - `load_raw(doc_id: str) -> bytes | None` in `storage/documents.py`, listing `uploads/<doc_id>/*.extracted.md`
     - `doc_id` only — never reads `quarantine/`; no discovery function
     - Import directly from `storage.documents`; do not add to the storage package's frozen `__all__`
     - _Requirements: RFC-050 R3 (AC4) — Property 3a_
 
-  - [ ] 3.4 Add `include="raw"` to `get_document`
+  - [x] 3.4 Add `include="raw"` to `get_document` (implemented in f31f386 on the RFC-050 branch; **not deployed** — live image sha-721cfd1 is master, so the 2026-09-25 pocketbook ingest wrote no sidecar); **deviation:** a missing sidecar returns `raw_markdown: null` + note, not a not-found error (unknown `doc_id` still returns not-found); DESIGN.md updated
     - Extend the existing `get_document(doc_id: str)` MCP tool (`tools/documents.py:277`) with an optional `include: str | None = None` parameter; `include="raw"` calls `storage.documents.load_raw(doc_id)` and returns the decoded markdown, raising a descriptive not-found error otherwise; default behavior (`include=None`) is unchanged
     - No sixth tool — `FROZEN_SURFACE["tools"]` is unchanged
     - Update `DESIGN.md` §MCP Tool Contracts to document the new parameter
     - _Requirements: RFC-050 R3 (AC4), G2 — Property 3a_
 
-  - [ ] 3.5 Tests for raw output persistence
+  - [x] 3.5 Tests for raw output persistence (done 2026-09-26: unit tests for both persist sites, None-guard, content type, `load_extracted_md` and `include="raw"`; integration `test_raw_markdown_round_trip_persist_serve_erase` in `tests/test_client.py` — real `_persist_tree_result` → `save_raw` → `load_extracted_md` → `get_document(include="raw")` → `delete_doc` against an in-memory MinIO, zero objects left; budget baseline 978 → 979)
     - Unit test: `save_raw` called with correct arguments at both persist sites; content-type map (`.md` → `text/markdown`)
     - Unit test: `load_raw` returns stored content / `None` when missing
     - Integration test: full ingest → `.extracted.md` exists in MinIO → `delete_doc` → zero artifacts remain
@@ -252,7 +252,7 @@ Iterations 1-8 built a 5-wave, 10-task-group, 37-41h plan (admission gate + conc
     - Unit test: `get_document(doc_id, include="raw")` returns the markdown; a rejected sha256 or unknown `doc_id` returns not-found and never reads `quarantine/`
     - _Requirements: RFC-050 R3 — Properties 2, 3, 3a_
 
-  - [ ] 8. Checkpoint — Wave 4
+  - [ ] 8. Checkpoint — Wave 4 (2026-09-26: `make test` on test_storage/test_quarantine/test_client green; **pending** the live `get_document(..., include="raw")` smoke call, which needs the branch deployed and the pocketbook re-ingested)
     - Run `make test PYTEST_ARGS="tests/test_storage.py tests/test_quarantine.py -q" TEST_MEM_MAX=1500M`
     - Verify `get_document(..., include="raw")` works via a smoke call; verify MCP tool registration has no import errors
     - Ask the user if questions arise before proceeding.
