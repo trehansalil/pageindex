@@ -397,7 +397,9 @@ class TestInspectorForceOcrDecisionMatrix:
             )
             try:
                 # Zone-1: _script_from_filename now returns "Latn" for eng/deu filenames
-                mocks["conv_fn"].assert_called_once_with(pdf_file, expected_script="Latn")
+                mocks["conv_fn"].assert_called_once_with(
+                    pdf_file, expected_script="Latn", pages_with_tables=None
+                )
                 mocks["PDF_INSPECTOR_FORCED_OCR"].inc.assert_not_called()
             except AssertionError as exc:
                 failures.append(f"{label}: {exc}")
