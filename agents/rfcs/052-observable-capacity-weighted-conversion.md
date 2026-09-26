@@ -114,7 +114,7 @@ Defects:
 
 - **NG1:** Running the Mac and docling-1 concurrently. Deferred to a horizontal-scaling experiment (UD1).
 - **NG2:** Resizing portfolio or adding nodes. The split must be correct at today's size and pick up capacity automatically later.
-- **NG3:** Replacing promtail with Alloy in-cluster, or changing Loki storage or retention. Promtail 3.0 stays; the Mac uses Alloy only because promtail is not packaged for launchd.
+- **NG3:** Replacing promtail with Alloy in-cluster, or changing Loki storage or retention. Promtail 3.0 stays. The Mac runs no log agent; docling-service pushes its own logs to Loki (D2).
 - **NG4:** Batch or multi-document throughput and KEDA changes. KEDA stays paused.
 - **NG5:** A visual table detector (RFC-050 D9/R8). R2 uses PyMuPDF `find_tables()` plus fixed heuristics only.
 - **NG6:** Routing PII documents to the Mac. HR3 still holds (R5 AC7).
@@ -150,7 +150,7 @@ Defects:
    - `do_table_structure`, `do_ocr`, `tableformer_mode`;
    - `duration_s`, `peak_rss_bytes`, `outcome`.
 8. Preclassify SHALL log the page-class summary at INFO: counts per class, `detection_method`, and the table and OCR page sets as compact ranges.
-9. The Mac SHALL ship `~/docling-service/logs/service.log` to Loki through Grafana Alloy (launchd), labelled `host=mac`, `service=docling-service`. The push target SHALL be reachable **only** over `tailscale0`. `service.log` SHALL be rotated with newsyslog.
+9. The Mac docling-service SHALL push its own logs to Loki in-process (`PAGEINDEX_LOKI_PUSH_URL`), labelled `host=mac`, `service=docling-service`, with the correlation IDs as structured metadata. The push target SHALL be reachable **only** over `tailscale0` and SHALL expose only the push and ready endpoints. `service.log` SHALL be rotated in-process. After a one-time `install.sh`, no step on the Mac or on portfolio SHALL be manual: the Mac updates itself from `master` when idle, and infra changes apply on merge.
 10. A provisioned Grafana dashboard "PageIndex Logs" SHALL have a `$job_id` variable and panels for:
     - the full log stream;
     - a per-chunk timeline table (from `docling_chunk`);
@@ -264,7 +264,7 @@ Defects:
 | ID | Decision | Rationale |
 |---|---|---|
 | D1 | Keep promtail and Loki; fix relabels; structured metadata for IDs | Stack already works and costs ~185 Mi; IDs as labels would blow up cardinality. |
-| D2 | Mac ships logs with Alloy over Tailscale to a Loki NodePort limited to `tailscale0` | Loki has no auth. The Hetzner firewall stays closed publicly; firewall and host changes are operator steps, and Claude does not run hcloud mutations. |
+| D2 | Mac docling-service pushes logs in-process to a push-only nginx gateway bound to portfolio's Tailscale IP (`100.120.146.20:3100`); the Mac self-updates from `master` when idle; infra auto-applies on push | User wants no manual steps (2026-09-26). Binding to the Tailscale address avoids host iptables and NodePorts entirely; Loki has no auth, so the gateway allows only `POST /loki/api/v1/push` and `GET /ready`. Replaces the earlier Alloy + NodePort + iptables design. |
 | D3 | Correlate via HTTP headers into docling-service's `obs` envelope | Reuses the existing schema v1; no new tracing system. |
 | D4 | `find_tables()` as the primary table signal; tighten column alignment | The census shows column alignment at 264/292 is too loose to be useful. |
 | D5 | OCR need = no text layer, or images, or tables (UD2) | Follows the user's rule. Conservative: table pages keep OCR until R4 shows it is safe to drop. |
@@ -282,7 +282,7 @@ Defects:
 
 | Phase | Branch | Scope | Depends on |
 |---|---|---|---|
-| P0 | `ICR-97-rfc52-log-correlation` | R1: promtail fixes, headers, JSON logging in docling-service, chunk logs, dashboard, docling-1 toleration, Mac Alloy (operator) | — |
+| P0 | `ICR-97-rfc52-log-correlation` | R1: promtail fixes, headers, JSON logging in docling-service, chunk logs, dashboard, docling-1 toleration; then `ICR-97-rfc52-log-shipping-automation`: Loki Tailscale gateway, infra auto-apply, Mac in-process push and auto-updater | — |
 | P1 | `ICR-97-rfc52-page-class-detection` | R2: detector repair, `find_tables()`, image and text-layer signals, census script, images get the extra | P0 (to observe it) |
 | P2 | `ICR-97-rfc52-page-class-chunking` | R3 plus R4: run-length chunking, OCR by page class, TableFormer mode config, benchmark | P1 |
 | P3 | `ICR-97-rfc52-capacity-split` | R5 plus R6: `/capacity`, page-range API, coordinator, docling-local gating, parity check | P2 |
@@ -321,7 +321,7 @@ P0 ships first because every later acceptance criterion is verified through its 
 | More joins cause heading re-levelling and outline loss (RFC-027 D7) | R6 parity bar; shard boundaries align to page-class chunk boundaries (no extra joins beyond R3) |
 | Page-class OCR skip hides a corrupt text layer | Garble screen in the text-layer test (R2 AC5); HR5 `force_full_page_ocr` escalation unchanged (R3 AC4) |
 | FAST TableFormer degrades tables silently | R4 AC4 gate; default unchanged without evidence |
-| Loki on a Tailscale NodePort leaks if bound publicly | Interface-bound rule plus Tailscale ACL; verified with an external probe in P0 |
+| Loki exposed beyond the tailnet, or its query/delete API exposed on it | Gateway listens only on the Tailscale address and forwards only push and ready (403 otherwise); Tailscale ACLs |
 | Loki disk: host at 83% | 72 h retention kept; drop noise (R1 AC3); alert at 90% |
 | The Mac's `BLOCK_PRIVATE_URLS=1` needs public presigned URLs | Unchanged from today's path; the coordinator presigns per shard with the same client |
 

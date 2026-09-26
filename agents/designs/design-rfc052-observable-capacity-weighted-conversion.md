@@ -44,7 +44,7 @@ governs:
                       └────────────────────────────────────────────────┼──────────┘
                                                                         │
                          active remote (exactly one, chosen by node controller)
-                         ├─ Mac (Tailscale, public presigned URL)  — Alloy ─► Loki NodePort (tailscale0 only)
+                         ├─ Mac (Tailscale, public presigned URL)  — in-process push ─► loki-tailscale-gateway (100.120.146.20:3100, push-only) ─► Loki
                          └─ docling-1 (cpx62, private net)         — promtail DS (tolerates taint)
 ```
 
@@ -71,11 +71,9 @@ pipeline_stages:
 
 Adding the daemonset toleration `{key: dedicated, operator: Equal, value: docling, effect: NoSchedule}` puts a promtail on docling-1. Its memory comes out of docling-1's RAM.
 
-**Mac.** Alloy is installed with `brew install grafana/grafana/alloy` and runs as a launchd agent. Its `loki.source.file` tails `~/docling-service/logs/service.log`, and `loki.write` pushes to `http://100.120.146.20:<nodeport>/loki/api/v1/push`. Rotation uses newsyslog (`/etc/newsyslog.d/docling.conf`, 10 MB × 5).
+**Mac.** No log agent. When `PAGEINDEX_LOKI_PUSH_URL` is set (only the Mac's `run.sh` sets it), `obs.configure()` adds `LokiPushHandler` (`obs/loki.py`): a bounded, drop-oldest queue drained by a daemon thread in batches of 500 lines or 2 s to `http://100.120.146.20:3100/loki/api/v1/push`. Labels are `host`, `service`, `level`, `kind`; `job_id`, `doc_id`, `doc_sha8`, `run_id` go as structured metadata. Chunk children install their own handler. `service.log` rotates in-process (10 MB × 5). A launchd updater (`macos/update.sh`, every 300 s) fast-forwards to `origin/master` and re-runs `install.sh` when relevant paths changed, `/health` reports `in_flight == 0`, and the tree is clean.
 
-**Loki reachability.**
-- A `loki-tailscale` Service of type NodePort.
-- A host iptables rule that ACCEPTs that port on `tailscale0` and DROPs it on every other interface. The public Hetzner firewall does not list the port. This is an operator step; Claude does not mutate hcloud.
+**Loki reachability.** `apps/infra/loki-tailscale-gateway.yaml` (infra repo): an `nginx-unprivileged` Deployment on portfolio's host network, listening only on the Tailscale address `100.120.146.20:3100` (so it is never on the public interface; no NodePort, no iptables). It forwards `POST /loki/api/v1/push` and `GET /ready` to `loki.infra.svc.cluster.local:3100` and returns 403 for everything else, since Loki has no auth. A push to `main` touching `apps/infra/**` applies it; no operator step.
 
 **Correlation headers.** The client sends:
 
