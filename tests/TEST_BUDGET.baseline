@@ -60,4 +60,28 @@
 #                  three services) together with its 10 tests in
 #                  tests/test_ocr_fallback.py. Measured with
 #                  `pytest --collect-only -q`.
-942
+# 2026-09-24  956  ICR-97 RFC-050 Iter 9: +14 (D1 cgroup/floor, D2 max_jobs,
+#                  D3 raw sidecar + get_document include + loader, D3b reject
+#                  meta, D6 lifecycle, D7 ingest lock x3, Task 1.5 stage timing,
+#                  erasure doc_name). 48 as first written, folded to 14 by
+#                  collapsing 5 parametrize tables into in-body matrices and
+#                  dropping 1 duplicate erasure test; the job-deadline fix
+#                  extends existing tests. Measured with
+#                  `bash scripts/gates/test_budget.sh`.
+# 2026-09-25  958  ICR-97 RFC-050 docling sizing: +2. plan_docling matrix
+#                  (one table-driven test incl. the cgroup readers) and the
+#                  parallel chunked route (order, picture pages, threads).
+#                  Nothing covered the chunked route before.
+# 2026-09-25  978  ICR-97 RFC-050 test trim: -16. Collapsed
+#                  test_selective_tableformer.py from 36 to 20 by removing
+#                  redundant boundary-value variants (subsumed by threshold
+#                  tests), duplicate gate checks, inverse/edge-case variants,
+#                  and trivial Pydantic assignment tests. One test per
+#                  distinct code path retained. Measured with
+#                  `uv run pytest --collect-only -q`.
+# 2026-09-26  979  ICR-97 RFC-050 Task 3.5: +1. One persist -> serve -> erase
+#                  round trip for the raw-markdown sidecar through the real
+#                  save_raw / load_extracted_md / get_document / delete_doc
+#                  against an in-memory MinIO (HR2). Measured with
+#                  `bash scripts/gates/test_budget.sh`.
+979

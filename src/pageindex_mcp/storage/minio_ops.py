@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from datetime import timedelta
 from threading import Lock
 
 from minio import Minio  # for type annotations; construction goes through make_minio
+from minio.commonconfig import ENABLED, Filter
+from minio.error import S3Error
+from minio.lifecycleconfig import Expiration, LifecycleConfig, Rule
 
 from ..config import settings
 from ..metrics import (
@@ -16,6 +20,101 @@ from ..metrics import (
 from ..minio_client import make_minio
 
 logger = logging.getLogger(__name__)
+
+# RFC-050 D6: generic prefix-expiry + bucket-init hooks. The quarantine rule
+# itself is registered by storage/documents.py, which owns that prefix (the
+# quarantine-prefix-confined gate forbids the literal anywhere else).
+_BUCKET_INIT_HOOKS: list[Callable[[Minio, str], None]] = []
+
+
+def ensure_prefix_expiry(client: Minio, bucket: str, rule_id: str, prefix: str, days: int) -> None:
+    """Best-effort: ensure an expiration rule ``rule_id`` on ``prefix``.
+
+    minio-py's set_bucket_lifecycle REPLACES the whole configuration, so this
+    is read-merge-write against whatever lifecycle config already exists:
+    other rules are preserved, a stale rule with the same id is replaced, and
+    the call is a no-op when the rule is already present, ENABLED, with the
+    same prefix/days (idempotent, safe to call on every get_minio()).
+
+    Never raises: a missing s3:GetBucketLifecycleConfiguration /
+    PutBucketLifecycleConfiguration permission must not break ingestion.
+    """
+    try:
+        try:
+            existing = client.get_bucket_lifecycle(bucket)
+        except S3Error as exc:
+            if exc.code != "NoSuchLifecycleConfiguration":
+                raise
+            existing = None
+
+        other_rules = []
+        already_present = False
+        if existing is not None:
+            for rule in existing.rules:
+                if rule.rule_id == rule_id:
+                    current_prefix = rule.rule_filter.prefix if rule.rule_filter else None
+                    current_days = rule.expiration.days if rule.expiration else None
+                    # A DISABLED rule never expires anything: replace it.
+                    if current_prefix == prefix and current_days == days and rule.status == ENABLED:
+                        already_present = True
+                    # else: drop it, the merged rule below replaces it
+                else:
+                    other_rules.append(rule)
+
+        if already_present:
+            return
+
+        new_rule = Rule(
+            ENABLED,
+            rule_filter=Filter(prefix=prefix),
+            rule_id=rule_id,
+            expiration=Expiration(days=days),
+        )
+        client.set_bucket_lifecycle(bucket, LifecycleConfig([*other_rules, new_rule]))
+        logger.info("Applied lifecycle rule: id=%s prefix=%s days=%d", rule_id, prefix, days)
+    except Exception:
+        logger.warning(
+            "Failed to ensure lifecycle rule %s (prefix %s) on bucket %s (continuing without it)",
+            rule_id,
+            prefix,
+            bucket,
+            exc_info=True,
+        )
+
+
+def _run_bucket_init_hooks(client: Minio, bucket: str) -> None:
+    """Run every registered bucket-init hook; each is isolated best-effort."""
+    for hook in list(_BUCKET_INIT_HOOKS):
+        _run_bucket_init_hooks_one(hook, client, bucket)
+
+
+def register_bucket_init(
+    fn: Callable[[Minio, str], None],
+) -> Callable[[Minio, str], None]:
+    """Register ``fn(client, bucket)`` to run once when get_minio() first
+    builds its client (after bucket_exists/make_bucket). Idempotent per
+    function. A hook registered after the client already exists runs
+    immediately, so import order cannot silently skip it."""
+    if fn not in _BUCKET_INIT_HOOKS:
+        _BUCKET_INIT_HOOKS.append(fn)
+        if _minio_client is not None:
+            _run_bucket_init_hooks_one(fn, _minio_client, settings.minio_bucket)
+    return fn
+
+
+def _run_bucket_init_hooks_one(
+    fn: Callable[[Minio, str], None], client: Minio, bucket: str
+) -> None:
+    try:
+        fn(client, bucket)
+    except Exception:
+        logger.warning(
+            "MinIO bucket-init hook %s failed on bucket %s (continuing)",
+            getattr(fn, "__qualname__", fn),
+            bucket,
+            exc_info=True,
+        )
+
 
 # MinIO's own default region. Only used for the presign client, which cannot
 # discover the region live — see _get_presign_minio().
@@ -87,6 +186,7 @@ def get_minio() -> Minio:
                 if not client.bucket_exists(settings.minio_bucket):
                     logger.info("Creating MinIO bucket: %s", settings.minio_bucket)
                     client.make_bucket(settings.minio_bucket)
+                _run_bucket_init_hooks(client, settings.minio_bucket)
                 _minio_client = client
     return _minio_client
 

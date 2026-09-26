@@ -1082,3 +1082,170 @@ async def test_d6_prefilter_malformed_json_falls_back_to_all_docs_with_warning(c
     warnings = [r for r in caplog.records if r.levelname == "WARNING"]
     assert any("failed to parse" in r.message for r in warnings)
     assert not any(r.levelname == "ERROR" for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# RFC-050 D7 (HR2): per-file ingest lock around the hash-cache dedup check
+# ---------------------------------------------------------------------------
+
+
+async def test_ingest_lock_second_concurrent_ingest_waits_then_dedup_skips():
+    """Two concurrent index-like calls on one file: the second waits for the
+    lock, re-runs the dedup check, and skips instead of minting a new doc_id."""
+    import fakeredis
+
+    from pageindex_mcp.storage.ingest_lock import ACQUIRED, ACQUIRED_AFTER_WAIT, ingest_lock
+
+    fr = fakeredis.FakeRedis(decode_responses=True)
+    hash_cache: dict[str, str] = {}
+    outcomes: list[str] = []
+
+    async def index_like(filename: str, sha: str) -> str:
+        async with ingest_lock(filename, redis_client=fr, poll_interval_s=0.01) as lock:
+            outcomes.append(lock.choice)
+            if hash_cache.get(filename) == sha:
+                return "dedup_skip"
+            await asyncio.sleep(0.05)  # convert + persist
+            hash_cache[filename] = sha
+            return "new_doc_id"
+
+    results = await asyncio.gather(index_like("a.pdf", "s1"), index_like("a.pdf", "s1"))
+
+    assert sorted(results) == ["dedup_skip", "new_doc_id"]
+    assert sorted(outcomes) == [ACQUIRED, ACQUIRED_AFTER_WAIT]
+    assert fr.keys("pageindex:ingest-lock:*") == []
+
+
+async def test_ingest_lock_release_is_safe_and_fail_open():
+    """Released on exception; compare-and-delete never removes another holder's
+    lock; a Redis outage proceeds unlocked instead of failing ingestion."""
+    import fakeredis
+
+    from pageindex_mcp.storage import ingest_lock as il
+
+    fr = fakeredis.FakeRedis(decode_responses=True)
+    with pytest.raises(RuntimeError):
+        async with il.ingest_lock("b.pdf", redis_client=fr):
+            raise RuntimeError("reject")
+    assert fr.get(il.lock_key("b.pdf")) is None
+
+    key = il.lock_key("c.pdf")
+    fr.set(key, "other-holder")
+    assert il.release(fr, key, "my-token") is False
+    assert fr.get(key) == "other-holder"
+
+    broken = MagicMock()
+    broken.set.side_effect = ConnectionError("redis down")
+    async with il.ingest_lock("d.pdf", redis_client=broken) as lock:
+        assert lock.choice == il.REDIS_UNAVAILABLE
+    # Best-effort compare-and-delete even on the fail-open path: the SET may
+    # have applied before the reply was lost.
+    broken.eval.assert_called_once()
+
+    def set_then_drop(*args, **kwargs):
+        fr.set(*args, **kwargs)
+        raise ConnectionError("reply lost after SET applied")
+
+    lossy = MagicMock(wraps=fr)
+    lossy.set.side_effect = set_then_drop
+    async with il.ingest_lock("f.pdf", redis_client=lossy) as lock:
+        assert lock.choice == il.REDIS_UNAVAILABLE
+    assert fr.get(il.lock_key("f.pdf")) is None
+
+    # HR2: wait budget expiry while another holder owns the lock raises
+    # IngestLockBusy and never runs the body unlocked; the other holder's
+    # lock is untouched and the sleep never overshoots the budget.
+    fr.set(il.lock_key("g.pdf"), "other-holder")
+    t0 = asyncio.get_running_loop().time()
+    with pytest.raises(il.IngestLockBusy):
+        async with il.ingest_lock("g.pdf", redis_client=fr, poll_interval_s=5.0, max_wait_s=0.05):
+            pytest.fail("body must not run unlocked while another holder owns the lock")
+    assert asyncio.get_running_loop().time() - t0 < 1.0
+    assert fr.get(il.lock_key("g.pdf")) == "other-holder"
+
+    # The lock's own client carries finite socket/connect timeouts (building
+    # it does not connect).
+    kwargs = il._build_lock_redis().connection_pool.connection_kwargs
+    assert kwargs["socket_timeout"] == il.REDIS_SOCKET_TIMEOUT_S
+    assert kwargs["socket_connect_timeout"] == il.REDIS_SOCKET_TIMEOUT_S
+
+    # Cancelled after the SET landed (held still False): compare-and-delete
+    # with our token, then re-raise -- no orphan lock.
+    def set_then_cancel(*args, **kwargs):
+        fr.set(*args, **kwargs)
+        raise asyncio.CancelledError
+
+    racy = MagicMock(wraps=fr)
+    racy.set.side_effect = set_then_cancel
+    with pytest.raises(asyncio.CancelledError):
+        async with il.ingest_lock("e.pdf", redis_client=racy):
+            pytest.fail("body must not run when acquire is cancelled")
+    assert fr.get(il.lock_key("e.pdf")) is None
+
+
+async def test_ingest_lock_held_by_parent_and_survives_child_death(monkeypatch, tmp_path):
+    """RFC-050 D7: the lock is taken in the worker PARENT around the converter
+    child (keyed on the child's hash-cache key, the basename), with a TTL
+    covering the child's longest life, and released even when the child is
+    killed (OOM) -- a child-held lock would be stranded for its TTL."""
+    import fakeredis
+
+    from pageindex_mcp.storage import ingest_lock as il
+    from pageindex_mcp.worker import subprocess_mgr as sm
+    from pageindex_mcp.worker.subprocess_mgr import ConverterOOMError
+
+    fr = fakeredis.FakeRedis(decode_responses=True)
+    monkeypatch.setattr(il, "_default_redis", lambda: fr)
+    pdf = tmp_path / "dir" / "report.pdf"
+    key = il.lock_key("report.pdf")
+    seen: dict = {}
+
+    async def dying_child(pdf_path, **_kw):
+        seen["pttl"] = fr.pttl(key)
+        raise ConverterOOMError(-9, "killed")
+
+    monkeypatch.setattr(sm, "_run_converter_child", dying_child)
+    # conftest loads developer .env values; pin the default wait budget.
+    monkeypatch.delenv("INGEST_LOCK_MAX_WAIT_S", raising=False)
+    with pytest.raises(ConverterOOMError):
+        await sm._run_converter_subprocess(str(pdf))
+
+    ttl_s, max_wait_s = sm._ingest_lock_budget()
+    assert seen["pttl"] > 0 and seen["pttl"] <= ttl_s * 1000
+    assert ttl_s >= sm.MAX_EFFECTIVE_TIMEOUT  # outlives any child
+    assert fr.get(key) is None  # parent's finally freed it despite child death
+
+    # Wait budget: INGEST_LOCK_MAX_WAIT_S (default 900), never more than half
+    # the smallest effective timeout the child can get.
+    assert max_wait_s == min(900.0, min(sm.CHILD_TIMEOUT, sm.MAX_EFFECTIVE_TIMEOUT) / 2)
+    monkeypatch.setenv("INGEST_LOCK_MAX_WAIT_S", "99999")
+    assert sm._ingest_lock_budget()[1] == min(sm.CHILD_TIMEOUT, sm.MAX_EFFECTIVE_TIMEOUT) / 2
+
+    # RFC-050: an arq job deadline caps the wait at half of what is left of it
+    # (the admission wait already spent the rest); no deadline = unchanged.
+    import time
+
+    assert 49 < sm._ingest_lock_budget(time.monotonic() + 100)[1] <= 50
+    assert sm._ingest_lock_budget(time.monotonic() - 5)[1] == 0.0
+    assert sm._ingest_lock_budget(None) == sm._ingest_lock_budget()
+
+
+def test_stage_timings_observed_in_worker_parent():
+    """RFC-050 Task 1.5: the child's stdout ``stage_timings`` are observed into
+    pageindex_stage_duration_seconds in the parent; junk stages are ignored."""
+    from pageindex_mcp.metrics import STAGE_DURATION_SECONDS
+    from pageindex_mcp.worker.subprocess_mgr import _observe_stage_timings
+
+    def count(stage: str) -> float:
+        return STAGE_DURATION_SECONDS.labels(stage=stage)._sum.get()
+
+    before = {s: count(s) for s in ("extraction", "tree_build", "recovery")}
+    _observe_stage_timings(
+        {"stage_timings": {"extraction": 2.5, "tree_build": 4.0, "recovery": 0.5, "bogus": 9}}
+    )
+    _observe_stage_timings({"ok": False})  # absent field is a no-op
+    assert {s: count(s) - before[s] for s in before} == {
+        "extraction": 2.5,
+        "tree_build": 4.0,
+        "recovery": 0.5,
+    }

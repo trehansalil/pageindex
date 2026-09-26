@@ -8,11 +8,16 @@ The worker sends a presigned MinIO URL; this service downloads the file and
 runs conversion locally, returning markdown + picture results as JSON.
 """
 
+import asyncio
 import base64
 import contextlib
+import hmac
+import ipaddress
 import logging
 import os
+import socket
 import tempfile
+import urllib.parse
 from contextlib import asynccontextmanager
 
 import httpx
@@ -23,7 +28,51 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BEARER_TOKEN = os.environ.get("DOCLING_SERVICE_BEARER_TOKEN", "")
+# Anonymous access is an explicit opt-in for a local dev container only. The
+# service is reachable over the internet (docling.saliltrehan.com), so an unset
+# token must stop startup rather than silently disable auth.
+ALLOW_ANONYMOUS = os.environ.get("DOCLING_SERVICE_ALLOW_ANONYMOUS", "") == "1"
 DOWNLOAD_TIMEOUT_S = int(os.environ.get("DOWNLOAD_TIMEOUT_S", "120"))
+# Refuse presigned URLs that resolve to a non-public address (loopback,
+# private, link-local, Tailscale's 100.64/10). For hosts where no NetworkPolicy
+# fences egress -- the native Mac copy behind docling.saliltrehan.com -- so a
+# token holder cannot make it fetch the host's own services or its LAN. Off by
+# default: the local compose copy downloads from MinIO at a private address.
+# Checked at resolve time only (a rebinding DNS answer could still race it);
+# httpx does not follow redirects, so a public URL cannot bounce inward.
+BLOCK_PRIVATE_URLS = os.environ.get("DOCLING_BLOCK_PRIVATE_URLS", "") == "1"
+# Conversions admitted at once. Each peaks at ~2 GB RSS, so the default of 1
+# makes the pod's memory limit hold however many workers call in parallel;
+# extra requests queue here instead of OOM-killing the pod.
+MAX_CONCURRENT = max(1, int(os.environ.get("DOCLING_MAX_CONCURRENT", "1")))
+_convert_slots = asyncio.Semaphore(MAX_CONCURRENT)
+
+# Sized from this container's cgroup limits, not from env: the node type
+# varies with what Hetzner has in stock, and the pod's limits follow the node
+# (docling-node.sh up). The plan assumes the one-at-a-time admission above.
+# A single-pass PDF runs in this process on every CPU; set
+# before torch is first imported, which reads OMP_NUM_THREADS once.
+from pageindex_mcp.converters.docling_resources import (  # noqa: E402
+    available_cpus,
+    available_memory_bytes,
+    plan_docling,
+)
+
+CPUS = available_cpus()
+os.environ["DOCLING_NUM_THREADS"] = str(CPUS)
+os.environ["OMP_NUM_THREADS"] = str(CPUS)
+logger.info(
+    "docling sizing: %d CPUs, %d MiB memory (cgroup limits)",
+    CPUS,
+    available_memory_bytes() // (1024 * 1024),
+)
+
+
+def _pdf_page_count(path: str) -> int:
+    import fitz  # PyMuPDF; already the chunked route's splitter
+
+    with fitz.open(path) as doc:
+        return doc.page_count
 
 
 # ---------------------------------------------------------------------------
@@ -32,11 +81,11 @@ DOWNLOAD_TIMEOUT_S = int(os.environ.get("DOWNLOAD_TIMEOUT_S", "120"))
 
 
 def _verify_token(authorization: str | None = Header(None)) -> None:
-    if not BEARER_TOKEN:
+    if not BEARER_TOKEN and ALLOW_ANONYMOUS:
         return
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing bearer token")
-    if authorization[7:] != BEARER_TOKEN:
+    if not hmac.compare_digest(authorization[7:].encode(), BEARER_TOKEN.encode()):
         raise HTTPException(status_code=403, detail="Invalid bearer token")
 
 
@@ -49,6 +98,7 @@ class PdfConvertRequest(BaseModel):
     presigned_url: str
     force_full_page_ocr: bool = False
     ocr_lang_override: list[str] | None = None
+    pages_with_tables: list[int] | None = None
 
 
 class ImageConvertRequest(BaseModel):
@@ -82,6 +132,11 @@ class ImageConvertResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if not BEARER_TOKEN and not ALLOW_ANONYMOUS:
+        raise RuntimeError(
+            "DOCLING_SERVICE_BEARER_TOKEN is unset; refusing to start without auth "
+            "(set DOCLING_SERVICE_ALLOW_ANONYMOUS=1 for a local dev container only)"
+        )
     logger.info("Warming Docling converter cache...")
     try:
         from pageindex_mcp.converters import _docling_converter
@@ -101,8 +156,25 @@ app = FastAPI(title="Docling Conversion Service", lifespan=lifespan)
 # ---------------------------------------------------------------------------
 
 
+def _refuse_private_url(url: str) -> None:
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise HTTPException(status_code=400, detail="presigned_url must be an http(s) URL")
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        infos = socket.getaddrinfo(parts.hostname, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise HTTPException(status_code=400, detail="presigned_url host does not resolve") from exc
+    if any(not ipaddress.ip_address(info[4][0]).is_global for info in infos):
+        raise HTTPException(
+            status_code=400, detail="presigned_url resolves to a non-public address"
+        )
+
+
 async def _download_to_temp(url: str, suffix: str = ".pdf") -> str:
     """Download a file from a presigned URL to a temporary path."""
+    if BLOCK_PRIVATE_URLS:
+        await asyncio.to_thread(_refuse_private_url, url)
     tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
     try:
         async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT_S) as client:
@@ -152,18 +224,24 @@ async def version():
 
 @app.post("/convert/pdf", response_model=PdfConvertResponse, dependencies=[Depends(_verify_token)])
 async def convert_pdf(req: PdfConvertRequest):
-    import asyncio
-
     tmp_path = await _download_to_temp(req.presigned_url, suffix=".pdf")
     try:
         from pageindex_mcp.converters import pdf_to_markdown_docling
 
-        md, pic_results, _extraction_stages = await asyncio.to_thread(
-            pdf_to_markdown_docling,
-            tmp_path,
-            force_full_page_ocr=req.force_full_page_ocr,
-            ocr_lang_override=req.ocr_lang_override,
-        )
+        plan = plan_docling(await asyncio.to_thread(_pdf_page_count, tmp_path))
+        logger.info("docling plan: %s", plan)
+        async with _convert_slots:
+            _pages_set = set(req.pages_with_tables) if req.pages_with_tables is not None else None
+            md, pic_results, _extraction_stages = await asyncio.to_thread(
+                pdf_to_markdown_docling,
+                tmp_path,
+                force_full_page_ocr=req.force_full_page_ocr,
+                ocr_lang_override=req.ocr_lang_override,
+                max_pages=plan.pages_per_chunk,
+                workers=plan.workers,
+                num_threads=plan.threads_per_worker,
+                pages_with_tables=_pages_set,
+            )
         serialized_pics = [_serialize_picture_result(pr) for pr in pic_results]  # type: ignore[arg-type]
         return PdfConvertResponse(
             markdown=md,
@@ -181,18 +259,17 @@ async def convert_pdf(req: PdfConvertRequest):
     "/convert/image", response_model=ImageConvertResponse, dependencies=[Depends(_verify_token)]
 )
 async def convert_image(req: ImageConvertRequest):
-    import asyncio
-
     suffix = ".png"
     tmp_path = await _download_to_temp(req.presigned_url, suffix=suffix)
     try:
         from pageindex_mcp.converters import image_to_markdown
 
-        md = await asyncio.to_thread(
-            image_to_markdown,
-            tmp_path,
-            ocr_lang_override=req.ocr_lang_override,
-        )
+        async with _convert_slots:
+            md = await asyncio.to_thread(
+                image_to_markdown,
+                tmp_path,
+                ocr_lang_override=req.ocr_lang_override,
+            )
         return ImageConvertResponse(markdown=md)
     except Exception as exc:
         logger.exception("Image conversion failed: %s", exc)

@@ -155,6 +155,7 @@ async def _process_one(sem: asyncio.Semaphore, file: Path, run_id: str) -> None:
     # Same isolation primitive the arq worker uses: a fresh converters_cli child
     # per file that dies (and frees Docling/torch memory) when it returns. The
     # child runs CustomPageIndexClient.index() in-process, then exits.
+    from pageindex_mcp.storage.ingest_lock import IngestLockBusy
     from pageindex_mcp.worker import ConverterOOMError, _run_converter_subprocess
 
     # RFC-046 D12 (task 12.2): bind INSIDE the semaphore, not before it -- each
@@ -169,6 +170,11 @@ async def _process_one(sem: asyncio.Semaphore, file: Path, run_id: str) -> None:
                 return
             except TimeoutError:
                 print(f"  [{file.name}] ERROR: converter child timed out", flush=True)
+                return
+            except IngestLockBusy as e:
+                # RFC-050 D7 / HR2: another ingest still holds this file's
+                # lock. Skip rather than convert unlocked; re-run to retry.
+                print(f"  [{file.name}] ERROR: skipped, {e} (re-run to retry)", flush=True)
                 return
             except Exception as e:
                 # Report and continue to the next file (matches prior behaviour).

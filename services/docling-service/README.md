@@ -87,7 +87,9 @@ docker run -p 8080:8080 \
 
 | Variable                       | Default | Description                                    |
 |--------------------------------|---------|------------------------------------------------|
-| `DOCLING_SERVICE_BEARER_TOKEN` | (empty) | Bearer token for auth; empty = no auth         |
+| `DOCLING_SERVICE_BEARER_TOKEN` | (empty) | Bearer token for auth; **required** — the service refuses to start without it |
+| `DOCLING_SERVICE_ALLOW_ANONYMOUS` | (empty) | `1` allows an empty token (local dev container only, never an exposed pod) |
+| `DOCLING_MAX_CONCURRENT`      | `1`     | Conversions run at once; others queue (each peaks ~2 GB RSS) |
 | `DOWNLOAD_TIMEOUT_S`          | `120`   | Timeout for downloading PDFs from presigned URL |
 | `DOCLING_ARTIFACTS_PATH`      | (baked) | Path to pre-downloaded Docling model weights   |
 | `TESSDATA_PREFIX`             | (baked) | Path to Tesseract trained data files           |

@@ -49,7 +49,7 @@ os.environ["PAGEINDEX_WORKER_MAX_JOBS"] = ""
 def _instant_memory_gate():
     """Make the worker's admission gate return immediately during tests."""
 
-    async def _proceed(_redis):
+    async def _proceed(_redis, **_kwargs):
         return True
 
     try:
@@ -58,6 +58,28 @@ def _instant_memory_gate():
     except (ImportError, AttributeError):
         # Worker module not importable in this context — nothing to patch.
         yield
+
+
+@pytest.fixture(autouse=True)
+def _isolated_ingest_lock_redis():
+    """RFC-050 D7: the parent-held ingest lock in ``_run_converter_subprocess``
+    must never reach the real (possibly remote) Redis from a test. Each test
+    gets a private fakeredis; tests needing their own client patch over it."""
+    import fakeredis
+
+    fr = fakeredis.FakeRedis(server=fakeredis.FakeServer(), decode_responses=True)
+    patcher = patch("pageindex_mcp.storage.ingest_lock._default_redis", lambda: fr)
+    # Fallback covers SETUP only: wrapping the yield would swallow a test's
+    # own ImportError/AttributeError and yield twice.
+    try:
+        patcher.start()
+    except (ImportError, AttributeError):
+        yield
+        return
+    try:
+        yield
+    finally:
+        patcher.stop()
 
 
 @pytest.fixture(autouse=True)

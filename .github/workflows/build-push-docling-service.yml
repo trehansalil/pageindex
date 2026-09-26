@@ -1,0 +1,116 @@
+name: Build & Push Docling Service to GHCR
+
+# Publishes the in-cluster Docling service image (RFC-050) so a k8s Deployment
+# can pull it. Mirrors build-push.yml (pageindex-mcp) step for step; the
+# Scaleway workflow (deploy-docling-service.yml) is disabled and untouched.
+#
+# Master only: a push to a feature branch never builds or publishes, and a
+# manual dispatch from a non-master ref runs the gates but skips build-push
+# (no `:latest`, no deploy event for unmerged code).
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'services/docling-service/**'
+      # The image bundles the package (Dockerfile copies these), so a code
+      # change must rebuild it or the pod runs a stale converter.
+      - 'src/pageindex_mcp/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/build-push-docling-service.yml'
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: ghcr.io/trehansalil/docling-service
+
+jobs:
+  # Same no-infra quality gate as build-push.yml: the image bakes in src/, so
+  # nothing is published from a tree that fails gates 1-6.
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up uv (Python 3.12)
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run quality gates (no-infra prefix)
+        run: bash scripts/eval.sh --no-infra
+
+  build-push:
+    needs: test
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # BuildKit (docker-container) driver: concurrent blob push with internal
+      # retry, and a prerequisite for the type=gha cache. See build-push.yml.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Exposes ACTIONS_RUNTIME_TOKEN / ACTIONS_CACHE_URL(S) so the raw
+      # `docker buildx build` below can use the type=gha cache.
+      - name: Expose GitHub Actions runtime for buildx gha cache
+        uses: crazy-max/ghaction-github-runtime@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build context is the REPO ROOT with an explicit -f: the Dockerfile
+      # COPYs pyproject.toml, uv.lock and src/ (the service imports
+      # pageindex_mcp.converters) as well as services/docling-service/app.py,
+      # none of which are reachable from services/docling-service/ as context.
+      # The gha cache is scoped so it does not evict pageindex-mcp's layers.
+      - name: Build and push (retry on transient ghcr.io blips)
+        uses: nick-fields/retry@v3
+        # HF_TOKEN as a BuildKit secret, never a build-arg (see build-push.yml).
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        with:
+          timeout_minutes: 40
+          max_attempts: 4
+          retry_wait_seconds: 30
+          retry_on: error
+          command: |
+            docker buildx build \
+              --push \
+              --provenance=false \
+              --sbom=false \
+              --cache-from type=gha,scope=docling-service \
+              --cache-to type=gha,scope=docling-service,mode=max,ignore-error=true \
+              --secret id=hf_token,env=HF_TOKEN \
+              --build-arg BUILD_SHA=${{ github.sha }} \
+              --build-arg BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+              -f services/docling-service/Dockerfile \
+              -t ${{ env.IMAGE_NAME }}:sha-${{ github.sha }} \
+              -t ${{ env.IMAGE_NAME }}:latest \
+              .
+
+      # hetzner-deployment-service (branch feature/pageindex-docling-service)
+      # routes this event to the docling-service manifests only. Until that
+      # branch is merged, deploy.yml does not list the type and this is a no-op.
+      - name: Trigger deploy
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.DEPLOY_PAT }}
+          repository: trehansalil/hetzner-deployment-service
+          event-type: docling-service-image-updated
+          client-payload: '{"app": "docling-service", "image_tag": "sha-${{ github.sha }}"}'

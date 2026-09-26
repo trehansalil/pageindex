@@ -1,0 +1,146 @@
+# SUPERSEDED 2026-09-24: the real change is on branch feature/pageindex-docling-service
+# in hetzner-deployment-service (uncommitted there at time of writing). Kept as the
+# rationale for the sizing; the branch is authoritative.
+#
+# =============================================================================
+# RFC-050 manifest change for the external `hetzner-deployment-service` repo
+# ILLUSTRATIVE -- NOT `git apply`-able.
+# =============================================================================
+#
+# The k3s manifests live in the external hetzner-deployment-service repo,
+# which is not checked out on this host, so no real diff can be produced.
+# This file shows the intended end state as YAML snippets. Every FILE PATH
+# BELOW IS AN ASSUMPTION (taken from docs/PARALLEL_INGESTION.md §3 and
+# docs/superpowers/plans/2026-06-13-worker-concurrency-autoscaling.md). Adapt
+# the paths, labels and image tag to that repo's real layout.
+#
+# Sizing rationale: docs/PARALLEL_INGESTION.md § "Deployment sizing (RFC-050)".
+# Single node `portfolio`, 7.6 GB RAM (allocatable ~7.57 GiB), shared with
+# infra/{redis,postgres,minio}. Requests after this change are ~7,000 Mi,
+# about 90 % of the pre-resize allocatable. Infra decision 2026-09-25: the
+# current server is RESIZED in place (no second node), BEFORE the G1 baseline
+# arm, so both G1 arms run on the same hardware. Redo the fit check against
+# the resized allocatable.
+#
+# OPEN ITEM -- docling-service concurrency: one replica and one uvicorn worker
+# do NOT serialize conversions. Both conversion endpoints run the work via
+# asyncio.to_thread with no service-side limit, so up to N = (worker
+# replicas x MAX_JOBS) = 2 x 2 = 4 conversions can run at once in this pod
+# (~2 GB peak each). The 3584Mi limit below is only correct if the service
+# caps its own concurrency to 1 (e.g. a semaphore around the conversion);
+# otherwise size the limit for N concurrent conversions. One of the two must
+# hold before MAX_JOBS=2 ships.
+#
+# Live cluster state read on 2026-09-24 (kubectl, read-only). It matters for
+# this change:
+#   * configmap pageindex-mcp-config has DOCLING_SERVICE_URL pointing at the
+#     Scaleway function. Scaleway is off-limits, so section 3 replaces it.
+#   * configmap has PAGEINDEX_WORKER_MAX_JOBS="10". An explicit value beats
+#     RFC-050 D2's service-aware default, and resolve_max_jobs() clamps it to
+#     the ceiling of 4. If it is left in place the worker runs 4 jobs, not 2.
+#     Section 3 sets it to 2.
+#   * The worker Deployment currently requests 512Mi and is limited to 2500Mi.
+#   * ScaledObject pageindex-mcp-worker is already min 1 / max 2, and `kubectl
+#     get scaledobject` reports it as PAUSED=True. Check that before the G1
+#     "post" runs.
+#   * PII_CORPUS="false". With PII_CORPUS=true the HR3 boot gate
+#     (config.py, _ZDR_ALLOW_PATTERNS) would reject the in-cluster
+#     http://docling-service:8080 URL, because it is not on the ZDR allowlist.
+#     The allowlist would need an in-cluster exemption before PII corpora can
+#     use this route.
+#
+# Rollout order: 1 (service + deployment) -> wait for /health ready -> 3
+# (configmap) -> 2 (worker resources) -> restart the worker -> 4 (KEDA).
+# =============================================================================
+
+
+# --- 1. NEW FILE (assumed path): apps/pageindex-mcp/docling-service.yaml ------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: docling-service
+  namespace: pageindex-mcp
+  labels: {app: docling-service}
+spec:
+  replicas: 1                      # one uvicorn worker -- does NOT serialize conversions (see OPEN ITEM above)
+  strategy: {type: Recreate}       # never run two ~2 GB pods during a rollout
+  selector:
+    matchLabels: {app: docling-service}
+  template:
+    metadata:
+      labels: {app: docling-service}
+    spec:
+      containers:
+        - name: docling-service
+          # built from services/docling-service/Dockerfile in pageindex_deployment
+          image: ghcr.io/trehansalil/docling-service:sha-<BUILD_SHA>   # ASSUMED image name
+          ports:
+            - {name: http, containerPort: 8080}
+          env:
+            - name: DOCLING_SERVICE_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: pageindex-mcp-secrets, key: DOCLING_SERVICE_BEARER_TOKEN}  # ASSUMED key
+          resources:
+            requests: {memory: 2560Mi, cpu: 500m}
+            limits:   {memory: 3584Mi}     # assumes a service-side concurrency cap of 1; else N x ~2 GB
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            initialDelaySeconds: 20        # models warm at startup (~15-30s)
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            initialDelaySeconds: 60
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: docling-service
+  namespace: pageindex-mcp
+spec:
+  selector: {app: docling-service}
+  ports:
+    - {name: http, port: 8080, targetPort: http}
+
+
+# --- 2. MODIFY (assumed path): apps/pageindex-mcp/worker-deployment.yaml -----
+# Deployment pageindex-mcp-worker, container "worker": resources only.
+#
+# -          resources:
+# -            requests: {memory: 512Mi}
+# -            limits:   {memory: 2500Mi}
+# +          resources:
+# +            requests: {memory: 1Gi}
+# +            limits:   {memory: 1536Mi}
+#
+# NOTE: 1.5Gi assumes the service-path converter child peaks well below the
+# 1.9-3.1 GiB local-Docling child. That is unmeasured. Measure it before
+# relying on MAX_JOBS=2 inside this limit (PARALLEL_INGESTION.md §5 step 2).
+
+
+# --- 3. MODIFY (assumed path): apps/pageindex-mcp/configmap.yaml --------------
+# ConfigMap pageindex-mcp-config (consumed by the worker via envFrom).
+#
+# -  DOCLING_SERVICE_URL: "https://<scaleway-function>.functions.fnc.nl-ams.scw.cloud/"
+# +  DOCLING_SERVICE_URL: "http://docling-service:8080"
+# -  PAGEINDEX_WORKER_MAX_JOBS: "10"
+# +  PAGEINDEX_WORKER_MAX_JOBS: "2"            # or delete it: D2 defaults to 2 on the service route
+# +  MEM_ADMISSION_FLOOR_SERVICE_BYTES: "838860800"   # 800 MiB, RFC-050 D1
+#
+# DOCLING_SERVICE_TIMEOUT_S ("1800") and MEM_ADMISSION_FLOOR_BYTES stay as
+# they are. The latter still applies whenever offload is not configured.
+
+
+# --- 4. MODIFY (assumed path): apps/pageindex-mcp/worker-scaledobject.yaml ----
+# Already maxReplicaCount: 2 live. Keep it at 2 and do not raise it: 2 replicas
+# x MAX_JOBS=2 = 4 concurrent jobs is the ceiling this node's budget allows.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: pageindex-mcp-worker
+  namespace: pageindex-mcp
+spec:
+  scaleTargetRef: {name: pageindex-mcp-worker}
+  minReplicaCount: 1
+  maxReplicaCount: 2
+  # triggers / advanced: unchanged

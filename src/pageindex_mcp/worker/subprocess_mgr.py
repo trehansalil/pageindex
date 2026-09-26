@@ -23,8 +23,14 @@ PDF_INSPECTOR_PRECLASSIFY = pipeline_config.pdf_inspector_preclassify
 from ..metrics import (  # noqa: E402
     CONVERTER_CHILD_OOM_TOTAL,
     CONVERTER_PEAK_RSS_KIB,
+    STAGE_DURATION_SECONDS,
 )
-from .constants import INSPECTOR_CONFIDENCE_THRESHOLD, INSPECTOR_OCR_MULTIPLIER  # noqa: E402
+from .constants import (  # noqa: E402
+    CHILD_TIMEOUT,
+    INSPECTOR_CONFIDENCE_THRESHOLD,
+    INSPECTOR_OCR_MULTIPLIER,
+    MAX_EFFECTIVE_TIMEOUT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -240,12 +246,117 @@ async def _kill_group(proc: asyncio.subprocess.Process, grace: float = KILL_GRAC
         logger.error("converter child %s did not exit after SIGKILL", proc.pid)
 
 
-async def _run_converter_subprocess(  # noqa: C901, PLR0915
+_STAGES = frozenset({"extraction", "tree_build", "recovery"})
+
+
+def _observe_stage_timings(payload: dict) -> None:
+    """RFC-050 Task 1.5: observe the child's ``stage_timings`` (seconds) into
+    STAGE_DURATION_SECONDS here, in the parent that owns the registry.
+    Best-effort: a malformed field never fails the job."""
+    timings = payload.get("stage_timings")
+    if not isinstance(timings, dict):
+        return
+    for stage, seconds in timings.items():
+        if stage not in _STAGES:
+            continue
+        try:
+            STAGE_DURATION_SECONDS.labels(stage=stage).observe(float(seconds))
+        except (TypeError, ValueError):
+            continue
+
+
+def _deadline_left(deadline: float | None) -> float:
+    """RFC-050: seconds left before the arq job deadline (``inf`` with none)."""
+    return float("inf") if deadline is None else max(deadline - time.monotonic(), 0.0)
+
+
+def _ingest_lock_budget(deadline: float | None = None) -> tuple[float, float]:
+    """RFC-050 D7: ``(ttl_s, max_wait_s)`` for the parent-held ingest lock.
+
+    TTL covers the child's longest possible life (effective timeout is capped
+    at MAX_EFFECTIVE_TIMEOUT; the 60s handshake is inside that budget) plus
+    the kill grace and a margin -- it only matters if this parent itself dies,
+    because the parent releases in ``finally`` even when the child is killed.
+    The wait is INGEST_LOCK_MAX_WAIT_S (default 900s), never more than half
+    the smallest effective timeout the child can get, so a waiter always
+    keeps most of its own conversion budget.
+    """
+    from ..storage.ingest_lock import TTL_MARGIN_S, default_max_wait_s
+
+    ttl_s = float(max(MAX_EFFECTIVE_TIMEOUT, 60) + KILL_GRACE_SECONDS + TTL_MARGIN_S)
+    min_effective = min(CHILD_TIMEOUT, MAX_EFFECTIVE_TIMEOUT)
+    max_wait_s = max(0.0, min(default_max_wait_s(), min_effective / 2))
+    # RFC-050: the wait comes out of the arq job's budget too -- never more
+    # than half of what is left of it, so the child still gets the rest.
+    max_wait_s = min(max_wait_s, _deadline_left(deadline) / 2)
+    return ttl_s, max_wait_s
+
+
+async def _run_converter_subprocess(
     pdf_path: str,
     *,
     staging_key: str | None = None,
     job_start_config: dict | None = None,
     on_effective_timeout: Callable[[float], Awaitable[None]] | None = None,
+    deadline: float | None = None,
+) -> dict[str, Any]:
+    """Run the converter child under the per-file ingest lock (RFC-050 D7, HR2).
+
+    The single spawn point for both the arq job and ``preprocess_client``.
+    The lock is keyed on the child's hash-cache key -- ``index()`` uses
+    ``basename(abspath(file_path))`` -- and is held HERE, in the parent, so
+    the child's dedup check and ``hash_cache_set`` both run under it and a
+    child killed by the OOM reaper / timeout / cancel cannot strand it. A
+    duplicate that waited spawns its child afterwards; that child's dedup
+    check hits the cache and skips. Fail-open only on a Redis outage (child
+    runs unlocked); wait-budget expiry while another holder still owns the
+    lock raises :class:`~pageindex_mcp.storage.ingest_lock.IngestLockBusy`
+    WITHOUT spawning the child (HR2) -- the arq job requeues, and
+    ``preprocess_client`` skips the file. See :func:`_run_converter_child` for the
+    result contract and raised exceptions.
+
+    ``deadline`` (``time.monotonic()`` seconds; the arq job passes its own,
+    ``preprocess_client`` none) bounds the lock wait and the child timeout so
+    both fit inside arq's job_timeout and a child overrun still lands on the
+    converter_timeout path instead of arq's cancel.
+    """
+    from ..obs.decisions import decision
+    from ..storage.ingest_lock import WAIT_TIMEOUT, IngestLockBusy, ingest_lock
+
+    ttl_s, max_wait_s = _ingest_lock_budget(deadline)
+    cache_key = os.path.basename(os.path.abspath(pdf_path))
+    try:
+        async with ingest_lock(cache_key, ttl_s=ttl_s, max_wait_s=max_wait_s) as lock:
+            decision(
+                event="ingest_dedup_lock",
+                choice=lock.choice,
+                reason="per-file ingest lock held by the parent around the converter child",
+                attrs={"waited_ms": lock.waited_ms},
+            )
+            return await _run_converter_child(
+                pdf_path,
+                staging_key=staging_key,
+                job_start_config=job_start_config,
+                on_effective_timeout=on_effective_timeout,
+                deadline=deadline,
+            )
+    except IngestLockBusy as exc:  # raised only by the acquire, never the body
+        decision(
+            event="ingest_dedup_lock",
+            choice=WAIT_TIMEOUT,
+            reason="lock still held after the wait budget; deferred, never converted unlocked",
+            attrs={"waited_ms": exc.waited_ms},
+        )
+        raise
+
+
+async def _run_converter_child(  # noqa: C901, PLR0915
+    pdf_path: str,
+    *,
+    staging_key: str | None = None,
+    job_start_config: dict | None = None,
+    on_effective_timeout: Callable[[float], Awaitable[None]] | None = None,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
     """Run the converter CLI in a fresh child process and return its JSON result.
 
@@ -292,6 +403,11 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
     log_context = current_context()
     if log_context:
         child_env[ENV_LOG_CONTEXT] = json.dumps(dict(log_context))
+    # RFC-050: whatever the lock/admission waits left of the arq job budget,
+    # measured at spawn. Nothing left -> the existing converter_timeout path.
+    deadline_left = _deadline_left(deadline)
+    if deadline_left < 1.0:
+        raise TimeoutError("arq job deadline exhausted before converter spawn")
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -320,7 +436,7 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
     handshake_line = b""
     over_read = b""
     try:
-        async with asyncio.timeout(HANDSHAKE_TIMEOUT_S):
+        async with asyncio.timeout(min(HANDSHAKE_TIMEOUT_S, deadline_left)):
             handshake_line, over_read = await _read_line(proc.stdout)
     except (TimeoutError, asyncio.CancelledError):
         logger.error(
@@ -378,7 +494,11 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
         is_docling_route=is_docling_route,
         ocr_multiplier=ocr_multiplier,
     )
-    effective_timeout = budget.effective
+    # RFC-050: clamped to the arq job deadline so the child times out first.
+    # Re-measured HERE, after the handshake (which can take up to 60s): the
+    # spawn-time deadline_left is stale by then.
+    deadline_left = _deadline_left(deadline)
+    effective_timeout = min(budget.effective, deadline_left)
     if ocr_multiplier != 1.0:
         logger.info(
             "pdf-inspector: %sx timeout for scanned PDF (%ss)",
@@ -389,7 +509,13 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
         logger.warning(
             "effective_timeout %ss exceeds MAX_EFFECTIVE_TIMEOUT %ss; capping",
             budget.requested,
-            effective_timeout,
+            budget.effective,
+        )
+    if deadline_left < budget.effective:
+        logger.warning(
+            "effective_timeout %ss clamped to %.0fs left before the arq job deadline",
+            budget.effective,
+            deadline_left,
         )
 
     # RFC-038 D2: surface effective_timeout to the caller immediately after the
@@ -398,7 +524,11 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
     if on_effective_timeout is not None:
         await on_effective_timeout(effective_timeout)
 
-    remaining_budget = max(effective_timeout - (time.monotonic() - start), 5.0)
+    remaining_budget = max(budget.effective - (time.monotonic() - start), 5.0)
+    # The 5s floor must never carry the child past the arq deadline: with one
+    # set, the current remainder of that deadline is a hard ceiling (0 -> the
+    # asyncio.timeout fires at once and the converter_timeout path runs).
+    remaining_budget = min(remaining_budget, _deadline_left(deadline))
     stdout_bytes = b""
     try:
         # RFC-046 task 12.3: replaces proc.communicate(). communicate()
@@ -442,6 +572,7 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
             result = json.loads(stdout_text.splitlines()[-1])
         except json.JSONDecodeError as exc:
             raise ConverterChildError(0, f"invalid JSON on stdout: {exc}") from exc
+        _observe_stage_timings(result)
         if not result.get("ok"):
             msg = result.get("message") or result.get("error") or "converter reported ok=false"
             raise ConverterChildError(0, msg, error_class=result.get("error"))
@@ -474,6 +605,7 @@ async def _run_converter_subprocess(  # noqa: C901, PLR0915
             payload = json.loads(stdout_text.splitlines()[-1])
             if isinstance(payload, dict):
                 child_error_class = payload.get("error")
+                _observe_stage_timings(payload)
         except json.JSONDecodeError:
             pass
 

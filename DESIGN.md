@@ -113,6 +113,7 @@ Concurrency across documents is bounded by `PAGEINDEX_SEARCH_CONCURRENCY` (defau
 | Param | Type | Description |
 |---|---|---|
 | `doc_id` | str | 8-character UUID prefix |
+| `include` | str | Optional, default `""` (unchanged behaviour). `"raw"` adds a `raw_markdown` field. Any other value is rejected with the tool's usual `{"error": ...}` shape. |
 
 **Output shape:**
 ```json
@@ -130,6 +131,15 @@ Concurrency across documents is bounded by `PAGEINDEX_SEARCH_CONCURRENCY` (defau
   ]
 }
 ```
+
+**`include="raw"` (RFC-050 D3, slimmed):** adds either `"raw_markdown": "<extracted markdown text>"`
+when a `.extracted.md` sidecar exists under `uploads/<doc_id>/`, or
+`"raw_markdown": null` plus a `raw_markdown_note` explaining why (legacy document ingested
+before this sidecar existed, or a `.md`/`.txt` input that never went through an extraction
+step). The sidecar is written best-effort at persist time from `state.md_content`, is never
+written to `quarantine/`, and is purged by the existing `uploads/<doc_id>/` prefix erasure
+step — no new erasure step was needed. This does not add a sixth MCP tool; the MCP surface
+remains the 5 tools above.
 
 ---
 
@@ -503,6 +513,11 @@ fan-out operation, not a single API call.
 3. If the document was ingested via `preloaded/`, also remove `preloaded/<filename>`.
 4. **Delete the `doc_registry` row from Postgres: `DELETE FROM doc_registry WHERE doc_id = $1` (RFC-006 D3 / HR2). This is step 6 of `delete_doc()` in `storage.py` and runs automatically when `REGISTRY_ENABLED=true` and `POSTGRES_DSN` is set. Verify completion if `REGISTRY_ENABLED=false` — the row must still be purged manually.**
 5. Confirm with a `GET /upload/status` poll (or MinIO `stat`) that the objects are gone.
+6. Backups — **manual, until the RFC-050 Phase 6 ledger exists.** Nothing records erasures today.
+   Purge the `doc_id`'s `uploads/<doc_id>/` objects and its `doc_registry` row from **every existing
+   backup or snapshot** by hand (none is known to exist as of 2026-09-24; check anyway). Once Phase 6
+   lands, this step becomes: the erased `doc_id`/sha256 is appended to the erasure ledger and replayed
+   on any restore (see *Backups and the erasure ledger*).
 
 ### Documents that were rejected, not stored
 
@@ -520,7 +535,11 @@ The erasure path for these is by sha256:
 2. Run `scripts/erase-quarantine.sh <sha256>`. It validates the argument as 64 hex characters, calls
    `erase_quarantine(sha256)` — the same implementation the `delete_doc` cascade uses — and exits
    non-zero if any delete reported an error.
-3. Purge any documented backup manually per HR2. As of 2026-09-23 no documented backup exists.
+3. Backups: none needed for quarantine — `quarantine/` is never backed up, and a rejected document's
+   staged input is deleted on terminal rejection, so no backup holds it (quarantine is intentionally
+   non-restorable). If the same bytes were ever *persisted* under a `doc_id`, purge that `doc_id`
+   from existing backups manually per step 6 above. (Once the Phase 6 ledger exists, the sha256 is
+   recorded there too.)
 
 No MCP tool or HTTP route exposes this; it is an operator-only path, by design, because the
 quarantine store is unserved.
@@ -530,12 +549,18 @@ the copy as soon as the same bytes later persist successfully, and a 30-day MinI
 the `quarantine/` prefix expires whatever remains. Neither is a substitute for an erasure request —
 they are a ceiling on how long an unrequested copy can linger.
 
-### Manual backup-purge step (required)
+### Backups and the erasure ledger (user decision 2026-09-24; RFC-050 Phase 6, not in code yet)
 
-If MinIO snapshots or off-cluster backups exist, a **manual purge of those backups** is
-required. The automated fan-out above only touches the live MinIO bucket and Redis.
-Document this step in your runbook: backup retention policy must not exceed the DSR
-response deadline (30 days under GDPR).
+Only non-derivable data is backed up: MinIO `uploads/` (sources) and the Postgres registry — nightly,
+**30-day retention**. Everything else is rebuilt by re-ingest. Backups are never purged in place;
+instead each erasure (`delete_doc`, `erase_quarantine`) appends its `doc_id` / sha256 to an
+**erasure ledger**, and the ledger is replayed against any restore **before** the restored data is
+served. The 30-day retention (equal to the GDPR DSR deadline) bounds how long an erased document can
+survive in a backup. Until Phase 6 lands there is no backup job and no ledger — the automated
+fan-out above only touches the live MinIO bucket, Redis and Postgres, so **any backup or snapshot
+that does exist must be purged manually** on every erasure (fan-out step 6). This manual instruction
+stays until the ledger write and restore-time replay are implemented. `quarantine/` is excluded from
+backups and is intentionally non-restorable: rejected inputs are not backed up.
 
 ### Design constraint
 
@@ -576,6 +601,12 @@ Exposed at `GET /metrics` (no auth; restrict via network policy in production).
 | `pageindex_low_quality_trees_total` | Counter | `reason` | Trees rejected by quality gate before persistence |
 
 `reason` label values: `shallow_tree` (depth < 2), `too_few_nodes`, `garbling_detected`.
+
+**Worker-side metrics (RFC-050) — deferred to Phase 3 with the infra:** `pageindex_stage_duration_seconds`
+(Histogram, `stage` = extraction / tree_build / recovery) is defined and observed in the worker, but
+the worker's `/metrics` is not scraped and the Redis metric bridge carries scalars only, so today it
+is visible only via the `stage_duration` log event and `make g1-timings`. A
+`pageindex_worker_max_jobs` Gauge is likewise deferred. Both land with the Phase 3 worker scrape.
 
 ### Health endpoints
 

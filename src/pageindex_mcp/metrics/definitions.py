@@ -284,6 +284,20 @@ CONVERTER_CHILD_TIMEOUT_TOTAL = Counter(
     "Converter child processes killed by the parent because JOB_TIMEOUT elapsed "
     "before the child emitted its terminal JSON line.",
 )
+#: RFC-050 Task 1.5: the three stages are DISJOINT -- tree_build is every
+#: md_to_tree / page_index LLM call wherever it runs; extraction and recovery
+#: are their wall time minus the tree_build time nested inside them. The child
+#: reports seconds in its terminal stdout JSON (``stage_timings``); the parent
+#: worker observes them here. Also logged per doc as the ``stage_duration``
+#: decision record, which is the aggregation source for corpus runs.
+STAGE_DURATION_SECONDS = Histogram(
+    "pageindex_stage_duration_seconds",
+    "Per-document wall-clock seconds spent in one ingestion stage "
+    "(extraction, tree_build, recovery), reported by the converter child and "
+    "observed in the worker parent (RFC-050 Task 1.5).",
+    ["stage"],
+    buckets=[1, 5, 15, 30, 60, 120, 300, 600, 1200, 2400],
+)
 
 # ---------------------------------------------------------------------------
 # Observability & error-handling metrics (RFC-008)
