@@ -1143,12 +1143,49 @@ async def test_lifecycle_degrades_gracefully():
         patch("pageindex_mcp.worker.lifecycle.aioredis.from_url", return_value=AsyncMock()),
         patch("pageindex_mcp.registry.init_registry", AsyncMock(side_effect=RuntimeError("boom"))),
         patch("pageindex_mcp.registry_backfill.run_auto_backfill", AsyncMock()) as mock_backfill,
+        patch("pageindex_mcp.worker.lifecycle.drop_arq_console_handler") as mock_drop_arq,
     ):
         await startup({})  # must not raise
     mock_backfill.assert_not_awaited()
+    mock_drop_arq.assert_called_once_with()  # RFC-052 task 1.4 is wired into startup
 
     with patch("pageindex_mcp.worker.lifecycle.settings", _settings(registry_enabled=False)):
         await shutdown({})  # must not raise
+
+
+def test_drop_arq_console_handler_leaves_one_json_copy_of_arq_lines():
+    """RFC-052 task 1.4: after the arq CLI's own dictConfig, an arq line went
+    out twice -- plain ``12:16:00: 0.00s <- cron:...`` and JSON via root.
+    Dropping arq's handler must leave the line reaching root exactly once."""
+    import logging
+    import logging.config
+
+    from arq.logs import default_log_config
+
+    from pageindex_mcp.worker.lifecycle import drop_arq_console_handler
+
+    arq_logger = logging.getLogger("arq")
+    saved = (list(arq_logger.handlers), arq_logger.level, arq_logger.propagate)
+    reached_root: list[str] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record):
+            reached_root.append(record.getMessage())
+
+    collector = _Collect()
+    logging.getLogger().addHandler(collector)
+    try:
+        logging.config.dictConfig(default_log_config(verbose=False))
+        assert arq_logger.handlers, "precondition: arq installed its console handler"
+        drop_arq_console_handler()
+        assert arq_logger.handlers == [] and arq_logger.propagate
+        arq_logger.info("0.00s <- cron:reap_stale_jobs")
+        assert reached_root == ["0.00s <- cron:reap_stale_jobs"]
+    finally:
+        logging.getLogger().removeHandler(collector)
+        arq_logger.handlers[:] = saved[0]
+        arq_logger.setLevel(saved[1])
+        arq_logger.propagate = saved[2]
 
 
 # ── cron wrapper / module-level cron interval math ───────────────────────────

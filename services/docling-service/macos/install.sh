@@ -61,6 +61,11 @@ export DOCLING_DO_OCR=1 DOCLING_MAX_CONCURRENT=1 DOWNLOAD_TIMEOUT_S=120
 export DOCLING_BLOCK_PRIVATE_URLS=1  # no NetworkPolicy fences a Mac's egress
 export MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 export HF_HUB_OFFLINE=1 BUILD_SHA=\$(cat BUILD_SHA 2>/dev/null || echo unknown)
+# RFC-052 task 1.10: obs JSON envelope straight into logs/service.log through a
+# WatchedFileHandler (follows newsyslog's rename; see install-logging.sh), and
+# backend=mac on every docling_chunk record. launchd's own stdout/stderr go to
+# logs/launchd.log (crash output only), so no line is written twice.
+export PAGEINDEX_LOG_FILE="$ROOT/logs/service.log" DOCLING_BACKEND_NAME=mac
 exec caffeinate -i .venv/bin/uvicorn app:app --app-dir services/docling-service \\
   --host "\$ip" --port 8090 --workers 1
 RUN
@@ -78,8 +83,8 @@ cat > "$PLIST" <<PL
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>30</integer>
-  <key>StandardOutPath</key><string>$ROOT/logs/service.log</string>
-  <key>StandardErrorPath</key><string>$ROOT/logs/service.log</string>
+  <key>StandardOutPath</key><string>$ROOT/logs/launchd.log</string>
+  <key>StandardErrorPath</key><string>$ROOT/logs/launchd.log</string>
 </dict></plist>
 PL
 
@@ -98,4 +103,4 @@ for _ in $(seq 60); do
   fi
   sleep 3
 done
-echo "not healthy after 3 min; see $ROOT/logs/service.log" >&2; exit 1
+echo "not healthy after 3 min; see $ROOT/logs/service.log and $ROOT/logs/launchd.log" >&2; exit 1

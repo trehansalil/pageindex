@@ -1,0 +1,86 @@
+// Grafana Alloy on the Mac docling-service backend (RFC-052 R1 AC9, task 1.10).
+//
+// Tails the service's obs JSON log and pushes it to the cluster Loki over
+// Tailscale ONLY: 100.120.146.20 is portfolio's tailscale0 address, and the
+// loki-tailscale NodePort is reachable on that interface alone (task 1.9).
+//
+// Environment (set by the launchd agent install-logging.sh writes):
+//   DOCLING_SERVICE_LOG      absolute path of logs/service.log
+//                            (normally ~/docling-service/logs/service.log)
+//   LOKI_TAILSCALE_NODEPORT  the loki-tailscale Service's NodePort
+//
+// Labels stay low-cardinality (host, service, level, kind); the per-document
+// ids go to structured metadata, never labels (R1 AC2).
+
+local.file_match "docling_service" {
+  path_targets = [{
+    "__path__" = sys.env("DOCLING_SERVICE_LOG"),
+    "host"     = "mac",
+    "service"  = "docling-service",
+  }]
+  sync_period = "10s"
+}
+
+loki.source.file "docling_service" {
+  targets       = local.file_match.docling_service.targets
+  forward_to    = [loki.process.docling_service.receiver]
+  tail_from_end = true
+}
+
+loki.process "docling_service" {
+  forward_to = [loki.write.portfolio.receiver]
+
+  // Probe noise, same rule as the cluster promtail pipeline (R1 AC3). The
+  // uvicorn access line is JSON here, so the quote before the verb is escaped.
+  stage.drop {
+    expression          = "\"(GET|HEAD) /(metrics|health)"
+    drop_counter_reason = "health_probe"
+  }
+
+  stage.json {
+    expressions = {
+      level    = "",
+      kind     = "",
+      logger   = "",
+      ts       = "",
+      job_id   = "",
+      doc_id   = "",
+      doc_sha8 = "",
+      run_id   = "",
+    }
+  }
+
+  // The obs envelope's ts is RFC3339 with milliseconds and a Z suffix.
+  stage.timestamp {
+    source            = "ts"
+    format            = "RFC3339Nano"
+    action_on_failure = "skip"
+  }
+
+  stage.labels {
+    values = {
+      level = "",
+      kind  = "",
+    }
+  }
+
+  stage.structured_metadata {
+    values = {
+      job_id   = "",
+      doc_id   = "",
+      doc_sha8 = "",
+      run_id   = "",
+    }
+  }
+
+  // loki.source.file adds the file path as a label; one file, no value.
+  stage.label_drop {
+    values = ["filename"]
+  }
+}
+
+loki.write "portfolio" {
+  endpoint {
+    url = "http://100.120.146.20:" + sys.env("LOKI_TAILSCALE_NODEPORT") + "/loki/api/v1/push"
+  }
+}

@@ -85,5 +85,17 @@ CONTENT_TRUNCATION_CHARS_WIDE = 512
 #: can replace its own prior handler instead of duplicating it.
 HANDLER_MARKER = "_pageindex_obs_handler"
 
+#: ``extra=`` key whose dict is merged into the envelope as TOP-LEVEL keys
+#: (RFC-052 R1 AC7: the ``docling_chunk`` record is flat, so Grafana's
+#: ``| json`` yields ``page_start`` rather than ``attrs_page_start``). A key
+#: that collides with an envelope field is dropped, never overrides it.
+FLAT_FIELDS_ATTR = "flat_fields"
+
+#: Env var naming a log FILE for ``configure()`` to write instead of stderr,
+#: via ``WatchedFileHandler`` so newsyslog rotation is followed (RFC-052 task
+#: 1.10, the Mac docling-service). Unset everywhere else: stderr stays the
+#: contract ``converters_cli`` relies on.
+ENV_LOG_FILE = "PAGEINDEX_LOG_FILE"
+
 #: Logger name used by decision()/phase() when the caller supplies none.
 DEFAULT_LOGGER_NAME = "pageindex_mcp.obs"

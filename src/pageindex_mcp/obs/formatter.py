@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from .constants import (
     CORRELATION_FIELDS,
     DECISION_FIELDS,
+    FLAT_FIELDS_ATTR,
     KIND_LOG,
     PLACEHOLDER_UNSERIALISABLE,
     SCHEMA_VERSION,
@@ -59,6 +60,12 @@ class JsonFormatter(logging.Formatter):
         envelope["attrs"] = safe_attrs(getattr(record, "attrs", None))
         envelope["dur_ms"] = safe_scalar(getattr(record, "dur_ms", None))
         envelope["exc"] = _format_exc(record)
+        flat = getattr(record, FLAT_FIELDS_ATTR, None)
+        if isinstance(flat, dict):
+            for key, value in flat.items():
+                name = str(key)
+                if name not in envelope:
+                    envelope[name] = safe_scalar(value)
         try:
             return json.dumps(envelope, default=str, ensure_ascii=False)
         except Exception:  # pragma: no cover - last resort, must never raise

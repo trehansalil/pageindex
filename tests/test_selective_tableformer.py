@@ -150,6 +150,70 @@ class TestDetectPagesWithTables:
 # ---------------------------------------------------------------------------
 
 
+class TestPreclassifyPageSetLogging:
+    def test_summary_is_info_with_compact_ranges_and_failures_warn(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """RFC-052 R1 AC8 / R2 AC7: the page-set summary is one INFO line with
+        the table pages as compact ranges; a detection failure and a missing
+        pdf_inspector (both silently "TableFormer everywhere") log WARNING."""
+        import logging
+
+        fitz = pytest.importorskip("fitz")
+        from pageindex_mcp.converters import docling_conv, preclassify
+
+        assert preclassify._compact_ranges(set(range(12)) | set(range(274, 292))) == (
+            "0-11,274-291"
+        )
+        assert preclassify._compact_ranges([7, 5, 5]) == "5,7"
+        assert preclassify._compact_ranges(None) is None
+
+        caplog.set_level(logging.DEBUG, logger=preclassify.logger.name)
+        preclassify._log_page_set_summary(
+            "/x.pdf",
+            pdf_type="text_based",
+            page_count=300,
+            pages_with_tables=set(range(12)) | set(range(274, 292)),
+            detection_method="vector",
+            pages_needing_ocr=[3],
+        )
+        summary = caplog.records[-1]
+        assert summary.levelno == logging.INFO
+        assert summary.attrs == {
+            "pdf_type": "text_based",
+            "page_count": 300,
+            "pages_with_tables": "0-11,274-291",
+            "pages_with_tables_count": 30,
+            "detection_method": "vector",
+            "pages_needing_ocr": "3",
+            "pages_needing_ocr_count": 1,
+        }
+
+        def boom(_path):
+            raise RuntimeError("tuple items")
+
+        caplog.clear()
+        monkeypatch.setattr(preclassify, "detect_pages_with_tables", boom)
+        assert preclassify._detect_tables_if_text_based("/x.pdf", "text_based") == (None, None)
+        assert [r.levelno for r in caplog.records] == [logging.WARNING]
+
+        # pdf_inspector missing: pdf_type stays unknown, detection never runs.
+        doc = fitz.open()
+        doc.new_page()
+        path = str(tmp_path / "one.pdf")
+        doc.save(path)
+        doc.close()
+        caplog.clear()
+        monkeypatch.setattr(docling_conv, "_pdf_inspector_available", False)
+        result = preclassify.preclassify_document(path, "one.pdf")
+        assert result.pages_with_tables is None
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("pdf_inspector not installed" in m for m in warnings), warnings
+        summaries = [r for r in caplog.records if r.getMessage().startswith("preclassify page")]
+        assert summaries[0].levelno == logging.INFO
+        assert summaries[0].attrs["pages_with_tables"] is None
+
+
 class TestPreClassificationTablesSerialization:
     def test_pages_with_tables_roundtrip(self):
         from pageindex_mcp.converters.preclassify import PreClassification
@@ -250,19 +314,9 @@ class TestChunkedDoclingTableStructure:
 
 
 class TestPdfConvertRequestField:
-    def test_default_is_none(self):
-        import sys
-
-        sys.path.insert(0, "services/docling-service")
-        try:
-            if "app" in sys.modules:
-                del sys.modules["app"]
-            from app import PdfConvertRequest
-
-            req = PdfConvertRequest(presigned_url="https://example.com/test.pdf")
-            assert req.pages_with_tables is None
-        finally:
-            sys.path.pop(0)
+    def test_default_is_none(self, docling_service_app):
+        req = docling_service_app.PdfConvertRequest(presigned_url="https://example.com/test.pdf")
+        assert req.pages_with_tables is None
 
 
 # ---------------------------------------------------------------------------

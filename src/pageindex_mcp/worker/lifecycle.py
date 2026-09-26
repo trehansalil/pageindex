@@ -74,10 +74,38 @@ def resolve_max_jobs(raw: str | None, *, service_configured: bool | None = None)
 MAX_JOBS = resolve_max_jobs(os.getenv("PAGEINDEX_WORKER_MAX_JOBS"))
 
 
+#: Loggers whose own handlers the arq CLI installs via ``dictConfig`` (see
+#: ``arq.logs.default_log_config``): ``arq`` -> ``arq.standard``, a plain
+#: ``%(asctime)s: %(message)s`` StreamHandler.
+_ARQ_LOGGER_NAMES = ("arq",)
+
+
+def drop_arq_console_handler() -> None:
+    """Remove arq's plain-text console handler (RFC-052 R1 AC3, task 1.4).
+
+    The ``arq`` CLI runs ``dictConfig(default_log_config())`` AFTER importing
+    ``WorkerSettings`` and does not let settings opt out, so it cannot be
+    prevented at import time. Every ``arq`` record then went out twice: once as
+    ``12:16:00: 0.00s <- cron:reap_stale_jobs`` through arq's own handler, and
+    once as JSON through the root handler it propagates to. Dropping arq's
+    handler (and keeping ``propagate``) leaves exactly the JSON copy, so job
+    start/finish lines are still logged, in the envelope Loki parses. Records
+    arq emits before ``on_startup`` (its "Starting worker" banner) predate the
+    root handler and still print once in plain text; nothing is duplicated.
+    """
+    for name in _ARQ_LOGGER_NAMES:
+        arq_logger = logging.getLogger(name)
+        for handler in list(arq_logger.handlers):
+            arq_logger.removeHandler(handler)
+        arq_logger.propagate = True
+
+
 async def startup(ctx: dict) -> None:
     # RFC-046 D12 (task 12.2 + 12.9): install the JSON stderr handler for
     # this worker process.
     configure_obs()
+    # RFC-052 task 1.4: ...and stop arq's plain-text copy of every arq line.
+    drop_arq_console_handler()
 
     # RFC-050 D1/D2: log the resolved admission floor, concurrency mode, and
     # whether cgroup memory accounting is active, once at worker startup —

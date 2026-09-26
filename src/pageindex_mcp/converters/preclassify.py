@@ -447,6 +447,11 @@ def detect_pages_with_tables(
     try:
         import fitz
     except ImportError:
+        logger.warning(
+            "detect_pages_with_tables: fitz (PyMuPDF) not importable; "
+            "table detection skipped for %s, TableFormer stays on for every page",
+            pdf_path,
+        )
         return None, None
 
     result: set[int] = set()
@@ -467,14 +472,18 @@ def detect_pages_with_tables(
                         result.add(page_idx)
                         saw_column = True
                 except Exception:
-                    logger.debug(
+                    logger.warning(
                         "column-alignment detection failed on page %d of %s",
                         page_idx,
                         pdf_path,
                         exc_info=True,
                     )
     except Exception:
-        logger.debug("detect_pages_with_tables failed for %s", pdf_path, exc_info=True)
+        logger.warning(
+            "detect_pages_with_tables failed for %s; TableFormer stays on for every page",
+            pdf_path,
+            exc_info=True,
+        )
         return None, None
 
     result = _add_neighbor_padding(result, page_count)
@@ -496,25 +505,88 @@ def detect_pages_with_tables(
 # ---------------------------------------------------------------------------
 
 
+def _compact_ranges(pages) -> str | None:
+    """``{0,1,2,5,7,8}`` -> ``"0-2,5,7-8"`` (RFC-052 R1 AC8); ``None`` stays ``None``.
+
+    A 900-page set logged as a list is unreadable in Grafana; runs are what an
+    operator compares against the chunk timeline.
+    """
+    if pages is None:
+        return None
+    ordered = sorted(set(pages))
+    parts: list[str] = []
+    i = 0
+    while i < len(ordered):
+        j = i
+        while j + 1 < len(ordered) and ordered[j + 1] == ordered[j] + 1:
+            j += 1
+        parts.append(str(ordered[i]) if i == j else f"{ordered[i]}-{ordered[j]}")
+        i = j + 1
+    return ",".join(parts)
+
+
+def _log_page_set_summary(  # noqa: PLR0913
+    filepath: str,
+    *,
+    pdf_type: str | None,
+    page_count: int,
+    pages_with_tables: set[int] | None,
+    detection_method: str | None,
+    pages_needing_ocr: list[int],
+) -> None:
+    """One INFO line summarising the page sets that drive TableFormer/OCR
+    (RFC-052 R1 AC8). ``pages_with_tables=None`` means detection did not run
+    or failed, so TableFormer stays on for every page -- logged as ``"all"``."""
+    tables = _compact_ranges(pages_with_tables)
+    ocr = _compact_ranges(pages_needing_ocr)
+    table_count = len(pages_with_tables) if pages_with_tables is not None else None
+    logger.info(
+        "preclassify page sets for %s: pdf_type=%s pages=%d tables=%s (%s pages, method=%s) ocr=%s",
+        filepath,
+        pdf_type,
+        page_count,
+        tables if tables is not None else "all",
+        table_count if table_count is not None else "all",
+        detection_method,
+        ocr or "none",
+        extra={
+            "attrs": {
+                "pdf_type": pdf_type,
+                "page_count": page_count,
+                "pages_with_tables": tables,
+                "pages_with_tables_count": table_count,
+                "detection_method": detection_method,
+                "pages_needing_ocr": ocr,
+                "pages_needing_ocr_count": len(pages_needing_ocr),
+            }
+        },
+    )
+
+
 def _detect_tables_if_text_based(
     filepath: str, pdf_type: str | None
 ) -> tuple[set[int] | None, str | None]:
     """Ruled-table pages for a text-based PDF, else ``(None, None)``.
-    Detection failure is also ``(None, None)``: every page keeps TableFormer."""
+    Detection failure is also ``(None, None)``: every page keeps TableFormer.
+
+    RFC-052 R2 AC7: a failure is logged at WARNING, not debug -- a silent
+    "everything on" fallback is exactly what hid the detector's breakage.
+    """
     if pdf_type != "text_based":
         return None, None
     try:
         return detect_pages_with_tables(filepath)
     except Exception:
-        logger.debug(
-            "preclassify_document: table detection failed for %s",
+        logger.warning(
+            "preclassify_document: table detection failed for %s; "
+            "TableFormer stays on for every page",
             filepath,
             exc_info=True,
         )
         return None, None
 
 
-def preclassify_document(
+def preclassify_document(  # noqa: PLR0915
     filepath: str,
     filename: str,
     *,
@@ -578,7 +650,7 @@ def preclassify_document(
 
     if run_inspector:
         try:
-            from .docling_conv import _run_pdf_inspector
+            from .docling_conv import _pdf_inspector_available, _run_pdf_inspector
 
             inspector_result = _run_pdf_inspector(filepath)
             if inspector_result is not None:
@@ -586,9 +658,19 @@ def preclassify_document(
                 pdf_confidence = inspector_result.get("confidence", 0.0)
                 pages_needing_ocr = inspector_result.get("pages_needing_ocr", [])
                 has_encoding_issues = inspector_result.get("has_encoding_issues", False)
+            else:
+                # RFC-052 R2 AC7: pdf_type stays None, so table detection
+                # never runs and TableFormer stays on for every page. Say so.
+                logger.warning(
+                    "preclassify_document: pdf_inspector %s for %s; pdf_type unknown, "
+                    "table detection skipped (TableFormer on for every page)",
+                    "not installed" if not _pdf_inspector_available else "returned no result",
+                    filepath,
+                )
         except Exception:
-            logger.debug(
-                "preclassify_document: pdf_inspector failed for %s",
+            logger.warning(
+                "preclassify_document: pdf_inspector failed for %s; pdf_type unknown, "
+                "table detection skipped (TableFormer on for every page)",
                 filepath,
                 exc_info=True,
             )
@@ -614,6 +696,14 @@ def preclassify_document(
 
     # 5. selective TableFormer: detect pages with ruled tables (RFC-050 D8)
     pages_with_tables, detection_method = _detect_tables_if_text_based(filepath, pdf_type)
+    _log_page_set_summary(
+        filepath,
+        pdf_type=pdf_type,
+        page_count=page_count,
+        pages_with_tables=pages_with_tables,
+        detection_method=detection_method,
+        pages_needing_ocr=pages_needing_ocr,
+    )
 
     elapsed_ms = (time.monotonic() - t0) * 1000
     ocr_langs = _iso_to_tess(merged.detected_langs)
