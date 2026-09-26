@@ -13,6 +13,10 @@ Contract:
   - Stream labels stay low-cardinality: ``host``, ``service``, ``level``,
     ``kind``. ``job_id`` / ``doc_id`` / ``doc_sha8`` / ``run_id`` travel as
     Loki 3 structured metadata (the 3rd element of each value), never labels.
+    They are also in the JSON line itself, so Loki is an HR2 derived store:
+    ``request_log_deletion`` below is the erasure half, driven by
+    ``storage.documents.delete_doc`` (step ``loki_logs``) against the
+    in-cluster Loki -- the Tailscale gateway stays push-only.
   - A retryable failure (network error, 5xx, 429) is retried with exponential
     backoff; a 4xx rejection drops the batch. Failures are reported on stderr
     at most once a minute, never through ``logging`` (no recursion).
@@ -38,6 +42,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 
@@ -78,6 +83,94 @@ def is_probe_access(record: logging.LogRecord) -> bool:
     if not isinstance(args, tuple) or len(args) < 3 or not isinstance(args[2], str):
         return False
     return args[2].startswith(PROBE_PATH_PREFIXES)
+
+
+# -- HR2 erasure ---------------------------------------------------------------
+
+#: Loki's compactor delete API (needs ``compactor.retention_enabled`` and a
+#: ``delete_request_store``; infra's Loki 3.0 runs ``deletion_mode:
+#: filter-and-delete``). Reachable in-cluster only, never through the gateway.
+DELETE_PATH = "/loki/api/v1/delete"
+
+#: Every stream that can carry a correlation id: promtail sets ``service`` on
+#: every pod stream and ``stream_labels`` sets it on the Mac push. A delete
+#: query needs a selector that is not empty-matching, so ``.+`` rather than ``.*``.
+ERASURE_STREAM_SELECTOR = '{service=~".+"}'
+
+#: A needle shorter than this is refused: an empty ``|= ""`` matches every line
+#: in Loki, and a delete request cannot be undone once the compactor runs it.
+MIN_ERASURE_NEEDLE_CHARS = 8
+
+DEFAULT_DELETE_TIMEOUT_S = 10.0
+
+
+def erasure_line_filters(
+    doc_id: str, *, doc_sha8: str | None = None, doc_name_sha8: str | None = None
+) -> list[str]:
+    """The line-filter strings that identify one document's log lines.
+
+    ``doc_id`` is matched bare: it is a uuid4, and it also appears in free-text
+    messages (``"ERASE <doc_id> ..."``). The 8-hex digests are matched as the
+    exact ``JsonFormatter`` key/value pair, so they cannot hit an unrelated hex
+    run elsewhere in a line. ``doc_sha8`` is what the Mac docling-service lines
+    carry (it never sees a ``doc_id``); ``doc_name_sha8`` covers the worker's
+    pre-hash lines, which carry only the filename digest.
+    """
+    needles = [doc_id]
+    if doc_sha8:
+        needles.append(f'"doc_sha8": "{doc_sha8}"')
+    if doc_name_sha8:
+        needles.append(f'"doc_name_sha8": "{doc_name_sha8}"')
+    return needles
+
+
+def request_log_deletion(  # noqa: PLR0913
+    base_url: str,
+    needles: list[str],
+    *,
+    lookback_s: float,
+    timeout: float = DEFAULT_DELETE_TIMEOUT_S,
+    now: float | None = None,
+    urlopen: Callable[..., object] | None = None,
+) -> list[str]:
+    """File one Loki delete request per needle over ``[now - lookback_s, now]``.
+
+    Returns one error string per request Loki did not accept (an empty list
+    means every request was accepted with 2xx). Never raises. The needle
+    itself is never echoed into an error: it identifies the document.
+
+    Loki applies an accepted request to queries straight away (filter) and
+    removes the lines physically once ``delete_request_cancel_period`` has
+    passed (delete); the store's own ``retention_period`` is the backstop.
+    """
+    opener = urlopen or urllib.request.urlopen
+    end = int(now if now is not None else time.time())
+    start = max(0, end - int(lookback_s))
+    errors: list[str] = []
+    for index, needle in enumerate(needles, start=1):
+        tag = f"request {index}/{len(needles)}"
+        if len(needle) < MIN_ERASURE_NEEDLE_CHARS:
+            errors.append(f"{tag}: refused a line filter shorter than {MIN_ERASURE_NEEDLE_CHARS}")
+            continue
+        # json.dumps yields a double-quoted string with Go-compatible escapes,
+        # which is what LogQL parses -- so a hostile doc_id cannot break out of
+        # the line filter and widen the delete.
+        query = f"{ERASURE_STREAM_SELECTOR} |= {json.dumps(needle)}"
+        params = urllib.parse.urlencode({"query": query, "start": start, "end": end})
+        request = urllib.request.Request(
+            f"{base_url.rstrip('/')}{DELETE_PATH}?{params}", data=b"", method="POST"
+        )
+        try:
+            with opener(request, timeout=timeout) as response:  # type: ignore[attr-defined]
+                response.read()
+        except urllib.error.HTTPError as exc:
+            errors.append(f"{tag}: Loki answered HTTP {exc.code}")
+        except Exception as exc:
+            # ``reason`` only (URLError): str(exc) can quote the request URL,
+            # and the URL carries the needle.
+            reason = getattr(exc, "reason", None) or "request failed"
+            errors.append(f"{tag}: {type(exc).__name__}: {reason}")
+    return errors
 
 
 class LokiPushHandler(logging.Handler):

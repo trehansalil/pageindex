@@ -730,6 +730,7 @@ def test_erasure_manifest_ordering_matches_hr2_spec():
         "hash_cache",
         "registry",
         "preloaded",
+        "loki_logs",
     }
     actual_names = {e.name for e in _ERASURE_MANIFEST}
     assert actual_names == expected_names, (
@@ -746,6 +747,7 @@ def test_erasure_manifest_ordering_matches_hr2_spec():
     assert name_to_step["hash_cache"] == 5
     assert name_to_step["registry"] == 6
     assert name_to_step["preloaded"] == 7
+    assert name_to_step["loki_logs"] == 8
 
     # Relative ordering of the manifest tuple itself (drives execution order).
     order = [e.name for e in _ERASURE_MANIFEST]
@@ -758,6 +760,9 @@ def test_erasure_manifest_ordering_matches_hr2_spec():
         ("reconcile_etag", "hash_cache"),
         ("hash_cache", "registry"),
         ("registry", "preloaded"),
+        # Last: needs ctx.sha256 (verdicts) and ctx.doc_name, and the window
+        # must cover the cascade's own "ERASE <doc_id>" lines.
+        ("preloaded", "loki_logs"),
     ):
         assert order.index(earlier) < order.index(later), (
             f"HR2 cascade violated: {earlier} must precede {later} in {order}"
@@ -787,6 +792,9 @@ def test_erasure_manifest_required_flags_match_behaviour():
         "registry": True,
         # Optional: RFC-011 D2 — only preloaded ingests have a raw object here.
         "preloaded": False,
+        # Optional: a deployment may ship no logs to Loki (PAGEINDEX_LOKI_URL
+        # unset). Unreached still flips partial_purge; a failed request errors.
+        "loki_logs": False,
     }
     actual_required = {e.name: e.required for e in _ERASURE_MANIFEST}
     assert actual_required == expected_required
@@ -808,6 +816,55 @@ def test_erasure_manifest_required_flags_match_behaviour():
         "asyncio.wait_for; every other step drives the synchronous MinIO/Redis "
         f"clients and must stay a plain def. Got: {sorted(coroutine_steps)}"
     )
+
+
+def test_erase_01_c5_loki_step_purges_every_identifier_and_surfaces_failure():
+    """ERASE-01-C5 (HR2 / RFC-052): Loki holds doc_id / doc_sha8 /
+    doc_name_sha8 in every obs line, so delete_doc files a delete request for
+    each identifier it knows. Unconfigured -> not reached (partial purge, not
+    a clean cascade); a failed request -> an error naming the store."""
+    import dataclasses
+
+    import pageindex_mcp.storage.documents as docs
+    from pageindex_mcp.obs.redact import hash_doc_name
+
+    def _ctx():
+        return docs.ErasureContext(
+            doc_id="3f0c9a7e-0000-4000-8000-000000000001",
+            mc=MagicMock(),
+            doc_name="Mustermann_Police.pdf",
+            sha256="19aad2bc" + "0" * 56,
+        )
+
+    unset = dataclasses.replace(docs.settings, loki_url=None)
+    with (
+        patch.object(docs, "settings", unset),
+        patch("pageindex_mcp.obs.loki.request_log_deletion") as call,
+    ):
+        ctx = _ctx()
+        assert docs._erase_loki_logs(ctx) is False
+    call.assert_not_called()
+    assert ctx.errors == []
+
+    configured = dataclasses.replace(
+        docs.settings, loki_url="http://loki.infra:3100", loki_erasure_lookback_h=72
+    )
+    for failures, reached in (([], True), (["request 1/3: Loki answered HTTP 503"], False)):
+        with (
+            patch.object(docs, "settings", configured),
+            patch("pageindex_mcp.obs.loki.request_log_deletion", return_value=failures) as call,
+        ):
+            ctx = _ctx()
+            assert docs._erase_loki_logs(ctx) is reached
+        (url, needles), kwargs = call.call_args
+        assert url == "http://loki.infra:3100"
+        assert kwargs == {"lookback_s": 72 * 3600}
+        assert needles == [
+            ctx.doc_id,
+            '"doc_sha8": "19aad2bc"',
+            f'"doc_name_sha8": "{hash_doc_name("Mustermann_Police.pdf")}"',
+        ]
+        assert ctx.errors == [f"loki: {f}" for f in failures]
 
 
 # ---------------------------------------------------------------------------
