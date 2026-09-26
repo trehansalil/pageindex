@@ -5,7 +5,8 @@
 # run.sh, service restart) -- but only when ALL of these hold:
 #   - origin/master changed something the service runs: services/docling-service/,
 #     src/, pyproject.toml or uv.lock (or the last install did not complete);
-#   - the service is idle: /health reports in_flight == 0, or does not answer;
+#   - the service is idle: /health reports in_flight == 0, or launchd shows no
+#     running process for it (see the idle check below);
 #   - the checkout is on master, HEAD is an ancestor of origin/master, and no
 #     tracked file is modified.
 # Never forces, resets or discards anything. Every failure is logged to
@@ -16,6 +17,7 @@ ROOT="${PAGEINDEX_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}"
 INSTALL_SH="${PAGEINDEX_INSTALL_SH:-$ROOT/services/docling-service/macos/install.sh}"
 BRANCH="${PAGEINDEX_UPDATE_BRANCH:-master}"
 PORT="${DOCLING_PORT:-8090}"
+SVC_LABEL="${PAGEINDEX_SERVICE_LABEL:-com.pageindex.docling-service}"  # install.sh's LABEL
 WATCHED=(services/docling-service src pyproject.toml uv.lock)
 LOG="$ROOT/logs/updater.log"
 LOCK="$ROOT/logs/.updater.lock"
@@ -31,8 +33,22 @@ log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 
 # mkdir is atomic, so two runs never overlap. A lock older than 2 h belongs to
 # a run that died (reboot mid-install); clear it rather than wedge forever.
+# Age from stat + date rather than find -mmin: stat's flags differ between
+# BSD (macOS: -f %m) and GNU (-c %Y), so pick by uname instead of guessing --
+# GNU `stat -f` means --file-system and would print garbage, not fail.
+lock_age_s() {  # seconds since $1 was modified; empty if it cannot be read
+  local mtime
+  if [ "$(uname -s)" = Darwin ]; then
+    mtime="$(stat -f %m "$1" 2>/dev/null)"
+  else
+    mtime="$(stat -c %Y "$1" 2>/dev/null)"
+  fi
+  case "$mtime" in '' | *[!0-9]*) return 0 ;; esac
+  echo $(( $(date +%s) - mtime ))
+}
 if ! mkdir "$LOCK" 2>/dev/null; then
-  if [ -n "$(find "$LOCK" -maxdepth 0 -mmin +120 2>/dev/null)" ]; then
+  age="$(lock_age_s "$LOCK")"
+  if [ -n "$age" ] && [ "$age" -gt 7200 ]; then
     log "clearing stale lock $LOCK"
     rmdir "$LOCK" 2>/dev/null && mkdir "$LOCK" 2>/dev/null || exit 0
   else
@@ -57,25 +73,50 @@ fi
 # Up to date and the last install completed: the common, silent case.
 [ "$merge" = 0 ] && [ "$installed" = "$head" ] && exit 0
 
+# Checked for both paths: a recovery re-install (merge=0, stamp missing or
+# stale) must not run install.sh over local edits any more than a merge may.
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+  log "tracked files modified locally; not updating: $(git status --porcelain --untracked-files=no | tr '\n' ' ')"
+  exit 0
+fi
 if [ "$merge" = 1 ]; then
   git merge-base --is-ancestor "$head" "$remote" \
     || { log "HEAD ${head:0:12} is not an ancestor of origin/$BRANCH (local commits?); not updating"; exit 0; }
-  if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
-    log "tracked files modified locally; not updating: $(git status --porcelain --untracked-files=no | tr '\n' ' ')"
-    exit 0
-  fi
 fi
 
-# Idle check. The service answering without in_flight is an older build: do
-# not restart it blind. Not answering at all means nothing is in flight.
+# Idle check: restart only on positive evidence that nothing is in flight.
+#   - /health answers with in_flight == 0                     -> proceed
+#   - /health answers with in_flight > 0, or without the field
+#     (an older build: do not restart it blind)               -> defer
+#   - /health does not answer:
+#       launchd has no live process for the service agent
+#       (agent not loaded -- never bootstrapped, or booted out -- or loaded
+#       but between KeepAlive restarts, e.g. crash-looping on bad code)
+#                                                             -> proceed: no
+#         process means no conversion can be running, and a crash loop is
+#         exactly what the next install may fix;
+#       a live process that does not answer (event loop blocked by a
+#       conversion, Tailscale down, still warming up)         -> defer.
+# An unanswered /health alone is NOT proof of idleness: a busy service can
+# miss the 5 s timeout, and restarting it would kill the conversion.
+# `launchctl print` lists "pid = N" (one tab deep) only while the job runs.
+svc_process_running() {
+  local out
+  command -v launchctl >/dev/null 2>&1 || return 1  # no launchd: no agent
+  out="$(launchctl print "gui/$(id -u)/$SVC_LABEL" 2>/dev/null)" || return 1
+  printf '%s\n' "$out" | grep -Eq "^$(printf '\t')pid = [0-9]+"
+}
 ip="$(tailscale ip -4 2>/dev/null | head -1)"
 health="$(curl -fsS -m 5 "http://${ip:-127.0.0.1}:$PORT/health" 2>/dev/null || true)"
 if [ -n "$health" ]; then
   in_flight="$(printf '%s' "$health" | sed -n 's/.*"in_flight":[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
   [ -n "$in_flight" ] || { log "/health has no in_flight field; not restarting blind"; exit 0; }
   [ "$in_flight" = 0 ] || { log "busy (in_flight=$in_flight); retrying next interval"; exit 0; }
+elif svc_process_running; then
+  log "$SVC_LABEL is running but /health did not answer; deferring (cannot prove idle)"
+  exit 0
 else
-  log "service not answering /health; proceeding (nothing in flight)"
+  log "$SVC_LABEL has no running process; proceeding (nothing can be in flight)"
 fi
 
 if [ "$merge" = 1 ]; then
