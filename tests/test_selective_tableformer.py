@@ -322,7 +322,7 @@ class TestRemotePdfToMarkdownPayload:
 
         monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: FakeClient())
 
-        md, pics = asyncio.get_event_loop().run_until_complete(
+        md, pics = asyncio.run(
             remote._remote_pdf_to_markdown(
                 "test-key",
                 pages_with_tables=[0, 2],
