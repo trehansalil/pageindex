@@ -88,7 +88,10 @@ exec caffeinate -i .venv/bin/uvicorn app:app --app-dir services/docling-service 
 RUN
 chmod +x run.sh
 
-AGENT_PATH="$(brew --prefix)/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# launchd gets none of the login shell's PATH. uv from its standalone
+# installer lives in ~/.local/bin or ~/.cargo/bin, not the brew prefix, so
+# pin the directory this run resolved it from.
+AGENT_PATH="$(dirname "$(command -v uv)"):$HOME/.local/bin:$HOME/.cargo/bin:$(brew --prefix)/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 cat > "$PLIST" <<PL
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
