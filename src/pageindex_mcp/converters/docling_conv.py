@@ -13,6 +13,8 @@ import multiprocessing
 import os
 import queue as queue_mod
 import re
+import socket
+import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -22,6 +24,8 @@ from typing import TYPE_CHECKING, cast
 if TYPE_CHECKING:
     from docling.document_converter import DocumentConverter
 
+from ..obs.constants import FLAT_FIELDS_ATTR, KIND_DECISION
+from ..obs.context import bind_log_context, current_context, propagate
 from ..picture_plane import OcrEngine
 from ..script import is_arabic_char as _is_arabic_char
 from .types import PictureResult
@@ -42,6 +46,26 @@ _RFC029_TABLE_MIN_COLLAPSE_COLS: int = int(os.environ.get("RFC029_TABLE_MIN_COLL
 # ---------------------------------------------------------------------------
 # Docling pipeline options (lines 1235-1298)
 # ---------------------------------------------------------------------------
+
+
+def _resolve_force_ocr(force_full_page_ocr: bool) -> bool:
+    """Full-page OCR: the call's flag, or ``DOCLING_FORCE_FULL_PAGE_OCR=1``."""
+    return force_full_page_ocr or os.getenv("DOCLING_FORCE_FULL_PAGE_OCR", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _resolve_do_ocr(force_full_page_ocr: bool) -> bool:
+    """The ``do_ocr`` Docling will actually run with (forced OCR implies it).
+
+    Shared by the pipeline options and the ``docling_chunk`` record, so the
+    logged value can never drift from the effective one.
+    """
+    return _resolve_force_ocr(force_full_page_ocr) or os.getenv(
+        "DOCLING_DO_OCR", "0"
+    ).strip().lower() in ("1", "true", "yes")
 
 
 def _build_pdf_pipeline_options(
@@ -77,10 +101,8 @@ def _build_pdf_pipeline_options(
     device = AcceleratorDevice.CPU
     # Fix 3: full-page OCR (param or DOCLING_FORCE_FULL_PAGE_OCR=1) forces do_ocr on so a
     # corrupt existing text layer can be overwritten; it implies do_ocr regardless of env.
-    force_ocr = force_full_page_ocr or os.getenv(
-        "DOCLING_FORCE_FULL_PAGE_OCR", "0"
-    ).strip().lower() in ("1", "true", "yes")
-    do_ocr = force_ocr or os.getenv("DOCLING_DO_OCR", "0").strip().lower() in ("1", "true", "yes")
+    force_ocr = _resolve_force_ocr(force_full_page_ocr)
+    do_ocr = _resolve_do_ocr(force_full_page_ocr)
     # Cap inference threads to bound peak RSS. Default 1 for the memory-tight worker;
     # raise via DOCLING_NUM_THREADS only where the node has RAM headroom.
     try:
@@ -373,7 +395,7 @@ def _run_pdf_inspector(pdf_path: str) -> dict | None:
             "has_encoding_issues": getattr(result, "has_encoding_issues", False),
         }
     except Exception:
-        logging.getLogger(__name__).debug(
+        logging.getLogger(__name__).warning(
             "pdf-inspector classify failed for %s", pdf_path, exc_info=True
         )
         return None
@@ -560,6 +582,106 @@ def _repair_docling_tables(md: str, doc_name: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# RFC-052 R1 AC7: one `docling_chunk` decision record per Docling conversion
+# ---------------------------------------------------------------------------
+
+#: TableFormer mode every conversion runs with today (``_build_pdf_pipeline_options``
+#: pins ACCURATE). A config knob arrives with RFC-052 task 5.4.
+_TABLEFORMER_MODE = "accurate"
+
+#: True only inside a spawned chunk child while it converts. The chunk's record
+#: is written by the PARENT (it alone sees timeouts and crashes); the child's own
+#: single-shot pass must not write a second, misleading "1/1" record.
+_IN_CHUNK_CHILD = False
+
+
+def _peak_rss_bytes() -> int | None:
+    """This process's peak RSS in bytes (``getrusage(RUSAGE_SELF).ru_maxrss``).
+
+    macOS reports ``ru_maxrss`` in bytes, Linux in KiB; normalised to bytes.
+    ``None`` where ``resource`` is unavailable -- never raises.
+    """
+    try:
+        import resource
+
+        raw = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    except Exception:
+        return None
+    return raw if sys.platform == "darwin" else raw * 1024
+
+
+def _docling_backend_name() -> str:
+    """``DOCLING_BACKEND_NAME`` (e.g. ``mac``, ``docling-1``), else the hostname."""
+    return os.getenv("DOCLING_BACKEND_NAME", "").strip() or socket.gethostname()
+
+
+def emit_docling_chunk(  # noqa: PLR0913
+    *,
+    chunk: str,
+    page_start: int | None,
+    page_end: int | None,
+    do_table_structure: bool,
+    do_ocr: bool,
+    duration_s: float,
+    peak_rss_bytes: int | None,
+    outcome: str,
+    page_count: int | None = None,
+    single_shot: bool = False,
+) -> None:
+    """Write one ``docling_chunk`` record (``kind=decision``) -- RFC-052 R1 AC7.
+
+    The chunk fields are FLAT top-level keys of the obs envelope (via
+    ``FLAT_FIELDS_ATTR``), not nested under ``attrs``, matching the design's
+    record shape. ``event``/``choice``/``reason``/``job_id`` are the envelope's
+    own keys. ``page_start``/``page_end`` are 0-based, inclusive,
+    document-level pages. ``shard`` comes from the bound log context
+    (docling-service binds the client's ``X-Shard`` header); with none bound
+    the document is one shard and it is derived from ``page_count``.
+
+    Same posture as ``decision()``: INFO, silenced by
+    ``PAGEINDEX_LOG_DECISIONS=off``, never raises.
+    """
+    if single_shot and _IN_CHUNK_CHILD:
+        return
+    try:
+        from ..obs import decisions as _decisions
+
+        if not _decisions.LOG_DECISIONS_ENABLED or not logger.isEnabledFor(logging.INFO):
+            return
+        ctx = current_context()
+        shard = ctx.get("shard")
+        if shard is None and page_count:
+            shard = f"1/1:0-{page_count - 1}"
+        logger.info(
+            "docling_chunk %s %s",
+            chunk,
+            outcome,
+            extra={
+                "kind": KIND_DECISION,
+                "event": "docling_chunk",
+                "choice": outcome,
+                "reason": f"docling chunk {chunk} {outcome}",
+                "job_id": ctx.get("job_id"),
+                FLAT_FIELDS_ATTR: {
+                    "shard": shard,
+                    "chunk": chunk,
+                    "page_start": page_start,
+                    "page_end": page_end,
+                    "backend": _docling_backend_name(),
+                    "do_table_structure": do_table_structure,
+                    "do_ocr": do_ocr,
+                    "tableformer_mode": _TABLEFORMER_MODE,
+                    "duration_s": round(duration_s, 3),
+                    "peak_rss_bytes": peak_rss_bytes,
+                    "outcome": outcome,
+                },
+            },
+        )
+    except Exception:  # pragma: no cover - a log record must never fail a conversion
+        pass
+
+
 def _docling_chunk_worker(  # noqa: PLR0913
     result_queue: multiprocessing.Queue,
     pdf_path: str,
@@ -568,6 +690,7 @@ def _docling_chunk_worker(  # noqa: PLR0913
     expected_script: str | None = None,
     num_threads: int | None = None,
     do_table_structure: bool = True,
+    log_context: dict | None = None,
 ) -> None:
     """Run ``pdf_to_markdown_docling`` in a child process (D0 fix).
 
@@ -579,32 +702,45 @@ def _docling_chunk_worker(  # noqa: PLR0913
     ``num_threads`` is this child's share of the CPUs when several chunks run
     at once; it is set before Docling (and torch) are imported in this fresh
     spawned interpreter.
+
+    RFC-052 R1 AC6: a spawned interpreter starts with no logging handlers and
+    no correlation binding, so its lines would lose ``job_id``. The parent
+    passes its bound mapping as ``log_context``; the child installs the obs
+    JSON handler and re-binds it. Every result tuple carries the child's peak
+    RSS as a third element, for the parent's ``docling_chunk`` record.
     """
+    global _IN_CHUNK_CHILD
+
     if num_threads:
         os.environ["DOCLING_NUM_THREADS"] = str(num_threads)
         os.environ["OMP_NUM_THREADS"] = str(num_threads)
+    if log_context is not None:
+        from ..obs.log_config import configure as configure_obs
+
+        configure_obs()
     from .pipeline import pdf_to_markdown_docling
 
+    _IN_CHUNK_CHILD = True
     try:
-        result_queue.put(
-            (
-                "ok",
-                pdf_to_markdown_docling(
-                    pdf_path,
-                    force_full_page_ocr=force_full_page_ocr,
-                    ocr_lang_override=ocr_lang_override,
-                    expected_script=expected_script,
-                    # An empty set turns TableFormer off for this chunk;
-                    # None keeps it on for every page.
-                    pages_with_tables=None if do_table_structure else set(),
-                ),
+        with bind_log_context(**(log_context or {})):
+            result = pdf_to_markdown_docling(
+                pdf_path,
+                force_full_page_ocr=force_full_page_ocr,
+                ocr_lang_override=ocr_lang_override,
+                expected_script=expected_script,
+                # An empty set turns TableFormer off for this chunk;
+                # None keeps it on for every page.
+                pages_with_tables=None if do_table_structure else set(),
             )
-        )
+        result_queue.put(("ok", result, _peak_rss_bytes()))
     except Exception as exc:
+        rss = _peak_rss_bytes()
         try:
-            result_queue.put(("error", exc))
+            result_queue.put(("error", exc, rss))
         except Exception:  # exc itself unpicklable -- send a picklable stand-in
-            result_queue.put(("error", RuntimeError(f"{type(exc).__name__}: {exc}")))
+            result_queue.put(("error", RuntimeError(f"{type(exc).__name__}: {exc}"), rss))
+    finally:
+        _IN_CHUNK_CHILD = False
 
 
 def _run_docling_chunk_with_timeout(  # noqa: PLR0913
@@ -616,8 +752,14 @@ def _run_docling_chunk_with_timeout(  # noqa: PLR0913
     expected_script: str | None = None,
     num_threads: int | None = None,
     do_table_structure: bool = True,
+    log_context: dict | None = None,
+    stats: dict | None = None,
 ) -> tuple[str, list[PictureResult]]:
     """Run one Docling chunk conversion in a killable subprocess (D0 fix).
+
+    ``log_context`` is forwarded to the child (RFC-052 R1 AC6). When ``stats``
+    is given, ``stats["peak_rss_bytes"]`` is filled from the child's own
+    report (left unset if the child timed out or died without one).
 
     Replaces the plain ``ThreadPoolExecutor`` used previously: a
     ``multiprocessing.Process`` can be ``terminate()``-d on timeout, which
@@ -637,6 +779,7 @@ def _run_docling_chunk_with_timeout(  # noqa: PLR0913
             expected_script,
             num_threads,
             do_table_structure,
+            log_context,
         ),
         daemon=True,
     )
@@ -648,7 +791,7 @@ def _run_docling_chunk_with_timeout(  # noqa: PLR0913
     # loop also detects a child that died without reporting (native segfault
     # in Docling/OCR), which a bare blocking get() would hang on forever.
     deadline = time.monotonic() + timeout_s
-    outcome: tuple[str, object] | None = None
+    outcome: tuple | None = None
     while outcome is None:
         try:
             outcome = result_queue.get(timeout=1.0)
@@ -678,7 +821,9 @@ def _run_docling_chunk_with_timeout(  # noqa: PLR0913
     if proc.is_alive():  # lingering after reporting -- reap it
         proc.kill()
         proc.join()
-    status, payload = outcome
+    status, payload, peak_rss = outcome
+    if stats is not None and peak_rss is not None:
+        stats["peak_rss_bytes"] = peak_rss
     if status == "error":
         raise cast(Exception, payload)
     return cast("tuple[str, list[PictureResult], dict[str, dict]]", payload)
@@ -734,12 +879,34 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
         workers,
     )
 
+    # RFC-052 R1 AC6: the bound mapping, captured on the calling thread. It is
+    # re-bound in each pool thread (``propagate``) and handed to each spawned
+    # chunk child explicitly -- neither inherits a ContextVar on its own.
+    log_context = dict(current_context())
+    do_ocr = _resolve_do_ocr(force_full_page_ocr)
+
     def convert(index: int, path: str) -> tuple[str, list[PictureResult]]:
         start = starts[index]
         chunk_end = min(start + max_pages, page_count)
         chunk_has_tables = pages_with_tables is None or bool(
             pages_with_tables & set(range(start, chunk_end))
         )
+        stats: dict = {}
+        started = time.monotonic()
+
+        def record(outcome: str) -> None:
+            emit_docling_chunk(
+                chunk=f"{index + 1}/{chunk_count}",
+                page_start=start,
+                page_end=chunk_end - 1,
+                do_table_structure=chunk_has_tables,
+                do_ocr=do_ocr,
+                duration_s=time.monotonic() - started,
+                peak_rss_bytes=stats.get("peak_rss_bytes"),
+                outcome=outcome,
+                page_count=page_count,
+            )
+
         try:
             chunk_md, chunk_pics, _chunk_stages = _run_docling_chunk_with_timeout(
                 path,
@@ -749,9 +916,11 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
                 expected_script=expected_script,
                 num_threads=num_threads,
                 do_table_structure=chunk_has_tables,
+                log_context=log_context,
+                stats=stats,
             )
-            return chunk_md, chunk_pics
         except FuturesTimeoutError:
+            record("timeout")
             # RFC-027 D7: an individually heavy chunk still times out on the
             # Docling pipeline -- fall back to pymupdf text-layer-only
             # extraction (no tables/figures) rather than losing the chunk
@@ -769,6 +938,11 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
                 return "\n\n".join(page.get_text() or "" for page in chunk_doc), []
             finally:
                 chunk_doc.close()
+        except BaseException:
+            record("error")
+            raise
+        record("ok")
+        return chunk_md, chunk_pics
 
     starts = [i * max_pages for i in range(chunk_count)]
     paths: list[str] = []
@@ -793,7 +967,7 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
         finally:
             src.close()
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(convert, i, path) for i, path in enumerate(paths)]
+            futures = [pool.submit(propagate(convert), i, path) for i, path in enumerate(paths)]
             try:
                 results = [f.result() for f in futures]
             except BaseException:

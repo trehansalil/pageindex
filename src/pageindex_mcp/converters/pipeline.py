@@ -11,6 +11,7 @@ import dataclasses
 import functools
 import logging
 import os
+import time
 from collections.abc import Callable
 from enum import StrEnum
 
@@ -22,7 +23,10 @@ from .docling_conv import (
     _docling_converter,
     _patch_hierarchical_infer,
     _pdf_to_markdown_docling_chunked,
+    _peak_rss_bytes,
     _repair_docling_tables,
+    _resolve_do_ocr,
+    emit_docling_chunk,
 )
 from .headings import (
     _VERDICT_RANK,
@@ -413,12 +417,33 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
     # rotated pages get correct coordinate mapping instead of fragmenting text
     # into near-empty nodes. Returns pdf_path unchanged when no page needs it.
     docling_input_path = _normalize_pdf_page_rotation(pdf_path)
+    # RFC-052 R1 AC7: the single-shot `docling_chunk` record times the Docling
+    # model pass itself (layout + TableFormer + OCR) -- the cost the chunk
+    # timeline exists to show. Suppressed inside a chunk child, whose parent
+    # writes the record for that chunk. peak_rss is this process's lifetime
+    # peak: exact for the per-document converter child, an upper bound in the
+    # long-lived docling-service.
+    _convert_started = time.monotonic()
+    _convert_outcome = "error"
     try:
         result = converter.convert(docling_input_path)
+        _convert_outcome = "ok"
     finally:
         if docling_input_path != pdf_path:
             with contextlib.suppress(OSError):
                 os.unlink(docling_input_path)
+        emit_docling_chunk(
+            chunk="1/1",
+            page_start=0 if page_count > 0 else None,
+            page_end=page_count - 1 if page_count > 0 else None,
+            do_table_structure=_do_table_structure,
+            do_ocr=_resolve_do_ocr(force_full_page_ocr),
+            duration_s=time.monotonic() - _convert_started,
+            peak_rss_bytes=_peak_rss_bytes(),
+            outcome=_convert_outcome,
+            page_count=page_count,
+            single_shot=True,
+        )
 
     # RFC-035 D2 Phase 2 trigger: for pages tagged landscape above, compare the
     # primary extraction's char count against LANDSCAPE_CHAR_THRESHOLD. Detection

@@ -3085,5 +3085,82 @@ def test_chunked_docling_runs_chunks_in_parallel_in_page_order(tmp_path, monkeyp
     for on in (True, False):
         q = queue.Queue()
         docling_conv._docling_chunk_worker(q, path, False, None, do_table_structure=on)
-        assert q.get_nowait() == ("ok", ("md", [], {}))
+        status, payload, peak_rss = q.get_nowait()
+        assert (status, payload) == ("ok", ("md", [], {}))
+        assert isinstance(peak_rss, int) and peak_rss > 0  # the child's own ru_maxrss
     assert tables == [None, set()]
+    assert docling_conv._IN_CHUNK_CHILD is False  # reset once the child is done
+
+
+def test_docling_chunk_record_per_chunk_carries_context_and_outcome(tmp_path, monkeypatch, caplog):
+    """RFC-052 R1 AC7: one ``docling_chunk`` decision per chunk -- on the timeout
+    path too -- with exactly the agreed fields; job_id and shard come from the
+    caller's bound context, which must survive the hop into the pool threads
+    and be handed to the chunk child."""
+    import logging
+    from concurrent.futures import TimeoutError as FuturesTimeoutError
+
+    fitz = pytest.importorskip("fitz")
+    from pageindex_mcp.converters import docling_conv
+    from pageindex_mcp.obs import bind_log_context
+
+    doc = fitz.open()
+    for _ in range(25):
+        doc.new_page()
+    path = str(tmp_path / "big.pdf")
+    doc.save(path)
+    doc.close()
+
+    child_contexts = []
+
+    def fake_chunk(chunk_path, *, stats, log_context, **_kw):
+        child_contexts.append(log_context.get("job_id"))
+        with fitz.open(chunk_path) as chunk:
+            if chunk.page_count == 5:
+                raise FuturesTimeoutError()
+        stats["peak_rss_bytes"] = 1_450_000_000
+        return "md", [], {}
+
+    monkeypatch.setattr(docling_conv, "_run_docling_chunk_with_timeout", fake_chunk)
+    monkeypatch.setenv("DOCLING_BACKEND_NAME", "mac")
+    monkeypatch.delenv("DOCLING_DO_OCR", raising=False)
+    monkeypatch.delenv("DOCLING_FORCE_FULL_PAGE_OCR", raising=False)
+    caplog.set_level(logging.INFO, logger=docling_conv.logger.name)
+    with bind_log_context(job_id="j-7", shard="1/3:0-24"):
+        docling_conv._pdf_to_markdown_docling_chunked(
+            path, page_count=25, max_pages=10, workers=2, pages_with_tables={0}
+        )
+
+    import json
+
+    from pageindex_mcp.obs import JsonFormatter
+
+    records = [r for r in caplog.records if getattr(r, "event", None) == "docling_chunk"]
+    # Flat top-level keys in the real envelope, not nested under attrs.
+    attrs = sorted(
+        (json.loads(JsonFormatter().format(r)) for r in records), key=lambda a: a["chunk"]
+    )
+    assert len(attrs) == 3
+    chunk_fields = {
+        "event", "job_id", "shard", "chunk", "page_start", "page_end", "backend",
+        "do_table_structure", "do_ocr", "tableformer_mode", "duration_s",
+        "peak_rss_bytes", "outcome",
+    }  # fmt: skip
+    for a in attrs:
+        assert chunk_fields <= set(a), chunk_fields - set(a)
+        assert (a["kind"], a["event"], a["attrs"]) == ("decision", "docling_chunk", {})
+    rows = [
+        (a["chunk"], a["page_start"], a["page_end"], a["do_table_structure"], a["outcome"],
+         a["peak_rss_bytes"])
+        for a in attrs
+    ]  # fmt: skip
+    assert rows == [
+        ("1/3", 0, 9, True, "ok", 1_450_000_000),
+        ("2/3", 10, 19, False, "ok", 1_450_000_000),
+        ("3/3", 20, 24, False, "timeout", None),
+    ]
+    for a in attrs:
+        assert (a["job_id"], a["shard"], a["backend"]) == ("j-7", "1/3:0-24", "mac")
+        assert (a["do_ocr"], a["tableformer_mode"]) == (False, "accurate")
+        assert isinstance(a["duration_s"], float)
+    assert child_contexts == ["j-7"] * 3
