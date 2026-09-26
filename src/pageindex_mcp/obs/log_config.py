@@ -27,6 +27,7 @@ from .constants import (
     DEFAULT_LOG_LEVEL_NAME,
     ENV_LOG_CONTENT,
     ENV_LOG_DECISIONS,
+    ENV_LOG_FILE,
     ENV_LOG_LEVEL,
     HANDLER_MARKER,
 )
@@ -71,6 +72,14 @@ LOG_DECISIONS_ENABLED: bool = _parse_switch(os.environ.get(ENV_LOG_DECISIONS), d
 #: ``is_content_attr`` regardless of this flag.
 LOG_CONTENT_WIDENED: bool = _parse_switch(os.environ.get(ENV_LOG_CONTENT), default=False)
 
+#: Optional log file replacing stderr (RFC-052 task 1.10). Only the Mac
+#: docling-service sets it: launchd's StandardOutPath holds one fd open for the
+#: life of the process, so newsyslog's rename-rotation would leave every later
+#: line in ``service.log.0`` where Alloy no longer looks. ``WatchedFileHandler``
+#: reopens the path when its inode changes; spawned chunk children inherit the
+#: variable and append to the same file. Empty/unset -> stderr, as before.
+LOG_FILE: str | None = os.environ.get(ENV_LOG_FILE, "").strip() or None
+
 #: The bound actually in force for this process.
 TRUNCATION_CHARS: int = (
     CONTENT_TRUNCATION_CHARS_WIDE if LOG_CONTENT_WIDENED else CONTENT_TRUNCATION_CHARS
@@ -93,8 +102,18 @@ def configure(level: int | None = None) -> None:
     root = logging.getLogger()
     for existing in list(root.handlers):
         root.removeHandler(existing)
+        # Our own prior handler may hold a file (PAGEINDEX_LOG_FILE); close it
+        # rather than leak the fd. A StreamHandler's close() leaves stderr open.
+        if getattr(existing, HANDLER_MARKER, False):
+            existing.close()
 
-    handler = logging.StreamHandler(sys.stderr)
+    handler: logging.Handler
+    if LOG_FILE:
+        from logging.handlers import WatchedFileHandler
+
+        handler = WatchedFileHandler(LOG_FILE, encoding="utf-8")
+    else:
+        handler = logging.StreamHandler(sys.stderr)
     setattr(handler, HANDLER_MARKER, True)
     handler.setFormatter(JsonFormatter())
     handler.addFilter(ContextFilter())

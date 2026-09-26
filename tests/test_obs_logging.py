@@ -830,6 +830,48 @@ class TestConvertersCliBindsLogContextFromEnv:
         assert exit_code == 1  # argparse's missing-arg SystemExit, coerced to 1
 
 
+def test_docling_service_binds_correlation_headers_and_logs_json(docling_service_app):
+    """RFC-052 R1 AC6: the docling-service middleware binds X-Job-Id /
+    X-Doc-Sha8 / X-Run-Id / X-Shard for exactly the request's duration
+    (a "None" or malformed value is dropped, never bound), and the root plus
+    uvicorn loggers all end up on the obs JSON envelope."""
+    import asyncio
+
+    from pageindex_mcp import obs
+    from pageindex_mcp.obs.context import current_context
+
+    seen: dict = {}
+
+    async def endpoint(scope, receive, send):
+        seen.update(current_context())
+
+    middleware = docling_service_app.CorrelationMiddleware(endpoint)
+    scope = {
+        "type": "http",
+        "headers": [
+            (b"x-job-id", b"j-42"),
+            (b"X-Doc-Sha8", b"abcd1234"),
+            (b"x-run-id", b"None"),
+            (b"x-shard", b"1/1:0-139"),
+            (b"x-job-idx", b"ignored"),
+        ],
+    }
+    asyncio.run(middleware(scope, None, None))
+    assert seen == {"job_id": "j-42", "doc_sha8": "abcd1234", "shard": "1/1:0-139"}
+    assert "job_id" not in current_context()  # released after the request
+    assert docling_service_app.correlation_fields([(b"x-job-id", b'j"1\n{"level":"x"}')]) == {}
+    assert any(
+        m.cls is docling_service_app.CorrelationMiddleware
+        for m in docling_service_app.app.user_middleware
+    )
+
+    root = logging.getLogger()
+    assert any(isinstance(h.formatter, obs.JsonFormatter) for h in root.handlers)
+    for name in docling_service_app.UVICORN_LOGGERS:
+        uv_logger = logging.getLogger(name)
+        assert uv_logger.handlers == [] and uv_logger.propagate, name
+
+
 class TestIndexerBindsDocShaAndDocId:
     """client/indexer.py::index() binds doc_sha8 after the sha256, and
     doc_id where it becomes known at persist (_persist_tree_result /
@@ -902,8 +944,9 @@ class TestLogConfigEnvSurface:
     RFC-049 removed it: nothing ever read ``LOG_NODE_SAMPLE``, so the variable
     was a no-op knob that read as configurable."""
 
-    def test_defaults_and_env_overrides_are_resolved_at_import(self, monkeypatch):
+    def test_defaults_and_env_overrides_are_resolved_at_import(self, monkeypatch, tmp_path):
         import importlib
+        from logging.handlers import WatchedFileHandler
 
         from pageindex_mcp.obs import log_config
 
@@ -911,7 +954,10 @@ class TestLogConfigEnvSurface:
             "PAGEINDEX_LOG_LEVEL",
             "PAGEINDEX_LOG_DECISIONS",
             "PAGEINDEX_LOG_CONTENT",
+            "PAGEINDEX_LOG_FILE",
         )
+        root = logging.getLogger()
+        saved_root = (list(root.handlers), root.level)
         try:
             for var in env_vars:
                 monkeypatch.delenv(var, raising=False)
@@ -919,6 +965,21 @@ class TestLogConfigEnvSurface:
             assert mod.LOG_LEVEL == logging.INFO
             assert mod.LOG_DECISIONS_ENABLED is True
             assert mod.LOG_CONTENT_WIDENED is False
+            assert mod.LOG_FILE is None
+
+            # RFC-052 task 1.10: the Mac service logs to a file newsyslog
+            # rotates; WatchedFileHandler follows the rename, JSON unchanged.
+            log_file = tmp_path / "service.log"
+            monkeypatch.setenv("PAGEINDEX_LOG_FILE", str(log_file))
+            mod = importlib.reload(log_config)
+            mod.configure()
+            (handler,) = [h for h in root.handlers if getattr(h, mod.HANDLER_MARKER, False)]
+            assert isinstance(handler, WatchedFileHandler)
+            logging.getLogger("test.logfile").info("to file")
+            handler.flush()
+            assert json.loads(log_file.read_text().splitlines()[-1])["msg"] == "to file"
+            handler.close()
+            monkeypatch.delenv("PAGEINDEX_LOG_FILE")
 
             monkeypatch.setenv("PAGEINDEX_LOG_LEVEL", "debug")
             monkeypatch.setenv("PAGEINDEX_LOG_DECISIONS", "off")
@@ -934,6 +995,13 @@ class TestLogConfigEnvSurface:
             assert 0 < mod.CONTENT_TRUNCATION_CHARS < mod.CONTENT_TRUNCATION_CHARS_WIDE
             assert mod.CONTENT_TRUNCATION_CHARS_WIDE < 10_000
         finally:
+            root.handlers[:] = saved_root[0]
+            root.setLevel(saved_root[1])
+            # Reload from a CLEAN env: monkeypatch restores it only at teardown,
+            # and a reload under PAGEINDEX_LOG_LEVEL=debug would leave DEBUG as
+            # the level every later configure() installs for the session.
+            for var in env_vars:
+                monkeypatch.delenv(var, raising=False)
             importlib.reload(log_config)
 
     def test_switch_parsing_never_raises(self):
