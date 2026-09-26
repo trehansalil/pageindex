@@ -402,7 +402,7 @@ def _page_has_column_alignment(
 
     x_bins: Counter[int] = Counter()
     for b in blocks:
-        x0 = int(round(b[0] / quantize_px)) * quantize_px
+        x0 = round(b[0] / quantize_px) * quantize_px
         x_bins[x0] += 1
     aligned_cols = sum(1 for cnt in x_bins.values() if cnt >= min_blocks_per_col)
     return aligned_cols >= min_columns
@@ -494,6 +494,24 @@ def detect_pages_with_tables(
 # ---------------------------------------------------------------------------
 # Unified entry point
 # ---------------------------------------------------------------------------
+
+
+def _detect_tables_if_text_based(
+    filepath: str, pdf_type: str | None
+) -> tuple[set[int] | None, str | None]:
+    """Ruled-table pages for a text-based PDF, else ``(None, None)``.
+    Detection failure is also ``(None, None)``: every page keeps TableFormer."""
+    if pdf_type != "text_based":
+        return None, None
+    try:
+        return detect_pages_with_tables(filepath)
+    except Exception:
+        logger.debug(
+            "preclassify_document: table detection failed for %s",
+            filepath,
+            exc_info=True,
+        )
+        return None, None
 
 
 def preclassify_document(
@@ -595,17 +613,7 @@ def preclassify_document(
         pass
 
     # 5. selective TableFormer: detect pages with ruled tables (RFC-050 D8)
-    pages_with_tables: set[int] | None = None
-    detection_method: str | None = None
-    if pdf_type == "text_based":
-        try:
-            pages_with_tables, detection_method = detect_pages_with_tables(filepath)
-        except Exception:
-            logger.debug(
-                "preclassify_document: table detection failed for %s",
-                filepath,
-                exc_info=True,
-            )
+    pages_with_tables, detection_method = _detect_tables_if_text_based(filepath, pdf_type)
 
     elapsed_ms = (time.monotonic() - t0) * 1000
     ocr_langs = _iso_to_tess(merged.detected_langs)

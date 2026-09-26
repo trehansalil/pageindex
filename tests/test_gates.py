@@ -1484,7 +1484,7 @@ class TestOcrDeferralQF1:
         c = _make_client()
         monkeypatch.setattr(c, "_run_md_to_tree", lambda *a, **k: _tree_result())
         await c.index(pdf_file)
-        conv_mock.assert_called_once_with(pdf_file, expected_script="Latn")
+        conv_mock.assert_called_once_with(pdf_file, expected_script="Latn", pages_with_tables=None)
         mocks["save_doc"].assert_called_once()
 
     async def test_fix3_retry_still_fires(self, monkeypatch, pdf_file):

@@ -113,16 +113,9 @@ def _build_lock_redis():
     """A sync client with finite socket/connect timeouts (does not connect).
     The shared cache client has none, so a stalled connection there would
     block the lock -- and the arq deadline it spends -- indefinitely."""
-    import redis  # lazy: keep import cost off non-worker paths
+    from ..cache import build_sync_redis  # lazy: keep redis import off non-worker paths
 
-    from ..config import settings
-
-    return redis.from_url(
-        settings.redis_url,
-        decode_responses=True,
-        socket_timeout=REDIS_SOCKET_TIMEOUT_S,
-        socket_connect_timeout=REDIS_SOCKET_TIMEOUT_S,
-    )
+    return build_sync_redis(socket_timeout=REDIS_SOCKET_TIMEOUT_S)
 
 
 def _default_redis():

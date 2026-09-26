@@ -60,6 +60,18 @@ async def job_status_get(job_id: str) -> dict:
     return await r.hgetall(_job_key(job_id))
 
 
+def build_sync_redis(*, socket_timeout: float) -> redis.Redis:
+    """A new sync client with finite socket/connect timeouts (does not connect).
+    For coordination primitives such as the ingest lock: the shared cache
+    client has no timeouts, so a stalled connection would block indefinitely."""
+    return redis.from_url(
+        settings.redis_url,
+        decode_responses=True,
+        socket_timeout=socket_timeout,
+        socket_connect_timeout=socket_timeout,
+    )
+
+
 def get_cache_redis() -> redis.Redis:
     """Lazy singleton for synchronous Redis client (used by storage layer)."""
     global _redis_sync
