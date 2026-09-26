@@ -218,7 +218,7 @@ Iterations 1-8 built a 5-wave, 10-task-group, 37-41h plan (admission gate + conc
     - Watch total node memory during the run (docling-service pod + worker), not just worker RSS — the 7.6 GiB single node hosts both
     - Ask the user if questions arise before proceeding.
 
-- [ ] 7. Wave 4 — Raw Output Persistence + get_document (D3)
+- [x] 7. Wave 4 — Raw Output Persistence + get_document (D3)
 
   - [x] 3.1 Wire `save_raw` into the two persist methods only (implemented in f31f386 on the RFC-050 branch; **not deployed** — live image sha-721cfd1 is master, so the 2026-09-25 pocketbook ingest wrote no sidecar)
     - In `_persist_tree_result` (`client/indexer.py:2407`) and `_persist_flat_result` (`:2226`), after the existing `save_raw(doc_id, filename, file_bytes)`, add `save_raw(doc_id, f"{filename}.extracted.md", state.md_content.encode("utf-8"))`, guarded by `if state.md_content is not None` and wrapped in `try/except Exception` → `logger.warning(..., exc_info=True)` so a failed sidecar upload never fails an otherwise successful ingest (best-effort; already in code at both sites)
@@ -252,7 +252,7 @@ Iterations 1-8 built a 5-wave, 10-task-group, 37-41h plan (admission gate + conc
     - Unit test: `get_document(doc_id, include="raw")` returns the markdown; a rejected sha256 or unknown `doc_id` returns not-found and never reads `quarantine/`
     - _Requirements: RFC-050 R3 — Properties 2, 3, 3a_
 
-  - [ ] 8. Checkpoint — Wave 4 (2026-09-26: `make test` on test_storage/test_quarantine/test_client green; **pending** the live `get_document(..., include="raw")` smoke call, which needs the branch deployed and the pocketbook re-ingested)
+  - [x] 8. Checkpoint — Wave 4 (2026-09-26: `make test` on test_storage/test_quarantine/test_client green; **live smoke passed 2026-09-26** on image sha-2184e7e: pocketbook re-ingested via `POST /upload/files` (job 6d2972bd, 375.8 s, Mac docling-service) → doc_id 6ab474c3-9db6-4283-b72d-7c60628cb1af; through the registered MCP tools (6 listed, no import errors) `get_document(include="raw")` returned a 2,035,016-char `raw_markdown`, plain `get_document` has no `raw_markdown` key, `include="xml"` → invalid-include error, unknown doc_id → not-found)
     - Run `make test PYTEST_ARGS="tests/test_storage.py tests/test_quarantine.py -q" TEST_MEM_MAX=1500M`
     - Verify `get_document(..., include="raw")` works via a smoke call; verify MCP tool registration has no import errors
     - Ask the user if questions arise before proceeding.
