@@ -510,6 +510,8 @@ erase_document(doc_id):
    + MinIO  hashes/processed_hashes.json            remove the {filename: sha256} entry  ← currently MISSED
    + MinIO  processed/graph.json                    remove this doc's nodes/edges        [Tier 2]
    ✓ Redis  pageindex:doc:<doc_id>                  cache invalidate
+   ✓ Loki   log lines naming doc_id / doc_sha8 /    POST /loki/api/v1/delete per identifier, last step
+            doc_name_sha8                           (PAGEINDEX_LOKI_URL; 72h retention is the backstop)
    ! Backups (uploads/ + Postgres registry)         append doc_id/sha256 to the erasure ledger; ledger is
                                                     replayed against any restore before it is served   [RFC-050 Phase 6 — NOT in code yet]
 ```
@@ -520,6 +522,26 @@ The `quarantine` step runs **after `meta_json` and before `redis_cache`**, which
 persists on the `ErasureContext`. Running quarantine any earlier would have no sha256 to work with;
 any later would break HR2's MinIO-before-Redis ordering. The step is `required=False` — a document
 that was never quarantined has nothing to delete and must not register a partial purge.
+
+**Loki is a derived store (RFC-052).** Every obs JSON line carries `doc_id`, `doc_sha8` and
+`doc_name_sha8` in the line and, for the Mac push, as structured metadata. Promtail ships the
+cluster's lines; the Mac docling-service pushes its own through the push-only Tailscale gateway. So
+`delete_doc` ends with a `loki_logs` step (step 8): `_erase_loki_logs` files one Loki delete
+request per known identifier against the **in-cluster** Loki (`PAGEINDEX_LOKI_URL`, e.g.
+`http://loki.infra.svc.cluster.local:3100`). The gateway stays push-only. The `doc_id` request
+always goes out. The two 8-hex digests are matched as their exact JSON key/value pair, and only
+when `ctx.sha256` / `ctx.doc_name` were resolved. Mac lines never carry a `doc_id`, so the
+`doc_sha8` request is the one that reaches them. The window is `[now − PAGEINDEX_LOKI_ERASURE_LOOKBACK_H,
+now]`, default 168 h, which must stay at or above Loki's `retention_period` (72 h). Loki 3.0 in
+`infra` runs `compactor.retention_enabled: true` with a `delete_request_store`, and so has
+`deletion_mode: filter-and-delete`. Queries hide the lines once Loki accepts a request, and the
+compactor removes them after `delete_request_cancel_period` (24 h). Retention removes anything a
+request misses within 72 h. The step is `required=False` only because a deployment may ship no logs
+to Loki. With the URL unset the step is not reached, which sets `partial_purge=True` and logs a
+WARNING. A rejected request goes into `errors` as `loki: …` and never quotes the identifier.
+Limits: the cascade's own `ERASE <doc_id>` lines logged *after* the request stay until retention.
+Lines carrying only `job_id` / `run_id` stay too, but once the doc lines are gone nothing links
+those ids to a document.
 
 **Erasing a document that was only ever rejected.** Such a document has no `doc_id`, no sidecar and
 no registry row, so `delete_doc` cannot reach it. The operator path is by sha256:
@@ -572,7 +594,7 @@ backup. **[high — AWS Bedrock RTBF guidance.]**
 > CI, and no ledger in code. The backup job, the ledger write in the cascade and the restore-time
 > replay are RFC-050 Phase 6 / operator work. Until they land, no scheduled backup exists; any
 > ad-hoc backup or snapshot that does exist **must be purged manually** on every erasure
-> (DESIGN.md § Erasure fan-out, step 6). That manual instruction stays until the ledger lands.
+> (DESIGN.md § Erasure fan-out, step 7). That manual instruction stays until the ledger lands.
 
 ### LLM-provider data-residency routing  (ADR-005)
 

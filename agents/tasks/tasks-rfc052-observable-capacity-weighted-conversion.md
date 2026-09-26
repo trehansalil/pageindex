@@ -52,11 +52,11 @@ Infra manifests live in `/root/hetzner-deployment-service` and ship as a compani
   - [x] 1.6 docling-service: header middleware plus `bind_log_context`, and `JsonFormatter` on the root and uvicorn loggers. _R1 AC6_
   - [x] 1.7 Write a `docling_chunk` record per chunk in `converters/docling_conv.py`'s chunked path, and one for the single-shot path. Peak RSS comes from the child's `resource.getrusage`. _R1 AC7_
   - [x] 1.8 Preclassify: log the page-set summary at INFO, including the method. Raise the detection-failure log from debug to WARNING. _R1 AC8, R2 AC7_
-  - [ ] 1.9 **Operator:** add the Loki Tailscale NodePort Service, the iptables rule limiting it to `tailscale0`, and the external probe proving it is closed publicly. _R1 AC9, D2_
-  - [ ] 1.10 **Operator (Mac):** Alloy launchd agent, newsyslog rotation, and redeploy the Mac service with JSON logging. _R1 AC9_
+  - [x] 1.9 Loki reachable from the Mac with no operator step: push-only nginx gateway bound to portfolio's Tailscale IP, and infra auto-applied on push (`ICR-97-rfc52-log-shipping-automation`). _R1 AC9, D2_
+  - [x] 1.10 Mac log shipping with no operator step: in-process `LokiPushHandler`, in-process rotation, and a launchd auto-updater; one-time `install.sh` bootstrap (`ICR-97-rfc52-log-shipping-automation`). _R1 AC9_
   - [x] 1.11 Provision the "PageIndex Logs" dashboard JSON: the `$job_id` variable plus log, chunk-timeline and error panels. _R1 AC10_
   - [ ] 1.12 Measure the extra RAM on portfolio (≤ 150 MiB), and check that one pocketbook `job_id` renders end to end. _R1 AC11, G1_
-  - Status 2026-09-26: 1.2 and 1.3 are done in config and await live verification in 1.12. 1.9 and 1.10 are prepared (`cluster/k3s/loki-tailscale/` in the infra repo; `services/docling-service/macos/install-logging.sh`), not run.
+  - Status 2026-09-26: 1.2 and 1.3 are done in config and await live verification in 1.12. 1.9 and 1.10 were first prepared as operator scripts, then replaced by automation on `ICR-97-rfc52-log-shipping-automation` (user asked for no manual steps).
 - [ ] 2. Checkpoint P0: `make test`, open the PR, and ask the user before continuing.
 
 - [ ] 3. P1: Page-class detection (`ICR-97-rfc52-page-class-detection`)
@@ -91,5 +91,5 @@ Infra manifests live in `/root/hetzner-deployment-service` and ship as a compani
 
 ## Notes
 
-- Operator steps (1.9, 1.10) touch host iptables and the user's Mac. Claude prepares scripts; the user runs anything on hcloud.
+- No operator steps remain for 1.9 and 1.10 beyond a one-time `install.sh` on the Mac. Claude still never runs hcloud mutations.
 - Commits carry no attribution lines. Never `git add -A`.

@@ -91,11 +91,23 @@ HANDLER_MARKER = "_pageindex_obs_handler"
 #: that collides with an envelope field is dropped, never overrides it.
 FLAT_FIELDS_ATTR = "flat_fields"
 
-#: Env var naming a log FILE for ``configure()`` to write instead of stderr,
-#: via ``WatchedFileHandler`` so newsyslog rotation is followed (RFC-052 task
-#: 1.10, the Mac docling-service). Unset everywhere else: stderr stays the
-#: contract ``converters_cli`` relies on.
+#: Env var naming a log FILE for ``configure()`` to write instead of stderr
+#: (RFC-052 task 1.10, the Mac docling-service). The top process rotates it
+#: in-process at ``LOG_FILE_MAX_BYTES`` x ``LOG_FILE_BACKUPS``; spawned chunk
+#: children append through ``WatchedFileHandler`` so they follow that rename.
+#: Unset everywhere else: stderr stays the contract ``converters_cli`` relies on.
 ENV_LOG_FILE = "PAGEINDEX_LOG_FILE"
+LOG_FILE_MAX_BYTES = 10 * 1024 * 1024
+LOG_FILE_BACKUPS = 5
+
+#: Loki JSON push endpoint (``.../loki/api/v1/push``). When set, ``configure()``
+#: also ships every record from the process itself (``obs/loki.py``) -- no
+#: Alloy / promtail on the host. Unset -> no shipping.
+ENV_LOKI_PUSH_URL = "PAGEINDEX_LOKI_PUSH_URL"
+#: The ``service`` stream label; ``host`` comes from ``DOCLING_BACKEND_NAME``
+#: or the hostname.
+ENV_LOKI_SERVICE = "PAGEINDEX_LOKI_SERVICE"
+DEFAULT_LOKI_SERVICE = "docling-service"
 
 #: Logger name used by decision()/phase() when the caller supplies none.
 DEFAULT_LOGGER_NAME = "pageindex_mcp.obs"

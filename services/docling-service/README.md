@@ -16,9 +16,21 @@ into a separately deployable container.
 
 | Method | Path             | Description                          |
 |--------|------------------|--------------------------------------|
-| GET    | `/health`        | Readiness probe — returns `{"status": "ok"}` |
+| GET    | `/health`        | Readiness probe — returns `{"status": "ok", "in_flight": 0}` (see below) |
 | POST   | `/convert/pdf`   | Convert PDF → markdown + pictures    |
 | POST   | `/convert/image` | Convert image → markdown (OCR)       |
+
+### GET /health
+
+```json
+{"status": "ok", "in_flight": 0}
+```
+
+`in_flight` is the number of `/convert/*` requests currently inside the
+service: downloading, queued for a conversion slot, or converting. Other
+routes (`/health`, `/version`) are not counted. The Mac auto-updater
+(`macos/update.sh`) restarts the service only when this is `0`; a response
+without the field is treated as an older build and the restart is deferred.
 
 ### POST /convert/pdf
 
