@@ -500,6 +500,7 @@ fan-out operation, not a single API call.
 | MinIO `hashes/` | Entry in `hashes/processed_hashes.json` — dedup record |
 | Redis | `pageindex:doc:<doc_id>` cache entry — call `DEL` or `cache.delete_doc(doc_id)` |
 | Redis | `pageindex:job:<job_id>` job record — call `DEL` (if job_id known) |
+| Loki | Log lines carrying `doc_id`, `doc_sha8` (Mac docling-service lines) or `doc_name_sha8`. Step 8 (`loki_logs`) of `delete_doc()` files one `POST /loki/api/v1/delete` per identifier against the in-cluster Loki (`PAGEINDEX_LOKI_URL`), over the last `PAGEINDEX_LOKI_ERASURE_LOOKBACK_H` hours (default 168). Hidden from queries once Loki accepts the request, removed by the compactor after 24 h, and bounded by the 72 h retention in any case. The Tailscale gateway is push-only and is never used for deletes. |
 | **Postgres** | **`doc_registry` row: `DELETE FROM doc_registry WHERE doc_id = $1` — RFC-006 D3. Carries `doc_name`, `doc_description`, and (once Tier-1 lands) facet values that may be client/product-identifying. Step 6 of `delete_doc()` in `storage.py`. Idempotent — no-op if row absent.** |
 
 ### Fan-out sequence
@@ -512,8 +513,13 @@ fan-out operation, not a single API call.
    d. Call `cache.delete_doc(doc_id)` to evict the Redis cache entry.
 3. If the document was ingested via `preloaded/`, also remove `preloaded/<filename>`.
 4. **Delete the `doc_registry` row from Postgres: `DELETE FROM doc_registry WHERE doc_id = $1` (RFC-006 D3 / HR2). This is step 6 of `delete_doc()` in `storage.py` and runs automatically when `REGISTRY_ENABLED=true` and `POSTGRES_DSN` is set. Verify completion if `REGISTRY_ENABLED=false` — the row must still be purged manually.**
-5. Confirm with a `GET /upload/status` poll (or MinIO `stat`) that the objects are gone.
-6. Backups — **manual, until the RFC-050 Phase 6 ledger exists.** Nothing records erasures today.
+5. Loki log lines: step 8 of `delete_doc()`, automatic when `PAGEINDEX_LOKI_URL` is set on the
+   process that runs it. If it is unset, the result has `partial_purge: true` and the lines stay
+   until the 72 h retention removes them. A `loki: …` entry in `errors` means Loki refused a
+   request; rerun `delete_doc`, which is idempotent. `GET /loki/api/v1/delete` (in-cluster) lists
+   the requests Loki holds.
+6. Confirm with a `GET /upload/status` poll (or MinIO `stat`) that the objects are gone.
+7. Backups — **manual, until the RFC-050 Phase 6 ledger exists.** Nothing records erasures today.
    Purge the `doc_id`'s `uploads/<doc_id>/` objects and its `doc_registry` row from **every existing
    backup or snapshot** by hand (none is known to exist as of 2026-09-24; check anyway). Once Phase 6
    lands, this step becomes: the erased `doc_id`/sha256 is appended to the erasure ledger and replayed
@@ -538,7 +544,7 @@ The erasure path for these is by sha256:
 3. Backups: none needed for quarantine — `quarantine/` is never backed up, and a rejected document's
    staged input is deleted on terminal rejection, so no backup holds it (quarantine is intentionally
    non-restorable). If the same bytes were ever *persisted* under a `doc_id`, purge that `doc_id`
-   from existing backups manually per step 6 above. (Once the Phase 6 ledger exists, the sha256 is
+   from existing backups manually per step 7 above. (Once the Phase 6 ledger exists, the sha256 is
    recorded there too.)
 
 No MCP tool or HTTP route exposes this; it is an operator-only path, by design, because the
@@ -558,7 +564,7 @@ instead each erasure (`delete_doc`, `erase_quarantine`) appends its `doc_id` / s
 served. The 30-day retention (equal to the GDPR DSR deadline) bounds how long an erased document can
 survive in a backup. Until Phase 6 lands there is no backup job and no ledger — the automated
 fan-out above only touches the live MinIO bucket, Redis and Postgres, so **any backup or snapshot
-that does exist must be purged manually** on every erasure (fan-out step 6). This manual instruction
+that does exist must be purged manually** on every erasure (fan-out step 7). This manual instruction
 stays until the ledger write and restore-time replay are implemented. `quarantine/` is excluded from
 backups and is intentionally non-restorable: rejected inputs are not backed up.
 

@@ -75,6 +75,8 @@ Adding the daemonset toleration `{key: dedicated, operator: Equal, value: doclin
 
 **Loki reachability.** `apps/infra/loki-tailscale-gateway.yaml` (infra repo): an `nginx-unprivileged` Deployment on portfolio's host network, listening only on the Tailscale address `100.120.146.20:3100` (so it is never on the public interface; no NodePort, no iptables). It forwards `POST /loki/api/v1/push` and `GET /ready` to `loki.infra.svc.cluster.local:3100` and returns 403 for everything else, since Loki has no auth. A push to `main` touching `apps/infra/**` applies it; no operator step.
 
+**Erasure (HR2).** The shipped lines carry `doc_id` / `doc_sha8` / `doc_name_sha8`, both in the JSON line and as structured metadata, so Loki is a derived store. `delete_doc` ends with step 8, `loki_logs` (`storage/documents.py::_erase_loki_logs` → `obs/loki.py::request_log_deletion`). It POSTs one `/loki/api/v1/delete` request per known identifier, `{service=~".+"} |= "<needle>"`, over the last `PAGEINDEX_LOKI_ERASURE_LOOKBACK_H` hours (default 168). The target is the in-cluster Loki at `PAGEINDEX_LOKI_URL`, never the gateway, which stays push-only. The Mac lines have no `doc_id`, so the `doc_sha8` request is what reaches them. Loki 3.0 in `infra` already runs `retention_enabled: true` + `delete_request_store: filesystem`, so `deletion_mode` is `filter-and-delete`. Queries hide the lines on acceptance, the compactor removes them after 24 h, and `retention_period: 72h` is the backstop. With the URL unset the step is not reached, which gives `partial_purge=True`. A refused request lands in `errors`. `PAGEINDEX_LOKI_URL` must be set on the pageindex-mcp server (and worker) env in the infra repo.
+
 **Correlation headers.** The client sends:
 
 ```
