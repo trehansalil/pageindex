@@ -211,6 +211,12 @@ Defects:
    - garble-screen results;
    - a table-cell diff against the baseline arm (cell-count delta and changed-cell ratio on the 262 pocketbook table pages).
 4. FAST becomes the default only if the changed-cell ratio is ≤ 2%, no verdict gets worse, and garble does not increase. Otherwise it stays opt-in.
+   > **Amendment (2026-09-27, task 5.6 decision).** Benchmark run on docling-1 (cpx62, 16 cores, image 8c3870d); report `audit/RFC052_CONVERSION_BENCH_2026-09-27.md`. FAST fails AC4 on every document. Its changed-cell ratio vs R3 is 73.24% (pocketbook), 11.72% (scanned) and 18.01% (Arabic), against a 2% limit. The baseline-vs-baseline noise floor is 0.00%, so the differences are real. **Decision (user, 2026-09-27): keep R3 as the default and FAST opt-in.** The defaults are unchanged:
+   > - `PAGECLASS_CHUNKING=1`;
+   > - `DOCLING_DO_OCR=0` (page-class driven);
+   > - `DOCLING_TABLEFORMER_MODE=accurate`.
+   >
+   > R3 matched the baseline's tables cell for cell, and every verdict in every arm was PASS with no garbling. R3 saved only 2% on the pocketbook (742 s vs 758 s), because 275 of its 292 pages need OCR and 273 need tables. It saved nothing on the all-OCR scanned and Arabic documents; its gains are expected on text-dominant documents such as the T&C corpus. FAST was 2.4× faster on the pocketbook (314 s). Revisiting it needs a hand check of the changed tables, since AC4 measures difference, not correctness.
 5. Results SHALL be written to `audit/RFC052_CONVERSION_BENCH_<date>.md`.
 
 ### Requirement 5: Capacity reporting (P3) and a Mac + docling-1 split (P5)
@@ -324,7 +330,7 @@ Measured on 2026-09-27:
 | D4 | `find_tables()` as the primary table signal; tighten column alignment | The census shows column alignment at 264/292 is too loose to be useful. |
 | D5 | OCR need = no text layer, or images, or tables (UD2) | Follows the user's rule. Conservative: table pages keep OCR until R4 shows it is safe to drop. |
 | D6 | Page-class run-length chunking with union absorption | Per-page model switches don't exist in a single Docling call; making each chunk uniform in its needs gives page-level effect at chunk granularity. |
-| D7 | TableFormer mode becomes config; default changes only on R4 evidence | Speed vs table fidelity is a quality decision (UD4). |
+| D7 | TableFormer mode becomes config; default changes only on R4 evidence | Speed vs table fidelity is a quality decision (UD4).  **Resolved 2026-09-27:** R4 benchmark failed FAST on all three documents (11.7–73.2% changed cells vs a 2% bar); `accurate` stays the default and R3 stays on (R4 AC4 amendment). |
 | D8 | Coordinator in the worker's converter child | It already has presigning, the HR3 gate and the retry policy; a Mac coordinator would create a single point of failure and a callback path into the cluster. |
 | D9 | Proportional initial split plus tail stealing | A static split can't absorb a slow shard; pure stealing of small chunks wastes the Mac's 14-process parallelism. |
 | D10 | No Docling on portfolio; `docling-local` dropped (2026-09-27) | Portfolio has 4 cores and about 2 GB free, and would get zero chunks almost always; the gating it needed was the RFC's main OOM risk. |

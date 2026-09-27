@@ -12,9 +12,9 @@ with each arm chosen by the per-request overrides the service accepts
   r3_fast    on                  page_class     fast
   =========  ==================  =============  ================
 
-``baseline`` pins today's remote settings explicitly (``DOCLING_DO_OCR=1`` on
-docling-1 and the Mac), so the arm means the same thing whatever the
-backend's env says. Every arm sends the same page classes and table pages the
+``baseline`` pins the pre-R3 remote settings explicitly (uniform chunks,
+``DOCLING_DO_OCR=1``), so the arm means the same thing whatever the
+backend's env says; since R3 the remotes default to ``r3``'s settings. Every arm sends the same page classes and table pages the
 worker would send, computed once per document with the production classifier.
 
 Fixed plan (R4 AC2): exactly three documents -- ``--pocketbook``, ``--scanned``
