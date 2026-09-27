@@ -73,11 +73,11 @@ Infra manifests live in `/root/hetzner-deployment-service` and ship as a compani
 - [ ] 4. Checkpoint P1: `make test`, open the PR, and ask the user.
 
 - [ ] 5. P2: Page-class chunking and levers (`ICR-97-rfc52-page-class-chunking`)
-  - [ ] 5.1 Chunker: run-length, absorb, split, with property tests P1/P2. _R3 AC1-2_
-  - [ ] 5.2 Per-chunk `do_table_structure`/`do_ocr`, the `DOCLING_DO_OCR` override semantics, and alignment of the Mac `run.sh`. _R3 AC3_
-  - [ ] 5.3 Keep the `force_full_page_ocr` escalation: add a test that recovery still forces OCR on text-layer pages. _R3 AC4_
-  - [ ] 5.4 Add the `DOCLING_TABLEFORMER_MODE` config and the kill switch `PAGECLASS_CHUNKING`. _R3 AC6, R4 AC1_
-  - [ ] 5.5 Write `scripts/conversion_bench.py`, run the 3 docs × 3 arms × 2 benchmark on the active remote, and write `audit/RFC052_CONVERSION_BENCH_<date>.md`. _R4 AC2-5_
+  - [x] 5.1 Chunker: run-length, absorb, split, with property tests P1/P2. _R3 AC1-2_
+  - [x] 5.2 Per-chunk `do_table_structure`/`do_ocr`, the `DOCLING_DO_OCR` override semantics, and alignment of the Mac `run.sh`. _R3 AC3_
+  - [x] 5.3 Keep the `force_full_page_ocr` escalation: add a test that recovery still forces OCR on text-layer pages. _R3 AC4_
+  - [x] 5.4 Add the `DOCLING_TABLEFORMER_MODE` config and the kill switch `PAGECLASS_CHUNKING`. _R3 AC6, R4 AC1_
+  - [ ] 5.5 Write `scripts/conversion_bench.py` (written 2026-09-27; not yet run), run the 3 docs × 3 arms × 2 benchmark on the active remote, and write `audit/RFC052_CONVERSION_BENCH_<date>.md`. _R4 AC2-5_
   - [ ] 5.6 Choose the defaults from the benchmark (FAST only if it passes the R4 AC4 gate). Record the decision in the RFC as an amendment.
 - [ ] 6. Checkpoint P2: `make test`, open the PR, and ask the user.
 
