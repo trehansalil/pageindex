@@ -46,7 +46,7 @@ Infra manifests live in `/root/hetzner-deployment-service` and ship as a compani
 - [ ] 1. P0: Log correlation (`ICR-97-rfc52-log-correlation`)
   - [x] 1.1 Promtail config: fix the container/pod relabels, the json map (`logger`, `ts`), and the timestamp stage. Add structured metadata for the IDs and drop stages for `/metrics`, `/health` and arq duplicates. _R1 AC1-3_
   - [ ] 1.2 Promtail DaemonSet: add the docling taint toleration, then verify a stream from docling-1 while it is up. _R1 AC4_
-  - [ ] 1.3 Node controller: make the `tick` container log to stdout, not only a file or stderr that is lost. Verify it in Loki. _R1 AC5_
+  - [x] 1.3 Node controller: make the `tick` container log to stdout, not only a file or stderr that is lost. Verify it in Loki. _R1 AC5_
   - [x] 1.4 Stop the duplicate arq console handler at source (worker logging setup). _R1 AC3_
   - [x] 1.5 Send the `X-Job-Id`/`X-Doc-Sha8`/`X-Run-Id`/`X-Shard` headers from `client/remote.py`. _R1 AC6_
   - [x] 1.6 docling-service: header middleware plus `bind_log_context`, and `JsonFormatter` on the root and uvicorn loggers. _R1 AC6_
@@ -56,6 +56,7 @@ Infra manifests live in `/root/hetzner-deployment-service` and ship as a compani
   - [x] 1.10 Mac log shipping with no operator step: in-process `LokiPushHandler`, in-process rotation, and a launchd auto-updater; one-time `install.sh` bootstrap (`ICR-97-rfc52-log-shipping-automation`). _R1 AC9_
   - [x] 1.11 Provision the "PageIndex Logs" dashboard JSON: the `$job_id` variable plus log, chunk-timeline and error panels. _R1 AC10_
   - [ ] 1.12 Measure the extra RAM on portfolio (≤ 150 MiB), and check that one pocketbook `job_id` renders end to end. _R1 AC11, G1_
+  - Status 2026-09-27 (1.12 live run on docling-1): pocketbook job `cad64281-68da-4a2a-b8bd-60d0b1081301` done in 788 s, tree 2.5 MB. In Loki under that `job_id`: worker 50 decision + 262 log + phase entry/exit lines. docling-service tags every line, `docling_chunk n/30` included, with the job ID (checked with kubectl logs). Those lines are missing from Loki because 1.2 is blocked: promtail on docling-1 stays Pending (Insufficient cpu), since `docling-node.sh` sizes docling-service to the whole node. The fix is infra PR #11, not merged. RAM: Loki, promtail and Grafana have existed since 2026-06, and the only new pod is the gateway (2 MiB). Loki went from 68 to 115 MiB during the job, so the added RAM is about 50 MiB (AC11 met). Counting Loki + promtail + gateway in full, the peak was 168 MiB. 1.3 is verified: controller tick lines are in Loki. 1.12 stays open until docling-1's lines show up in Loki.
   - Status 2026-09-26: 1.2 and 1.3 are done in config and await live verification in 1.12. 1.9 and 1.10 were first prepared as operator scripts, then replaced by automation on `ICR-97-rfc52-log-shipping-automation` (user asked for no manual steps).
 - [ ] 2. Checkpoint P0: `make test`, open the PR, and ask the user before continuing.
 
