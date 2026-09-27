@@ -25,12 +25,14 @@ from ..script import RtlDecision
 from .docling_conv import (
     DoclingCancelled,
     _docling_converter,
+    _page_classes_active,
     _patch_hierarchical_infer,
     _pdf_to_markdown_docling_chunked,
     _peak_rss_bytes,
     _repair_docling_tables,
     _resolve_do_ocr,
     _run_docling_chunk_with_timeout,
+    _resolve_force_ocr,
     emit_docling_chunk,
 )
 from .headings import (
@@ -309,6 +311,11 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
     cancel_event: threading.Event | None = None,
     progress: dict | None = None,
     deadline: float | None = None,
+    page_classes: list | None = None,
+    do_ocr: bool | None = None,
+    tableformer_mode: str | None = None,
+    pageclass_chunking: bool | None = None,
+    do_ocr_policy: str | None = None,
 ) -> tuple[str, list[PictureResult], dict[str, dict]]:
     """MIT-licensed layout-aware PDF route (RFC-003 D3 / HR4 AGPL escape).
 
@@ -333,8 +340,18 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
     OCR, when enabled, runs through the installed Tesseract binary (CLI engine) so
     the system ``deu``/``eng`` language data is used; point ``TESSDATA_PREFIX`` at the
     directory holding ``deu.traineddata`` (e.g. the repo-local ``.tessdata/``).
+    RFC-052 R3: ``page_classes`` (one ``PageClass`` per page) drive the
+    per-chunk TableFormer/OCR switches -- on the chunked route per chunk, on
+    the direct route for the document as one chunk (the union of its pages'
+    needs). ``do_ocr`` is a chunk child's already-resolved switch and skips
+    that resolution. ``pageclass_chunking`` / ``do_ocr_policy`` /
+    ``tableformer_mode`` are per-call overrides of the env knobs below.
+
     Env knobs:
-      ``DOCLING_DO_OCR``   1|0 (default 0 — text-layer PDFs need no OCR)
+      ``DOCLING_DO_OCR``   0 = page-class driven (default; no usable page
+        classes -> OCR on), 1 = force on, off = force off (RFC-052 R3 AC3)
+      ``DOCLING_TABLEFORMER_MODE`` accurate|fast (default accurate)
+      ``PAGECLASS_CHUNKING`` 0 restores uniform chunks, table flag only
       ``DOCLING_OCR_LANG`` comma list (default ``deu,eng``) when OCR is on
       ``DOCLING_ARTIFACTS_PATH`` dir of pre-downloaded model weights for offline use
         (set in the container image; unset locally -> weights fetched from HF on first use)
@@ -413,6 +430,10 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
             num_threads=num_threads,
             pages_with_tables=pages_with_tables,
             **_cancel_kw,
+            page_classes=page_classes,
+            pageclass_chunking=pageclass_chunking,
+            do_ocr_policy=do_ocr_policy,
+            tableformer_mode=tableformer_mode,
         )
 
     if logger.isEnabledFor(logging.INFO):
@@ -427,6 +448,26 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
             },
         )
 
+    _do_table_structure = pages_with_tables is None or bool(pages_with_tables)
+    if do_ocr is None:
+        # RFC-052 R3: the single pass is one chunk -- the union of its pages'
+        # needs. A chunk child arrives with do_ocr resolved and no classes.
+        # pages_with_tables is ORed in; None adds nothing once classes decide.
+        _classes = page_classes or []
+        _pc_on = _page_classes_active(page_classes, page_count, pageclass_chunking)
+        if _pc_on:
+            _do_table_structure = any(pc.needs_tables for pc in _classes) or bool(pages_with_tables)
+        # R2 AC7: inactive page classes (absent, kill switch, length mismatch,
+        # parse failure) must degrade to "every model stays on" -- the same
+        # posture TableFormer already keeps above via the unrestricted
+        # _do_table_structure default -- not to "no OCR".
+        do_ocr = _resolve_do_ocr(
+            force_full_page_ocr,
+            needs_ocr=(any(pc.needs_ocr for pc in _classes) if _pc_on else True),
+            policy=do_ocr_policy,
+        )
+    do_ocr = _resolve_force_ocr(force_full_page_ocr) or do_ocr
+
     # Coldstart Q5 item 8 (QA finding 1): a direct-route request that carries a
     # ``cancel_event`` (docling-service) must be as killable as the chunked
     # route. Run it as a single "chunk" covering the whole document in the
@@ -436,7 +477,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
     # below, just out of process. No ``cancel_event`` -> this branch is never
     # taken and the rest of the function runs unchanged (byte-identical).
     if cancel_event is not None:
-        _direct_do_table_structure = pages_with_tables is None or bool(pages_with_tables)
+        _direct_do_table_structure = _do_table_structure
         _direct_stats: dict = {}
         _direct_started = time.monotonic()
         _direct_outcome = "error"
@@ -465,6 +506,8 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
                 log_context=dict(current_context()),
                 stats=_direct_stats,
                 cancel_event=cancel_event,
+                do_ocr=do_ocr,
+                tableformer_mode=tableformer_mode,
             )
             _direct_outcome = "ok"
             if progress is not None:
@@ -482,7 +525,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
                 page_start=0 if page_count > 0 else None,
                 page_end=page_count - 1 if page_count > 0 else None,
                 do_table_structure=_direct_do_table_structure,
-                do_ocr=_resolve_do_ocr(force_full_page_ocr),
+                do_ocr=do_ocr,
                 duration_s=time.monotonic() - _direct_started,
                 peak_rss_bytes=_direct_stats.get("peak_rss_bytes"),
                 outcome=_direct_outcome,
@@ -492,11 +535,12 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
 
     # Reuse the process-cached converter (see _docling_converter): a fresh
     # DocumentConverter per call leaks ~250 MB/doc that torch never frees.
-    _do_table_structure = pages_with_tables is None or bool(pages_with_tables)
     converter = _docling_converter(
         force_full_page_ocr=force_full_page_ocr,
         ocr_lang_override=ocr_lang_override,
         do_table_structure=_do_table_structure,
+        do_ocr=do_ocr,
+        tableformer_mode=tableformer_mode,
     )
     # RFC-035 D2 Phase 1: read-only landscape probe, tags pages for the future
     # rasterize-rotate-reextract fallback (Phase 2). Does not alter extraction.
@@ -532,12 +576,13 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
             page_start=0 if page_count > 0 else None,
             page_end=page_count - 1 if page_count > 0 else None,
             do_table_structure=_do_table_structure,
-            do_ocr=_resolve_do_ocr(force_full_page_ocr),
+            do_ocr=do_ocr,
             duration_s=time.monotonic() - _convert_started,
             peak_rss_bytes=_peak_rss_bytes(),
             outcome=_convert_outcome,
             page_count=page_count,
             single_shot=True,
+            tableformer_mode=tableformer_mode,
         )
 
     # RFC-035 D2 Phase 2 trigger: for pages tagged landscape above, compare the

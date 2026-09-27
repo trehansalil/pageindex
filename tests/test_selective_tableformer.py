@@ -12,7 +12,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
@@ -566,3 +565,514 @@ class TestPageClassWireFormat:
         caplog.set_level(logging.WARNING)
         assert PreClassification.from_dict({"page_classes": [[1, 2, "T--"]]}).page_classes is None
         assert any("malformed page_classes" in r.getMessage() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# RFC-052 P2 (R3, R4): page-class chunking, OCR policy, TableFormer mode
+# ---------------------------------------------------------------------------
+
+_TEXT = ("T--", False, False)  # text layer only: needs nothing (UD2)
+_TABLE = ("T-t", True, True)  # D5: a table page keeps OCR until R4 says otherwise
+_SCAN = ("---", False, True)
+_IMAGE = ("Ti-", False, True)
+
+
+def _classes(*runs):
+    from pageindex_mcp.converters.preclassify import PageClass
+
+    return [PageClass.from_flags(flags) for flags, n in runs for _ in range(n)]
+
+
+def _fake_docling_modules(monkeypatch):
+    """Stand-ins for the function-local Docling imports -- never load the real
+    (heavy) package in a unit test."""
+    import sys
+    import types
+
+    ns = types.SimpleNamespace
+
+    class _Opts:
+        def __init__(self):
+            self.table_structure_options = ns(mode=None)
+            self.ocr_options = None
+
+    mods = {
+        "docling": {},
+        "docling.datamodel": {},
+        "docling.datamodel.pipeline_options": {
+            "PdfPipelineOptions": _Opts,
+            "TableFormerMode": ns(ACCURATE="ACCURATE", FAST="FAST"),
+            "TesseractCliOcrOptions": lambda **kw: ns(**kw),
+        },
+        "docling.datamodel.accelerator_options": {
+            "AcceleratorDevice": ns(CPU="cpu"),
+            "AcceleratorOptions": lambda **kw: ns(**kw),
+        },
+        "docling.datamodel.base_models": {"InputFormat": ns(PDF="pdf", IMAGE="image")},
+        "docling.document_converter": {
+            "DocumentConverter": lambda format_options: ns(format_options=format_options),
+            "PdfFormatOption": lambda pipeline_options: ns(pipeline_options=pipeline_options),
+        },
+    }
+    for name, attrs in mods.items():
+        mod = types.ModuleType(name)
+        mod.__dict__.update(attrs)
+        monkeypatch.setitem(sys.modules, name, mod)
+
+
+class TestPageClassChunking:
+    def test_chunker_properties_p1_p2_max_and_order(self):
+        """RFC-052 R3 AC1-2, D6, design P1/P2: the chunks partition [0, N) in
+        page order, never drop a model a page needs (union on absorption),
+        never exceed max_pages, and stay within ceil(N/min) + |runs|."""
+        import itertools
+        import math
+        import random
+
+        from pageindex_mcp.converters.page_class_chunker import PageChunk, page_class_chunks
+
+        rng = random.Random(52)
+        flag_pool = [_TEXT[0], _TABLE[0], _SCAN[0], _IMAGE[0]]
+        cases = [
+            _classes((_TEXT[0], 10), (_TABLE[0], 5)),
+            _classes((_TEXT[0], 1)),
+            _classes(*[(f, 1) for f in flag_pool * 15]),  # alternating single pages
+        ]
+        for _ in range(150):
+            runs = [(rng.choice(flag_pool), rng.randint(1, 25)) for _ in range(rng.randint(1, 8))]
+            cases.append(_classes(*runs))
+        for classes, (max_pages, min_pages) in itertools.product(
+            cases, [(11, 10), (60, 10), (5, 1), (3, 7), (1, 1)]
+        ):
+            n = len(classes)
+            chunks = page_class_chunks(classes, max_pages=max_pages, min_pages=min_pages)
+            pages = [p for c in chunks for p in range(c.start, c.end + 1)]
+            assert pages == list(range(n)), (classes, chunks)  # P1: exactly once, in order
+            for c in chunks:
+                assert 1 <= c.page_count <= max_pages
+                for p in range(c.start, c.end + 1):  # P2: needs only ever turn ON
+                    assert c.needs_tables >= classes[p].needs_tables
+                    assert c.needs_ocr >= classes[p].needs_ocr
+            runs = len(list(itertools.groupby(classes, lambda pc: (pc.needs_tables, pc.needs_ocr))))
+            assert len(chunks) <= math.ceil(n / min(min_pages, max_pages)) + runs
+
+        # The REAL classifier run layout on doc_store/world-stats-pocketbook-
+        # 2023.pdf (QA, run-6): 0-2 (T,O) 3 * 3-4 (noT,O) 2 * 5-7 (none) 3 *
+        # 8-274 (T,O) 267 * 275-287 (none) 13 * 288-290 (T,O) 3 * 291 (none) 1.
+        # noT,O = no text layer, no image, no table (_SCAN's flags "---"):
+        # needs_tables False, needs_ocr True. The 275-287 run is >= min_pages
+        # on its own and has no covering neighbour (both its neighbours need
+        # models it doesn't), so it survives as its own model-free chunk
+        # instead of being dragged into an all-on run -- the HIGH finding
+        # this fixture replaces (today's algorithm produced ONE all-on run:
+        # 0 pages skip anything).
+        pocket = _classes(
+            (_TABLE[0], 3), (_SCAN[0], 2), (_TEXT[0], 3), (_TABLE[0], 267),
+            (_TEXT[0], 13), (_TABLE[0], 3), (_TEXT[0], 1),
+        )  # fmt: skip
+        chunks = page_class_chunks(pocket, max_pages=60, min_pages=10)
+        pages = [p for c in chunks for p in range(c.start, c.end + 1)]
+        assert pages == list(range(len(pocket)))  # P1: coverage, order
+
+        free_ranges = [(c.start, c.end) for c in chunks if not (c.needs_tables or c.needs_ocr)]
+        assert (275, 287) in free_ranges, chunks
+
+        # P2 plus the amendment: a page never gains a model unless the chunk
+        # it landed in already needed it OR the page was absorbed into a
+        # neighbour whose needs covered it (checked directly against the
+        # known short runs: pages 3-4, 5-7 and 291).
+        for c in chunks:
+            for p in range(c.start, c.end + 1):
+                assert c.needs_tables >= pocket[p].needs_tables
+                assert c.needs_ocr >= pocket[p].needs_ocr
+        # The two absorbed short prefixes/suffix pick up TableFormer+OCR only
+        # because their covering neighbour (a table run) already needed both.
+        absorbing_chunk = next(c for c in chunks if c.start <= 3 <= c.end)
+        assert absorbing_chunk.needs_tables and absorbing_chunk.needs_ocr
+        tail_chunk = next(c for c in chunks if c.start <= 291 <= c.end)
+        assert tail_chunk.needs_tables and tail_chunk.needs_ocr
+        assert len(chunks) <= 8  # was 1 before the fix (one all-on run)
+
+        # A short run joins a neighbour ONLY when that neighbour already
+        # covers its needs; here neither "none" neighbour covers the table
+        # run's needs, so it stays its own (short) chunk instead of turning
+        # TableFormer+OCR on for one of the 20-page text runs either side.
+        iso = _classes((_TEXT[0], 20), (_TABLE[0], 2), (_TEXT[0], 20))
+        assert page_class_chunks(iso, max_pages=60, min_pages=5) == [
+            PageChunk(0, 19, False, False),
+            PageChunk(20, 21, True, True),
+            PageChunk(22, 41, False, False),
+        ]
+        sup = _classes((_TABLE[0], 3), (_SCAN[0], 2), (_TEXT[0], 30))
+        assert page_class_chunks(sup, max_pages=60, min_pages=5) == [
+            PageChunk(0, 4, True, True),
+            PageChunk(5, 34, False, False),
+        ]
+        assert page_class_chunks([], max_pages=10, min_pages=5) == []
+        with pytest.raises(ValueError):
+            page_class_chunks(iso, max_pages=0, min_pages=1)
+
+        # RFC-052 R3 AC2 amendment (2026-09-27): a table page every 11th page
+        # among otherwise-uniform text used to isolate each lone table page
+        # as its own 1-page chunk -- 54 chunks over 297 pages (27 ten-page
+        # text runs + 27 one-page table runs), each 1-page chunk a child that
+        # reloads the Docling models from scratch. The bounded-upgrade rule
+        # merges each lone table page into its (exactly min_pages-sized, tied
+        # left) text neighbour, and those newly-T,O 11-page runs then coalesce
+        # with each other (every run now shares the same needs), leaving one
+        # T,O run for the whole document -- split_to_max then cuts that into
+        # ceil(297 / 60) = 5 near-equal chunks instead of 54 lone ones.
+        eleventh = _classes(*([(_TEXT[0], 10), (_TABLE[0], 1)] * 27))
+        eleventh_chunks = page_class_chunks(eleventh, max_pages=60, min_pages=10)
+        assert len(eleventh_chunks) == 5  # was 54 before the amendment
+        assert sum(c.page_count for c in eleventh_chunks) == len(eleventh) == 297
+        assert all(c.needs_tables and c.needs_ocr for c in eleventh_chunks)
+
+    def test_ocr_policy_tableformer_mode_and_converter_cache_key(self, monkeypatch, caplog):
+        """RFC-052 R3 AC3 + R4 AC1 (tasks 5.2, 5.4): DOCLING_DO_OCR is a
+        three-way global override, a per-request policy beats it, the
+        TableFormer mode is config, and both options key the converter cache
+        (a shared key would silently serve one chunk's pipeline to another)."""
+        import logging
+
+        from pageindex_mcp.converters import docling_conv as dc
+
+        _fake_docling_modules(monkeypatch)
+        monkeypatch.delenv("DOCLING_FORCE_FULL_PAGE_OCR", raising=False)
+        monkeypatch.delenv("DOCLING_TABLEFORMER_MODE", raising=False)
+        # env, the chunk's needs_ocr -> do_ocr. 0/unset = page-class driven
+        # (and with no page classes that is today's "no OCR").
+        for env, needs, expected in [
+            (None, False, False), (None, True, True), ("0", False, False), ("0", True, True),
+            ("1", False, True), ("true", False, True), ("off", True, False),
+        ]:  # fmt: skip
+            if env is None:
+                monkeypatch.delenv("DOCLING_DO_OCR", raising=False)
+            else:
+                monkeypatch.setenv("DOCLING_DO_OCR", env)
+            assert dc._resolve_do_ocr(False, needs_ocr=needs) is expected, (env, needs)
+        monkeypatch.setenv("DOCLING_DO_OCR", "1")
+        assert dc._resolve_do_ocr(False, needs_ocr=True, policy="force_off") is False
+        monkeypatch.setenv("DOCLING_DO_OCR", "off")
+        assert dc._resolve_do_ocr(False, needs_ocr=False, policy="force_on") is True
+        assert dc._resolve_do_ocr(False, needs_ocr=True, policy="page_class") is True
+        with pytest.raises(ValueError):
+            dc._ocr_policy("sometimes")
+        # An explicit per-chunk do_ocr is the parent's resolved value: env loses.
+        assert dc._build_pdf_pipeline_options(do_ocr=True).do_ocr is True
+        monkeypatch.setenv("DOCLING_DO_OCR", "1")
+        assert dc._build_pdf_pipeline_options(do_ocr=False).do_ocr is False
+
+        caplog.set_level(logging.WARNING)
+        modes = []
+        for env, override in [(None, None), ("fast", None), ("FAST ", None), ("bogus", None),
+                              ("fast", "accurate")]:  # fmt: skip
+            if env is None:
+                monkeypatch.delenv("DOCLING_TABLEFORMER_MODE", raising=False)
+            else:
+                monkeypatch.setenv("DOCLING_TABLEFORMER_MODE", env)
+            opts = dc._build_pdf_pipeline_options(tableformer_mode=override)
+            modes.append(opts.table_structure_options.mode)
+        assert modes == ["ACCURATE", "FAST", "FAST", "ACCURATE", "ACCURATE"]
+        assert any("bogus" in r.getMessage() for r in caplog.records)
+
+        monkeypatch.delenv("DOCLING_TABLEFORMER_MODE", raising=False)
+        monkeypatch.setattr(dc, "_DOCLING_CONVERTER_CACHE", {})
+        a = dc._docling_converter(do_ocr=False)
+        b = dc._docling_converter(do_ocr=True)
+        c = dc._docling_converter(do_ocr=True, tableformer_mode="fast")
+        assert len({id(a), id(b), id(c)}) == 3
+        assert dc._docling_converter(do_ocr=True) is b
+        opts = [conv.format_options["pdf"].pipeline_options for conv in (a, b, c)]
+        assert [o.do_ocr for o in opts] == [False, True, True]
+        assert [o.table_structure_options.mode for o in opts] == ["ACCURATE", "ACCURATE", "FAST"]
+
+    def test_force_full_page_ocr_beats_page_class_and_global_off(self, tmp_path, monkeypatch):
+        """RFC-052 R3 AC4, HR5 (task 5.3): the recovery escalation still OCRs
+        text-layer pages -- whose class needs no OCR -- even with the global
+        override off and a request policy of force_off."""
+        fitz = pytest.importorskip("fitz")
+        from pageindex_mcp.converters import docling_conv as dc
+
+        _fake_docling_modules(monkeypatch)
+        monkeypatch.setenv("DOCLING_DO_OCR", "off")
+        monkeypatch.delenv("DOCLING_FORCE_FULL_PAGE_OCR", raising=False)
+        opts = dc._build_pdf_pipeline_options(force_full_page_ocr=True, do_ocr=False)
+        assert opts.do_ocr is True and opts.ocr_options.force_full_page_ocr is True
+
+        doc = fitz.open()
+        for _ in range(30):
+            doc.new_page()
+        path = str(tmp_path / "text.pdf")
+        doc.save(path)
+        doc.close()
+        seen = []
+
+        def fake_chunk(chunk_path, *, force_full_page_ocr, do_ocr, **_kw):
+            seen.append((force_full_page_ocr, do_ocr))
+            return "md", [], {}
+
+        monkeypatch.setattr(dc, "_run_docling_chunk_with_timeout", fake_chunk)
+        dc._pdf_to_markdown_docling_chunked(
+            path,
+            page_count=30,
+            max_pages=10,
+            force_full_page_ocr=True,
+            page_classes=_classes((_TEXT[0], 30)),
+            do_ocr_policy="force_off",
+        )
+        assert seen == [(True, True)] * 3
+
+    def test_chunked_route_page_class_chunks_records_and_kill_switch(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """RFC-052 R3 AC1/3/5/6, R1 AC7 (tasks 5.2, 5.4): page-class chunks set
+        each chunk child's tables/OCR/mode, every page is converted exactly
+        once in order, picture pages rebase on the chunk start, the per-chunk
+        docling_chunk record carries the real flags, and PAGECLASS_CHUNKING=0
+        (or the request override) restores today's uniform chunks."""
+        import inspect
+        import logging
+        import queue
+
+        fitz = pytest.importorskip("fitz")
+        from pageindex_mcp.converters import docling_conv as dc
+        from pageindex_mcp.converters import pipeline
+
+        doc = fitz.open()
+        for i in range(30):
+            doc.new_page().insert_text((72, 72), f"p{i}")
+        path = str(tmp_path / "mixed.pdf")
+        doc.save(path)
+        doc.close()
+        # 12 text, 13 table, 5 scanned: the 5-page scan run (< MIN_CHUNK_PAGES)
+        # joins the table run, which already runs OCR.
+        classes = _classes((_TEXT[0], 12), (_TABLE[0], 13), (_SCAN[0], 5))
+        lock = threading.Lock()
+        calls: list[tuple] = []
+
+        def fake_chunk(chunk_path, *, do_table_structure, do_ocr, tableformer_mode, **_kw):
+            with fitz.open(chunk_path) as chunk:
+                texts = [p.get_text().strip() for p in chunk]
+            with lock:
+                calls.append((texts[0], len(texts), do_table_structure, do_ocr, tableformer_mode))
+            return " ".join(texts), [{"page": 1}], {}
+
+        monkeypatch.setattr(dc, "_run_docling_chunk_with_timeout", fake_chunk)
+        monkeypatch.delenv("DOCLING_DO_OCR", raising=False)
+        monkeypatch.delenv("DOCLING_FORCE_FULL_PAGE_OCR", raising=False)
+        monkeypatch.delenv("PAGECLASS_CHUNKING", raising=False)
+        monkeypatch.setenv("DOCLING_TABLEFORMER_MODE", "fast")
+        caplog.set_level(logging.INFO, logger=dc.logger.name)
+
+        def run(**kw):
+            calls.clear()
+            caplog.clear()
+            md, pics, _ = dc._pdf_to_markdown_docling_chunked(
+                path, page_count=30, max_pages=10, workers=2, pages_with_tables={3}, **kw
+            )
+            recs = sorted(
+                (r for r in caplog.records if getattr(r, "event", None) == "docling_chunk"),
+                key=lambda r: getattr(r, dc.FLAT_FIELDS_ATTR)["page_start"],
+            )
+            fields = [getattr(r, dc.FLAT_FIELDS_ATTR) for r in recs]
+            return md, [p["page"] for p in pics], sorted(calls, key=lambda c: int(c[0][1:])), [
+                (f["page_start"], f["page_end"], f["do_table_structure"], f["do_ocr"],
+                 f["tableformer_mode"])
+                for f in fields
+            ]  # fmt: skip
+
+        md, pic_pages, got, recs = run(page_classes=classes)
+        assert md == " ".join(f"p{i}" for i in range(30)).replace("p5 p6", "p5\n\np6").replace(
+            "p11 p12", "p11\n\np12"
+        ).replace("p20 p21", "p20\n\np21")
+        assert pic_pages == [1, 7, 13, 22]
+        # pages_with_tables={3} ORs TableFormer into the first text chunk only.
+        assert got == [
+            ("p0", 6, True, False, "fast"),
+            ("p6", 6, False, False, "fast"),
+            ("p12", 9, True, True, "fast"),
+            ("p21", 9, True, True, "fast"),
+        ]
+        assert recs == [
+            (0, 5, True, False, "fast"),
+            (6, 11, False, False, "fast"),
+            (12, 20, True, True, "fast"),
+            (21, 29, True, True, "fast"),
+        ]
+
+        # RFC-052 P2 finding 1 (R2 AC7): with page classes inactive -- kill
+        # switch or a length mismatch -- do_ocr must degrade to "on" (today's
+        # pre-R3 behaviour), the same way do_table_structure already degrades
+        # to "on" wherever pages_with_tables does not force it off. A scanned
+        # page must never silently lose OCR just because its page-class list
+        # was malformed, mismatched, or chunking was switched off.
+        uniform = [
+            ("p0", 10, True, True, "fast"),
+            ("p10", 10, False, True, "fast"),
+            ("p20", 10, False, True, "fast"),
+        ]
+        assert run(page_classes=classes, pageclass_chunking=False)[2] == uniform
+        assert run(page_classes=classes[:-1])[2] == uniform  # length mismatch: degrade, OCR on
+        monkeypatch.setenv("PAGECLASS_CHUNKING", "0")
+        md, pic_pages, got, recs = run(page_classes=classes)
+        assert (got, pic_pages) == (uniform, [1, 11, 21])
+        assert [r[:2] for r in recs] == [(0, 9), (10, 19), (20, 29)]
+        monkeypatch.delenv("PAGECLASS_CHUNKING")
+
+        # The child hands do_ocr/tableformer_mode to the real pipeline signature.
+        real = inspect.signature(pipeline.pdf_to_markdown_docling)
+        child_kw = []
+
+        def fake_pipeline(*a, **kw):
+            real.bind(*a, **kw)
+            child_kw.append((kw["pages_with_tables"], kw["do_ocr"], kw["tableformer_mode"]))
+            return "md", [], {}
+
+        monkeypatch.setattr(pipeline, "pdf_to_markdown_docling", fake_pipeline)
+        q = queue.Queue()
+        dc._docling_chunk_worker(
+            q, path, False, None, do_table_structure=False, do_ocr=True, tableformer_mode="fast"
+        )
+        assert q.get_nowait()[0] == "ok"
+        assert child_kw == [(set(), True, "fast")]
+
+    def test_direct_path_and_service_thread_page_classes(
+        self, tmp_path, monkeypatch, docling_service_app
+    ):
+        """RFC-052 R3 AC3 on the single-pass route (the document is one chunk:
+        the union of its pages' needs), and the service wiring: /convert/pdf
+        hands the parsed page classes and the bench's per-request overrides to
+        the pipeline (task 5.2)."""
+        import asyncio
+
+        import pydantic
+
+        fitz = pytest.importorskip("fitz")
+        from pageindex_mcp.converters import pipeline
+
+        doc = fitz.open()
+        for _ in range(4):
+            doc.new_page()
+        path = str(tmp_path / "small.pdf")
+        doc.save(path)
+        doc.close()
+        built = []
+
+        class _Stop(Exception):
+            pass
+
+        def fake_converter(**kw):
+            built.append((kw["do_table_structure"], kw["do_ocr"], kw["tableformer_mode"]))
+            raise _Stop
+
+        monkeypatch.setattr(pipeline, "_docling_converter", fake_converter)
+        monkeypatch.delenv("DOCLING_DO_OCR", raising=False)
+        monkeypatch.delenv("PAGECLASS_CHUNKING", raising=False)
+        monkeypatch.delenv("DOCLING_TABLEFORMER_MODE", raising=False)
+        for kw in (
+            {"page_classes": _classes((_TEXT[0], 4))},
+            {"page_classes": _classes((_TEXT[0], 3), (_IMAGE[0], 1))},
+            {"page_classes": _classes((_TEXT[0], 3), (_TABLE[0], 1)), "tableformer_mode": "fast"},
+            {"page_classes": _classes((_TEXT[0], 4)), "pageclass_chunking": False},
+            {},
+        ):
+            with pytest.raises(_Stop):
+                pipeline.pdf_to_markdown_docling(path, max_pages=100, **kw)
+        # tableformer_mode None: the converter resolves DOCLING_TABLEFORMER_MODE.
+        # RFC-052 P2 finding 1 (R2 AC7): with page classes inactive (kill
+        # switch, or none supplied at all) do_ocr must degrade to "on" --
+        # today's pre-R3 options, every model on -- not silently to "off".
+        assert built == [
+            (False, False, None),
+            (False, True, None),
+            (True, True, "fast"),
+            (True, True, None),  # kill switch: today's options (every model on)
+            (True, True, None),  # no page classes: today's options (every model on)
+        ]
+
+        app = docling_service_app
+        captured = []
+
+        async def fake_download(url, suffix=".pdf"):
+            tmp = tmp_path / f"dl{len(captured)}.pdf"
+            tmp.write_bytes(b"%PDF")
+            return str(tmp)
+
+        def fake_pdf(pdf_path, **kw):
+            captured.append(kw)
+            return "# md", [], {}
+
+        monkeypatch.setattr(app, "_download_to_temp", fake_download)
+        monkeypatch.setattr(app, "_pdf_page_count", lambda _p: 3)
+        monkeypatch.setattr("pageindex_mcp.converters.pdf_to_markdown_docling", fake_pdf)
+
+        class _ConnectedClient:  # convert_pdf watches its client (cancel)
+            async def is_disconnected(self):
+                return False
+
+        def _convert(req):
+            return app.convert_pdf(req, _ConnectedClient())
+
+        url = "https://example.com/x.pdf"
+        resp0 = asyncio.run(
+            _convert(
+                app.PdfConvertRequest(
+                    presigned_url=url,
+                    page_classes=[[0, 1, "T--"], [2, 2, "T-t"]],
+                    tableformer_mode="fast",
+                    pageclass_chunking=True,
+                    do_ocr_policy="page_class",
+                )
+            )
+        )
+        # RFC-052 P2 finding 3: the response echoes what the converter
+        # actually used -- page classes active (after validation, not just
+        # the request echo), the resolved OCR policy, route and chunk count
+        # -- so a bench arm can verify from the response itself that its
+        # overrides really applied rather than silently falling back.
+        assert resp0.applied == {
+            "tableformer_mode": "fast",
+            "pageclass_chunking": True,
+            "do_ocr_policy": "page_class",
+            "page_classes_active": True,
+            "route": "direct",
+            "chunk_count": 1,
+        }
+        monkeypatch.delenv("DOCLING_DO_OCR", raising=False)  # 0: page-class driven
+        asyncio.run(_convert(app.PdfConvertRequest(presigned_url=url)))
+        asyncio.run(
+            _convert(
+                app.PdfConvertRequest(
+                    presigned_url=url, page_classes=[[0, 2, "T--"]], pageclass_chunking=False
+                )
+            )
+        )
+        # RFC-052 P2 finding 2: the shipped Dockerfile/docker-compose set
+        # DOCLING_DO_OCR=0 (page-class driven) explicitly, not merely leave
+        # it unset -- with no page classes on the request that must still
+        # force OCR on, same as the absent-env case above.
+        monkeypatch.setenv("DOCLING_DO_OCR", "0")
+        asyncio.run(_convert(app.PdfConvertRequest(presigned_url=url)))
+        monkeypatch.setenv("DOCLING_DO_OCR", "off")
+        asyncio.run(_convert(app.PdfConvertRequest(presigned_url=url)))
+        first, older_worker, switched_off, env_zero, env_off = captured
+        assert [pc.flags for pc in first["page_classes"]] == ["T--", "T--", "T-t"]
+        assert (first["tableformer_mode"], first["pageclass_chunking"]) == ("fast", True)
+        assert first["do_ocr_policy"] == "page_class"
+        assert [older_worker[k] for k in ("page_classes", "tableformer_mode",
+                "pageclass_chunking")] == [None] * 3  # fmt: skip
+        # R2 AC7: with no page classes in effect (absent, or the kill switch)
+        # every model stays on -- as the service ran before R3 -- rather than
+        # page-class-driven OCR silently becoming "no OCR". An explicit global
+        # off is still honoured. DOCLING_DO_OCR=0 (the shipped env) behaves
+        # exactly like the absent-env case, never "no OCR" with no classes.
+        assert (
+            older_worker["do_ocr_policy"]
+            == switched_off["do_ocr_policy"]
+            == env_zero["do_ocr_policy"]
+            == "force_on"
+        )
+        assert env_off["do_ocr_policy"] is None
+        with pytest.raises(pydantic.ValidationError):
+            app.PdfConvertRequest(presigned_url=url, tableformer_mode="turbo")

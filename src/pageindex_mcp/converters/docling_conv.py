@@ -65,23 +65,89 @@ def _resolve_force_ocr(force_full_page_ocr: bool) -> bool:
     )
 
 
-def _resolve_do_ocr(force_full_page_ocr: bool) -> bool:
-    """The ``do_ocr`` Docling will actually run with (forced OCR implies it).
+#: RFC-052 R3 AC3: the OCR policies. ``page_class`` runs OCR on a chunk only
+#: when one of its pages needs it (UD2); the other two ignore the page class.
+OCR_POLICIES: tuple[str, ...] = ("page_class", "force_on", "force_off")
 
-    Shared by the pipeline options and the ``docling_chunk`` record, so the
-    logged value can never drift from the effective one.
+
+def _ocr_policy(override: str | None = None) -> str:
+    """The global OCR policy: ``override`` (a request field), else ``DOCLING_DO_OCR``.
+
+    ``DOCLING_DO_OCR``: ``0``/unset = ``page_class`` (the default), ``1``
+    (or ``true``/``yes``) = ``force_on``, ``off`` or anything else =
+    ``force_off``. ``page_class`` only skips OCR where usable page classes
+    say a chunk needs none: wherever page classes are absent, switched off
+    (``PAGECLASS_CHUNKING=0``) or do not match the page count, every chunk is
+    treated as needing OCR (R2 AC7), so ``0`` never drops OCR on its own.
     """
-    return _resolve_force_ocr(force_full_page_ocr) or os.getenv(
-        "DOCLING_DO_OCR", "0"
-    ).strip().lower() in ("1", "true", "yes")
+    if override is not None:
+        if override not in OCR_POLICIES:
+            raise ValueError(f"unknown OCR policy {override!r}; expected one of {OCR_POLICIES}")
+        return override
+    raw = os.getenv("DOCLING_DO_OCR", "0").strip().lower()
+    if raw in ("", "0"):
+        return "page_class"
+    if raw in ("1", "true", "yes"):
+        return "force_on"
+    return "force_off"
+
+
+def _resolve_do_ocr(
+    force_full_page_ocr: bool, needs_ocr: bool = False, policy: str | None = None
+) -> bool:
+    """The ``do_ocr`` Docling will actually run with.
+
+    Forced full-page OCR (the recovery / HR5 escalation) always wins (R3 AC4);
+    then the policy (``_ocr_policy``), which under ``page_class`` defers to the
+    chunk's ``needs_ocr``. Shared by the pipeline options and the
+    ``docling_chunk`` record, so the logged value can never drift from the
+    effective one.
+    """
+    if _resolve_force_ocr(force_full_page_ocr):
+        return True
+    policy = _ocr_policy(policy)
+    return policy == "force_on" or (policy == "page_class" and needs_ocr)
+
+
+def _page_classes_active(
+    page_classes: list | None, page_count: int, pageclass_chunking: bool | None = None
+) -> bool:
+    """True when page classes may drive the per-chunk options (R3).
+
+    Off under the kill switch (``PAGECLASS_CHUNKING=0`` or the request
+    override), and off -- with a WARNING -- when the classes do not cover the
+    document page for page: a mismatched list must degrade to today's
+    options, never half-apply (P1's own degrade-to-None posture).
+    """
+    from ..config import pageclass_chunking_enabled
+
+    if page_classes is None or not pageclass_chunking_enabled(pageclass_chunking):
+        return False
+    if len(page_classes) != page_count:
+        logger.warning(
+            "ignoring page classes: %d classes for %d pages; uniform chunks, table flag only",
+            len(page_classes),
+            page_count,
+        )
+        return False
+    return True
 
 
 def _build_pdf_pipeline_options(
     force_full_page_ocr: bool = False,
     ocr_lang_override: list[str] | None = None,
     do_table_structure: bool = True,
+    do_ocr: bool | None = None,
+    tableformer_mode: str | None = None,
 ):
     """Build the CPU-only Docling PDF pipeline options.
+
+    RFC-052 R3 AC3: ``do_ocr`` is a chunk's already-resolved OCR switch (the
+    parent resolved the policy against the chunk's page classes); ``None``
+    resolves it here from ``DOCLING_DO_OCR`` alone. ``force_full_page_ocr``
+    still forces OCR on either way (R3 AC4, HR5). R4 AC1: ``tableformer_mode``
+    (else ``DOCLING_TABLEFORMER_MODE``, default ``accurate``) picks TableFormer's
+    mode.
 
     Fix 3 (RFC fizzy-forging-pearl): ``force_full_page_ocr`` re-OCRs the WHOLE page
     even when a (corrupt) text layer is present -- the only way Docling will overwrite
@@ -94,9 +160,10 @@ def _build_pdf_pipeline_options(
     code-level RSS reducer that costs NO extraction fidelity: Docling propagates
     ``num_threads`` to ``torch.set_num_threads`` / onnxruntime internally, so peak
     memory drops (fewer per-thread scratch arenas) without unloading any model or
-    changing output. TableFormer stays on at ``ACCURATE`` -- disabling it or using
-    ``FAST`` would cut memory further but degrade table reconstruction, which we do
-    NOT want. Docling imports stay function-local (they are heavy).
+    changing output. TableFormer defaults to ``ACCURATE``: ``FAST`` would cut time
+    and memory further but may degrade table reconstruction, so it is opt-in until
+    the RFC-052 R4 benchmark clears it. Docling imports stay function-local (they
+    are heavy).
     """
     from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
     from docling.datamodel.pipeline_options import (
@@ -110,7 +177,7 @@ def _build_pdf_pipeline_options(
     # Fix 3: full-page OCR (param or DOCLING_FORCE_FULL_PAGE_OCR=1) forces do_ocr on so a
     # corrupt existing text layer can be overwritten; it implies do_ocr regardless of env.
     force_ocr = _resolve_force_ocr(force_full_page_ocr)
-    do_ocr = _resolve_do_ocr(force_full_page_ocr)
+    do_ocr = force_ocr or (do_ocr if do_ocr is not None else _resolve_do_ocr(force_full_page_ocr))
     # Cap inference threads to bound peak RSS. Default 1 for the memory-tight worker;
     # raise via DOCLING_NUM_THREADS only where the node has RAM headroom.
     try:
@@ -122,7 +189,13 @@ def _build_pdf_pipeline_options(
     opts.do_ocr = do_ocr
     opts.do_table_structure = do_table_structure
     if do_table_structure:
-        opts.table_structure_options.mode = TableFormerMode.ACCURATE
+        from ..config import docling_tableformer_mode
+
+        opts.table_structure_options.mode = (
+            TableFormerMode.FAST
+            if docling_tableformer_mode(tableformer_mode) == "fast"
+            else TableFormerMode.ACCURATE
+        )
     if do_ocr:
         # Fix 5: an explicit detected-language override beats the static env list.
         langs = ocr_lang_override or [
@@ -130,9 +203,9 @@ def _build_pdf_pipeline_options(
         ]
         # CLI engine -> uses the system `tesseract` binary, which honours TESSDATA_PREFIX.
         # RFC-046 D2 -- OCR site 3 of 5: this is where all Docling-mediated
-        # OCR is bound to an engine. Note do_ocr defaults to "0", so on the
-        # default configuration this line is never reached and Docling
-        # performs no OCR at all on the primary pass.
+        # OCR is bound to an engine. RFC-052 R3: with DOCLING_DO_OCR=0 (the
+        # default) this runs only for a chunk whose page classes need OCR, or
+        # under forced full-page OCR.
         logger.debug(
             "docling OCR bound to engine=%s langs=%s force_full_page=%s",
             OcrEngine.TESSERACT,
@@ -168,11 +241,13 @@ def _build_pdf_pipeline_options(
 _DOCLING_CONVERTER_CACHE: dict[tuple[str, ...], DocumentConverter] = {}
 
 
-def _docling_converter(
+def _docling_converter(  # noqa: PLR0913
     force_full_page_ocr: bool = False,
     ocr_lang_override: list[str] | None = None,
     for_image: bool = False,
     do_table_structure: bool = True,
+    do_ocr: bool | None = None,
+    tableformer_mode: str | None = None,
 ) -> DocumentConverter:
     """Return a cached CPU-only DocumentConverter, building it once per options key.
 
@@ -188,9 +263,16 @@ def _docling_converter(
     Fix 5: ``for_image`` routes InputFormat.IMAGE instead of InputFormat.PDF through the
     same StandardPdfPipeline options and is part of the cache key, so image_to_markdown()
     shares this process-lifetime cache instead of building a fresh (leaking) converter.
+
+    RFC-052: ``do_ocr`` and the resolved TableFormer mode are part of the key too.
+    Chunks with different needs run in one long-lived process on the direct path;
+    a shared key would silently serve one chunk's pipeline to the next, invisible
+    in the ``docling_chunk`` record, which reports the intended options.
     """
     from docling.datamodel.base_models import InputFormat
     from docling.document_converter import DocumentConverter, PdfFormatOption
+
+    from ..config import docling_tableformer_mode
 
     key = (
         os.getenv("DOCLING_DO_OCR", "0").strip().lower(),
@@ -201,6 +283,8 @@ def _docling_converter(
         ",".join(ocr_lang_override) if ocr_lang_override else "",
         "image" if for_image else "pdf",
         "no_tables" if not do_table_structure else "",
+        "" if do_ocr is None else f"ocr={int(do_ocr)}",
+        docling_tableformer_mode(tableformer_mode),
     )
     converter = _DOCLING_CONVERTER_CACHE.get(key)
     if converter is None:
@@ -208,6 +292,8 @@ def _docling_converter(
             force_full_page_ocr=force_full_page_ocr,
             ocr_lang_override=ocr_lang_override,
             do_table_structure=do_table_structure,
+            do_ocr=do_ocr,
+            tableformer_mode=tableformer_mode,
         )
         input_format = InputFormat.IMAGE if for_image else InputFormat.PDF
         converter = DocumentConverter(
@@ -594,10 +680,6 @@ def _repair_docling_tables(md: str, doc_name: str = "") -> str:
 # RFC-052 R1 AC7: one `docling_chunk` decision record per Docling conversion
 # ---------------------------------------------------------------------------
 
-#: TableFormer mode every conversion runs with today (``_build_pdf_pipeline_options``
-#: pins ACCURATE). A config knob arrives with RFC-052 task 5.4.
-_TABLEFORMER_MODE = "accurate"
-
 #: True only inside a spawned chunk child while it converts. The chunk's record
 #: is written by the PARENT (it alone sees timeouts and crashes); the child's own
 #: single-shot pass must not write a second, misleading "1/1" record.
@@ -644,6 +726,7 @@ def emit_docling_chunk(  # noqa: PLR0913
     outcome: str,
     page_count: int | None = None,
     single_shot: bool = False,
+    tableformer_mode: str | None = None,
 ) -> None:
     """Write one ``docling_chunk`` record (``kind=decision``) -- RFC-052 R1 AC7.
 
@@ -654,6 +737,8 @@ def emit_docling_chunk(  # noqa: PLR0913
     document-level pages. ``shard`` comes from the bound log context
     (docling-service binds the client's ``X-Shard`` header); with none bound
     the document is one shard and it is derived from ``page_count``.
+    ``tableformer_mode`` is the chunk's mode (RFC-052 R4 AC1); ``None`` logs
+    the configured ``DOCLING_TABLEFORMER_MODE``.
 
     Same posture as ``decision()``: INFO, silenced by
     ``PAGEINDEX_LOG_DECISIONS=off``, never raises.
@@ -661,6 +746,7 @@ def emit_docling_chunk(  # noqa: PLR0913
     if single_shot and _IN_CHUNK_CHILD:
         return
     try:
+        from ..config import docling_tableformer_mode
         from ..obs import decisions as _decisions
 
         if not _decisions.LOG_DECISIONS_ENABLED or not logger.isEnabledFor(logging.INFO):
@@ -687,7 +773,7 @@ def emit_docling_chunk(  # noqa: PLR0913
                     "backend": _docling_backend_name(),
                     "do_table_structure": do_table_structure,
                     "do_ocr": do_ocr,
-                    "tableformer_mode": _TABLEFORMER_MODE,
+                    "tableformer_mode": docling_tableformer_mode(tableformer_mode),
                     "duration_s": round(duration_s, 3),
                     "peak_rss_bytes": peak_rss_bytes,
                     "outcome": outcome,
@@ -799,6 +885,8 @@ def _docling_chunk_worker(  # noqa: PLR0913
     num_threads: int | None = None,
     do_table_structure: bool = True,
     log_context: dict | None = None,
+    do_ocr: bool | None = None,
+    tableformer_mode: str | None = None,
 ) -> None:
     """Run ``pdf_to_markdown_docling`` in a child process (D0 fix).
 
@@ -816,6 +904,9 @@ def _docling_chunk_worker(  # noqa: PLR0913
     passes its bound mapping as ``log_context``; the child installs the obs
     JSON handler and re-binds it. Every result tuple carries the child's peak
     RSS as a third element, for the parent's ``docling_chunk`` record.
+
+    RFC-052 R3 AC3: ``do_ocr`` / ``tableformer_mode`` are the chunk's own
+    options, resolved by the parent from the chunk's page classes.
     """
     global _IN_CHUNK_CHILD
 
@@ -859,6 +950,8 @@ def _docling_chunk_worker(  # noqa: PLR0913
                 # An empty set turns TableFormer off for this chunk;
                 # None keeps it on for every page.
                 pages_with_tables=None if do_table_structure else set(),
+                do_ocr=do_ocr,
+                tableformer_mode=tableformer_mode,
             )
         result_queue.put(("ok", result, _peak_rss_bytes()))
     except Exception as exc:
@@ -899,6 +992,8 @@ def _run_docling_chunk_with_timeout(  # noqa: PLR0913
     log_context: dict | None = None,
     stats: dict | None = None,
     cancel_event: threading.Event | None = None,
+    do_ocr: bool | None = None,
+    tableformer_mode: str | None = None,
 ) -> tuple[str, list[PictureResult]]:
     """Run one Docling chunk conversion in a killable subprocess (D0 fix).
 
@@ -934,6 +1029,8 @@ def _run_docling_chunk_with_timeout(  # noqa: PLR0913
             num_threads,
             do_table_structure,
             log_context,
+            do_ocr,
+            tableformer_mode,
         ),
         daemon=True,
     )
@@ -1006,6 +1103,27 @@ def _mark_chunk_progress_done(progress: dict | None, lock: threading.Lock) -> No
         progress["done"] = progress.get("done", 0) + 1
 
 
+def _plan_chunks(page_count: int, max_pages: int, page_classes: list | None) -> list:
+    """The chunked route's page ranges, as ``PageChunk``s (inclusive ends).
+
+    With ``page_classes`` (already vetted by ``_page_classes_active``): R3's
+    needs-uniform chunks, capped at ``docling_resources.MAX_CHUNK_PAGES``, with
+    ``MIN_CHUNK_PAGES`` as the absorption floor. Without: today's uniform
+    ``ceil(page_count / max_pages)`` chunks, which need nothing of their own.
+    """
+    from .docling_resources import MAX_CHUNK_PAGES, MIN_CHUNK_PAGES
+    from .page_class_chunker import PageChunk, page_class_chunks
+
+    if page_classes is not None:
+        return page_class_chunks(
+            page_classes, max_pages=min(max_pages, MAX_CHUNK_PAGES), min_pages=MIN_CHUNK_PAGES
+        )
+    return [
+        PageChunk(start, min(start + max_pages, page_count) - 1, False, False)
+        for start in range(0, page_count, max_pages)
+    ]
+
+
 def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
     pdf_path: str,
     page_count: int,
@@ -1018,6 +1136,10 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
     pages_with_tables: set[int] | None = None,
     cancel_event: threading.Event | None = None,
     progress: dict | None = None,
+    page_classes: list | None = None,
+    pageclass_chunking: bool | None = None,
+    do_ocr_policy: str | None = None,
+    tableformer_mode: str | None = None,
 ) -> tuple[str, list[PictureResult], dict[str, dict]]:
     """RFC-027 D7 chunked-Docling route for PDFs exceeding MAX_DOCLING_PAGES.
 
@@ -1046,7 +1168,16 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
     trade-off (RFC-027 D7 risk acceptance) -- the downstream tree-building
     ``_relevel_by_containment`` pass normalizes heading depth across the
     concatenated output.
+
+    RFC-052 R3: with ``page_classes`` (one per page) and page-class chunking
+    on, the boundaries come from ``page_class_chunks`` instead -- needs-uniform
+    chunks, each with its own ``do_table_structure`` / ``do_ocr`` -- else the
+    uniform ``max_pages`` chunks above, table flag only (the kill switch,
+    ``PAGECLASS_CHUNKING=0`` or ``pageclass_chunking=False``).
+    ``pages_with_tables`` is ORed in, never ANDed. ``do_ocr_policy`` and
+    ``tableformer_mode`` override ``DOCLING_DO_OCR`` / ``DOCLING_TABLEFORMER_MODE``.
     """
+    from ..config import docling_tableformer_mode
     from ..config import pipeline_config as _pc
 
     if not _pc.allow_agpl_fallback:
@@ -1056,17 +1187,20 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
         )
     import fitz  # PyMuPDF
 
-    chunk_count = math.ceil(page_count / max_pages)
+    page_classes_on = _page_classes_active(page_classes, page_count, pageclass_chunking)
+    chunks = _plan_chunks(page_count, max_pages, page_classes if page_classes_on else None)
+    chunk_count = len(chunks)
     workers = max(1, min(workers, chunk_count))
     if progress is not None:
         progress["total"] = chunk_count
         progress.setdefault("done", 0)
     _progress_lock = threading.Lock()
     logger.info(
-        "chunked-Docling route: %s (%d pages) -> %d chunk(s) of <= %d pages, %d at a time",
+        "chunked-Docling route: %s (%d pages) -> %d %s chunk(s) of <= %d pages, %d at a time",
         pdf_path,
         page_count,
         chunk_count,
+        "page-class" if page_classes_on else "uniform",
         max_pages,
         workers,
     )
@@ -1075,13 +1209,26 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
     # re-bound in each pool thread (``propagate``) and handed to each spawned
     # chunk child explicitly -- neither inherits a ContextVar on its own.
     log_context = dict(current_context())
-    do_ocr = _resolve_do_ocr(force_full_page_ocr)
+    policy = _ocr_policy(do_ocr_policy)
+    mode = docling_tableformer_mode(tableformer_mode)
 
     def convert(index: int, path: str) -> tuple[str, list[PictureResult]]:
-        start = starts[index]
-        chunk_end = min(start + max_pages, page_count)
-        chunk_has_tables = pages_with_tables is None or bool(
-            pages_with_tables & set(range(start, chunk_end))
+        chunk = chunks[index]
+        start = chunk.start
+        chunk_end = chunk.end + 1  # PageChunk.end is inclusive
+        # A uniform chunk (kill switch, or R2 AC7: absent/mismatched/malformed
+        # page classes) has no needs of its own: None then still means
+        # "every model on every page", exactly as before R3 -- for OCR the
+        # same way it already was for TableFormer, so a length mismatch or a
+        # missing page_classes list never silently drops OCR on scanned pages.
+        if pages_with_tables is None:
+            table_signal = not page_classes_on
+        else:
+            table_signal = bool(pages_with_tables & set(range(start, chunk_end)))
+        ocr_signal = not page_classes_on
+        chunk_has_tables = chunk.needs_tables or table_signal
+        do_ocr = _resolve_do_ocr(
+            force_full_page_ocr, needs_ocr=chunk.needs_ocr or ocr_signal, policy=policy
         )
         stats: dict = {}
         started = time.monotonic()
@@ -1097,6 +1244,7 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
                 peak_rss_bytes=stats.get("peak_rss_bytes"),
                 outcome=outcome,
                 page_count=page_count,
+                tableformer_mode=mode,
             )
 
         try:
@@ -1113,6 +1261,8 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
                 log_context=log_context,
                 stats=stats,
                 cancel_event=cancel_event,
+                do_ocr=do_ocr,
+                tableformer_mode=mode,
             )
         except DoclingCancelled:
             record("cancelled")
@@ -1144,12 +1294,12 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
         _mark_chunk_progress_done(progress, _progress_lock)
         return chunk_md, chunk_pics
 
-    starts = [i * max_pages for i in range(chunk_count)]
+    starts = [c.start for c in chunks]
     paths: list[str] = []
     try:
         src = fitz.open(pdf_path)
         try:
-            for start in starts:
+            for chunk in chunks:
                 # SIM115 rationale: the temp FILE must outlive this statement -- it
                 # is written, then re-opened by name in a chunk process and
                 # unlinked in `finally`. A context manager would delete it first.
@@ -1158,9 +1308,8 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
                 paths.append(tmp.name)
                 writer = fitz.open()
                 try:
-                    writer.insert_pdf(
-                        src, from_page=start, to_page=min(start + max_pages, page_count) - 1
-                    )
+                    # Both ends inclusive, like PageChunk's.
+                    writer.insert_pdf(src, from_page=chunk.start, to_page=chunk.end)
                     writer.save(tmp.name)
                 finally:
                     writer.close()

@@ -3405,6 +3405,9 @@ def test_docling_chunk_record_per_chunk_carries_context_and_outcome(tmp_path, mo
     ]
     for a in attrs:
         assert (a["job_id"], a["shard"], a["backend"]) == ("j-7", "1/3:0-24", "mac")
-        assert (a["do_ocr"], a["tableformer_mode"]) == (False, "accurate")
+        # RFC-052 P2 finding 1 (R2 AC7): no page_classes at all means page
+        # classes are inactive, which must degrade to "every model stays on"
+        # (do_ocr True), not silently to "no OCR".
+        assert (a["do_ocr"], a["tableformer_mode"]) == (True, "accurate")
         assert isinstance(a["duration_s"], float)
     assert child_contexts == ["j-7"] * 3

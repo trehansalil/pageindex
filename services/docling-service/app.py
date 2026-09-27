@@ -24,7 +24,7 @@ import time
 import urllib.parse
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Annotated
+from typing import Annotated, Literal
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -157,6 +157,13 @@ class PdfConvertRequest(BaseModel):
     # loosely on purpose: a malformed value must degrade to "no page classes"
     # (WARNING) rather than 422 the whole conversion.
     page_classes: list | None = None
+    # RFC-052 R4 per-request overrides, set by scripts/conversion_bench.py to
+    # pick an arm; None keeps the env default (DOCLING_TABLEFORMER_MODE,
+    # PAGECLASS_CHUNKING, DOCLING_DO_OCR). Typed strictly: a bench typo must
+    # 422, not silently run the wrong arm.
+    tableformer_mode: Literal["accurate", "fast"] | None = None
+    pageclass_chunking: bool | None = None
+    do_ocr_policy: Literal["page_class", "force_on", "force_off"] | None = None
 
 
 class ImageConvertRequest(BaseModel):
@@ -177,6 +184,11 @@ class PictureResultOut(BaseModel):
 class PdfConvertResponse(BaseModel):
     markdown: str
     picture_results: list[PictureResultOut]
+    # RFC-052 P2 finding 3 (conversion_bench.py): the RESOLVED per-request
+    # overrides this conversion actually ran with, so a bench arm can verify
+    # its settings were applied rather than silently falling back to the
+    # env default on an older build that ignores the request fields.
+    applied: dict | None = None
 
 
 class ImageConvertResponse(BaseModel):
@@ -645,6 +657,10 @@ async def version():
         "commit_sha": os.environ.get("BUILD_SHA", "unknown"),
         "pipeline_version": CURRENT_PIPELINE_VERSION,
         "build_date": os.environ.get("BUILD_TIMESTAMP", "unknown"),
+        # RFC-052 P2 finding 3: conversion_bench.py refuses to run against a
+        # build that predates the tableformer_mode/pageclass_chunking/
+        # do_ocr_policy overrides and the "applied" echo -- both landed in R4.
+        "bench_overrides_supported": True,
     }
 
 
@@ -652,8 +668,8 @@ def _request_page_classes(req: PdfConvertRequest):
     """The request's page classes as ``list[PageClass]``, or ``None``.
 
     ``None`` when the field is absent or malformed (malformed logs WARNING):
-    both mean every model stays on (RFC-052 R2 AC7). P1 only validates and
-    logs them; page-class chunking consumes them in P2.
+    both mean every model stays on (RFC-052 R2 AC7). ``convert_pdf`` hands
+    them to page-class chunking (R3).
     """
     if req.page_classes is None:
         return None
@@ -679,8 +695,31 @@ def _request_page_classes(req: PdfConvertRequest):
     return classes
 
 
+def _request_ocr_policy(req: PdfConvertRequest, page_classes, page_count: int) -> str | None:
+    """The OCR policy override for this request, or ``None`` for the env's.
+
+    RFC-052 R3 AC3 makes ``DOCLING_DO_OCR=0`` page-class driven. With page
+    classes inactive -- absent, malformed, chunking switched off, OR (R2 AC7
+    fix) parsed but not covering the document page for page -- that would
+    silently mean "no OCR"; R2 AC7 says every model stays on instead, as the
+    service ran before R3 (``DOCLING_DO_OCR=1``). Validity is decided in the
+    one place both conversion routes already use, ``_page_classes_active``,
+    so this can never disagree with what the converter actually does. An
+    explicit request policy, or a global ``1``/``off``, is honoured as is.
+    """
+    if req.do_ocr_policy is not None:
+        return req.do_ocr_policy
+    from pageindex_mcp.converters.docling_conv import _ocr_policy, _page_classes_active
+
+    if _ocr_policy() == "page_class" and not _page_classes_active(
+        page_classes, page_count, req.pageclass_chunking
+    ):
+        return "force_on"
+    return None
+
+
 @app.post("/convert/pdf", response_model=PdfConvertResponse, dependencies=[Depends(_verify_token)])
-async def convert_pdf(
+async def convert_pdf(  # noqa: PLR0915
     req: PdfConvertRequest,
     request: Request,
     x_deadline: Annotated[str | None, Header()] = None,
@@ -702,16 +741,43 @@ async def convert_pdf(
         if conv.cancel_event.is_set():
             raise DoclingCancelled("cancelled during download")
 
+        from pageindex_mcp.config import docling_tableformer_mode, pageclass_chunking_enabled
         from pageindex_mcp.converters import pdf_to_markdown_docling
+        from pageindex_mcp.converters.docling_conv import (
+            _ocr_policy,
+            _page_classes_active,
+            _plan_chunks,
+        )
 
-        plan = plan_docling(await asyncio.to_thread(_pdf_page_count, tmp_path))
+        page_count = await asyncio.to_thread(_pdf_page_count, tmp_path)
+        plan = plan_docling(page_count)
         logger.info("docling plan: %s", plan)
-        _request_page_classes(req)
-        # QA finding 2: a single check right before queuing only catches an
-        # orphan that is already stale at that instant. _preempt_while_queued
-        # keeps re-checking (every CLIENT_POLL_S, including the holder's own
-        # X-Deadline, not just disconnect) for as long as this request then
-        # waits on the semaphore.
+        page_classes = _request_page_classes(req)
+        # RFC-052 P2 finding 1/3: the ONE place that decides validity, so the
+        # echoed "applied" state can never disagree with what the converter
+        # actually did (absent, kill switch, length mismatch or a parse
+        # failure all resolve here identically).
+        page_classes_active = _page_classes_active(page_classes, page_count, req.pageclass_chunking)
+        request_ocr_policy = _request_ocr_policy(req, page_classes, page_count)
+        resolved_ocr_policy = request_ocr_policy or _ocr_policy()
+        route = "direct" if page_count <= plan.pages_per_chunk else "chunked"
+        # Cheap: pure page-range arithmetic (the same call the converter
+        # itself makes), no PDF re-read.
+        chunk_count = (
+            1
+            if route == "direct"
+            else len(
+                _plan_chunks(
+                    page_count,
+                    plan.pages_per_chunk,
+                    page_classes if page_classes_active else None,
+                )
+            )
+        )
+        # A single check right before queuing only catches an orphan that is
+        # already stale at that instant. _preempt_while_queued keeps
+        # re-checking (every CLIENT_POLL_S, including the holder's own
+        # X-Deadline, not just disconnect) for as long as this request waits.
         preempt_task = asyncio.create_task(_preempt_while_queued())
         try:
             await _convert_slots.acquire()
@@ -734,16 +800,15 @@ async def convert_pdf(
                     workers=plan.workers,
                     num_threads=plan.threads_per_worker,
                     pages_with_tables=_pages_set,
+                    page_classes=page_classes,
+                    tableformer_mode=req.tableformer_mode,
+                    pageclass_chunking=req.pageclass_chunking,
+                    do_ocr_policy=request_ocr_policy,
                     cancel_event=conv.cancel_event,
                     progress=conv.chunk_progress,
-                    # Finding 2 (repair cycle 2): the direct route's single
-                    # "chunk" timeout should track this request's own
-                    # X-Deadline, not a fixed per-chunk constant meant for
-                    # the multi-chunk route. conv.deadline is None when the
-                    # caller sent no X-Deadline; pdf_to_markdown_docling then
-                    # runs that chunk unbounded (subject only to
-                    # cancel_event), matching the old inline path's lack of
-                    # any timeout of its own.
+                    # The direct route's single "chunk" timeout tracks this
+                    # request's own X-Deadline (None: bounded only by
+                    # cancel_event, like the old inline path).
                     deadline=conv.deadline,
                 ),
                 conv,
@@ -751,9 +816,21 @@ async def convert_pdf(
         finally:
             _convert_slots.release()
         serialized_pics = [_serialize_picture_result(pr) for pr in pic_results]  # type: ignore[arg-type]
+        # RFC-052 P2 finding 3: echo what the converter actually used, not the
+        # request it was handed -- a bench arm (or any caller) must be able to
+        # tell a real page-class-driven run from a silent fallback.
+        applied = {
+            "tableformer_mode": docling_tableformer_mode(req.tableformer_mode),
+            "pageclass_chunking": pageclass_chunking_enabled(req.pageclass_chunking),
+            "do_ocr_policy": resolved_ocr_policy,
+            "page_classes_active": page_classes_active,
+            "route": route,
+            "chunk_count": chunk_count,
+        }
         return PdfConvertResponse(
             markdown=md,
             picture_results=[PictureResultOut(**p) for p in serialized_pics],
+            applied=applied,
         )
     except DoclingCancelled as exc:
         logger.info("PDF conversion cancelled (%s): %s", conv.cancel_reason, exc)
