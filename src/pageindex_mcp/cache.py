@@ -47,6 +47,46 @@ async def get_async_redis() -> aioredis.Redis:
     return _redis_async
 
 
+# Coldstart Q5 item 2 / infra item 12: the docling-node controller publishes
+# the backend state as JSON under this key in Redis db 1 (TTL 120 s).
+DOCLING_BACKEND_KEY = "docling:backend"
+DOCLING_BACKEND_DB = 1
+_redis_backend: aioredis.Redis | None = None
+
+
+def _build_backend_redis() -> aioredis.Redis:
+    """A client pinned to db 1 regardless of the db in ``REDIS_URL``.
+
+    Not ``from_url(url, db=1)``: redis-py applies the URL's options AFTER the
+    keyword arguments, so ``redis://host:6379/0`` would silently win and the
+    gate would read db 0, where the key never exists. Short socket timeouts:
+    this read sits in front of every remote conversion.
+    """
+    pool = aioredis.ConnectionPool.from_url(
+        settings.redis_url, decode_responses=True, socket_timeout=2.0, socket_connect_timeout=2.0
+    )
+    pool.connection_kwargs["db"] = DOCLING_BACKEND_DB
+    return aioredis.Redis(connection_pool=pool)
+
+
+async def get_docling_backend_state() -> dict | None:
+    """The controller's ``docling:backend`` JSON, or ``None`` when the key is
+    missing/expired or Redis cannot be read -- the readiness gate treats both
+    as a stale key. Never raises."""
+    global _redis_backend
+    try:
+        if _redis_backend is None:
+            _redis_backend = _build_backend_redis()
+        raw = await _redis_backend.get(DOCLING_BACKEND_KEY)
+        if raw is None:
+            return None
+        value = json.loads(raw)
+        return value if isinstance(value, dict) else None
+    except Exception:
+        logger.warning("docling:backend read failed; treating as stale", exc_info=True)
+        return None
+
+
 async def job_status_set(job_id: str, mapping: dict) -> None:
     """Write the job-status hash and (re)apply the 24h TTL."""
     r = await get_async_redis()

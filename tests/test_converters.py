@@ -1000,11 +1000,27 @@ async def test_non_openai_exception_propagates(tmp_path, monkeypatch):
 # ═════════════════════════════════════════════════════════════════════════
 
 
-def _get_chain(monkeypatch, primary="docling", agpl=True):
-    """Build a converter chain with controlled env vars."""
+def _get_chain(monkeypatch, primary="docling", agpl=True, have_pymupdf4llm=True):
+    """Build a converter chain with controlled env vars.
+
+    pymupdf4llm is an optional extra (``agpl-fallback``) and the chain lists
+    only INSTALLED converters (coldstart Q5 item 5), so its presence is
+    simulated through ``find_spec`` rather than depending on this venv.
+    """
+    import importlib.machinery
+    import importlib.util
+
     monkeypatch.setenv("PDF_CONVERTER", primary)
     monkeypatch.setenv("ALLOW_AGPL_FALLBACK", "true" if agpl else "false")
     reset_pipeline_config()
+    real_find_spec = importlib.util.find_spec
+
+    def _find_spec(name, *args, **kwargs):
+        if name == "pymupdf4llm":
+            return importlib.machinery.ModuleSpec(name, None) if have_pymupdf4llm else None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", _find_spec)
     from pageindex_mcp.converters.pipeline import pdf_markdown_converters
 
     return pdf_markdown_converters()
@@ -1075,6 +1091,13 @@ class TestConverterChainEntryMetadata:
         assert [e.name for e in gated if e.name == "pymupdf4llm"] == [], (
             "pymupdf4llm must not appear when ALLOW_AGPL_FALLBACK=false"
         )
+
+        # Coldstart Q5 item 5 (the incident node had docling, not pymupdf4llm):
+        # a listed-but-missing converter failed with ImportError, which read as
+        # STRUCTURAL and decided routing. Uninstalled means not in the chain.
+        for primary in ("docling", "pymupdf4llm"):
+            missing = _get_chain(monkeypatch, primary=primary, have_pymupdf4llm=False)
+            assert [e.name for e in missing] == ["docling"], primary
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -1150,12 +1173,27 @@ def test_classify_transient_failure_partitions_transient_from_structural():
     http_5xx.status_code = 504  # type: ignore[attr-defined]
     http_4xx = Exception("bad request")
     http_4xx.status_code = 400  # type: ignore[attr-defined]
+    # QA fix 3: docling-service's own X-Deadline self-abort returns 499 --
+    # that is the service giving up on an overrun call, not a parse/structural
+    # failure, so it must classify transient (never walk into GATE_AGPL_
+    # STRUCTURAL / a silent AGPL fallback).
+    http_499 = Exception("client closed request")
+    http_499.status_code = 499  # type: ignore[attr-defined]
+    http_499_via_response = Exception("client closed request")
+    http_499_via_response.response = types.SimpleNamespace(status_code=499)  # type: ignore[attr-defined]
 
     cases = [
         (TimeoutError("timed out"), True),
         (ConnectionError("refused"), True),
         (OSError("network unreachable"), True),
         (http_5xx, True),
+        (http_499, True),
+        (http_499_via_response, True),
+        # The docling pod dying mid-request surfaces as these, not a timeout.
+        (httpx.ReadError("connection reset"), True),
+        (httpx.RemoteProtocolError("Server disconnected"), True),
+        (httpx.ReadTimeout("read timed out"), True),
+        (httpx.UnsupportedProtocol("no scheme"), False),
         (ValueError("bad format"), False),
         (RuntimeError("empty output"), False),
         (ImportError("no module"), False),
@@ -1235,7 +1273,7 @@ def _pdf_extract_fallbacks() -> float:
     return PDF_EXTRACT_FALLBACKS._value.get()
 
 
-async def _run_chain(chain, *, structural_fallback_enabled=True):
+async def _run_chain(chain, *, structural_fallback_enabled=True, **cfg_overrides):
     """Drive the real ``_convert_to_tree`` chain walk over *chain*.
 
     Returns ``(client, state)`` so callers can assert on which converter won,
@@ -1248,6 +1286,7 @@ async def _run_chain(chain, *, structural_fallback_enabled=True):
     patched_cfg = dataclasses.replace(
         indexer_mod.pipeline_config,
         agpl_structural_fallback_enabled=structural_fallback_enabled,
+        **cfg_overrides,
     )
     with (
         patch.object(indexer_mod, "pdf_markdown_converters", lambda: list(chain)),
@@ -1372,8 +1411,8 @@ class TestGateAgplStructuralPolicy:
         gate enabled.
 
         Retries are disabled here so the BLOCK_AGPL branch is reached on the
-        first failure; see ``test_transient_retry_does_not_reenter_same_converter``
-        for the RETRY branch's separate (defective) behavior.
+        first failure; see ``test_transient_retry_reenters_same_converter``
+        for the RETRY branch.
         """
         from pageindex_mcp.client import indexer as indexer_mod
 
@@ -1394,31 +1433,202 @@ class TestGateAgplStructuralPolicy:
         assert _agpl_metric("structural_walk") == before_walk
         assert _agpl_metric("structural_blocked") == before_blocked
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason=(
-            "DEFECT: indexer.py's RETRY branch `continue`s a plain "
-            "`for idx, entry in enumerate(chain)` loop. The comment claims it "
-            "'rewinds idx so the for-loop re-enters this entry', but nothing "
-            "rewinds -- the continue advances to the NEXT converter. A transient "
-            "failure therefore walks straight into the AGPL converter on the "
-            "first attempt, bypassing BLOCK_AGPL (HR4) entirely, and the "
-            "configured retry never happens."
-        ),
-    )
     @pytest.mark.asyncio
-    async def test_transient_retry_does_not_reenter_same_converter(self):
-        """RETRY must re-invoke the SAME converter, not advance the chain --
-        otherwise CONVERTER_TRANSIENT_RETRY_COUNT>0 silently defeats the HR4
-        AGPL block for transient failures."""
+    async def test_transient_retry_reenters_same_converter(self):
+        """Table over (failures, budget) -> converter calls + policy sequence.
+
+        RETRY must re-invoke the SAME converter, not advance the chain
+        (coldstart Q5 item 1). Once the retry count OR the total wall-clock
+        budget runs out, a transient failure reaches BLOCK_AGPL -- the AGPL
+        converter is never invoked (HR4). Each sleep is exponential backoff
+        (base 40 here, factor 2, cap 60) plus at most 20% jitter, and the
+        sleeps never sum past the budget."""
         from pageindex_mcp.client import indexer as indexer_mod
 
-        chain, primary, agpl = _gate_chain(TimeoutError("docling timed out"))
-        with patch.object(indexer_mod, "CONVERTER_TRANSIENT_RETRY_COUNT", 2):
-            client, state = await _run_chain(chain, structural_fallback_enabled=True)
+        cases = {
+            # label: (fail_times (None = always), budget_s, calls, policies, child_deadline)
+            "recovers_on_same_converter": (2, 1000.0, 3, ["retry", "retry"], None),
+            "count_exhausted": (
+                None,
+                1000.0,
+                4,
+                ["retry", "retry", "retry", "block_agpl"],
+                None,
+            ),
+            "budget_exhausted": (None, 150.0, 3, ["retry", "retry", "block_agpl"], None),
+            # QA fix 2: a retry that could not finish before the converter
+            # child is killed must not be scheduled at all -- straight to
+            # BLOCK_AGPL on the very first failure, same as budget/count
+            # exhaustion, so it reaches DoclingUnavailable/requeue instead of
+            # dying later as converter_timeout.
+            "child_deadline_too_soon": (None, 1000.0, 1, ["block_agpl"], 50.0),
+        }
+        for label, (
+            fail_times,
+            budget_s,
+            expect_calls,
+            expect_policies,
+            child_deadline,
+        ) in cases.items():
+            exc = httpx.ConnectError("connection refused")
+            chain, primary, agpl = _gate_chain(exc)
+            if fail_times is not None:
+                primary.side_effect = [exc] * fail_times + [("# docling markdown", [], [])]
+            clock = [0.0]
+            sleeps: list[float] = []
 
-        assert primary.call_count == 3, "RETRY must re-invoke the same converter"
-        agpl.assert_not_called(), "transient failure must never reach the AGPL converter"
+            async def _fake_sleep(seconds, sleeps=sleeps, clock=clock):
+                sleeps.append(seconds)
+                clock[0] += seconds
+
+            before_blocked = _agpl_metric("transient_blocked")
+            with (
+                patch.object(indexer_mod, "CONVERTER_TRANSIENT_RETRY_COUNT", 3),
+                patch.object(indexer_mod, "_CONVERTER_RETRY_TOTAL_BUDGET_S", budget_s),
+                patch.object(indexer_mod, "_retry_sleep", _fake_sleep),
+                patch.object(indexer_mod, "_retry_clock", lambda clock=clock: clock[0]),
+                patch.object(indexer_mod, "child_deadline_monotonic", lambda cd=child_deadline: cd),
+                patch.object(indexer_mod, "decision", MagicMock()) as decision_mock,
+            ):
+                client, state = await _run_chain(chain, converter_retry_backoff_s=40.0)
+
+            assert primary.call_count == expect_calls, label
+            agpl.assert_not_called()
+            events = decision_mock.call_args_list
+            policies = [
+                c.kwargs["choice"]
+                for c in events
+                if c.kwargs.get("event") == "converter_failure_policy"
+            ]
+            assert policies == expect_policies, label
+            retries = [c for c in events if c.kwargs.get("event") == "converter_transient_retry"]
+            assert len(retries) == len(sleeps) == expect_policies.count("retry"), label
+            for n, slept in enumerate(sleeps):
+                base = min(40.0 * 2**n, 60.0)
+                assert base <= slept <= base * 1.2, (label, n, slept)
+            assert sum(sleeps) <= budget_s, label
+            if fail_times is None:
+                assert state.used_converter is None, label
+                client._run_page_index_retrying.assert_called_once()
+                assert _agpl_metric("transient_blocked") == before_blocked + 1, label
+            else:
+                assert state.used_converter == "docling", label
+                client._run_page_index_retrying.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_docling_unavailable_policy(self):
+        """Table over (call site, trigger, policy) -> outcome.
+
+        Coldstart Q5 items 2/4, remote route. A backend that fails the
+        readiness gate -- or keeps failing transiently through every retry --
+        raises DoclingUnavailable under ``requeue`` (the worker defers the job;
+        the legacy LLM path is NOT run) and falls through to legacy page_index
+        under ``legacy``; the AGPL converter is never invoked (HR4) and the
+        outcome is recorded. The remote OCR retry is gated too, and its broad
+        ``except Exception`` must not swallow a DoclingUnavailable."""
+        from pageindex_mcp.client import indexer as indexer_mod
+        from pageindex_mcp.client import recovery as recovery_mod
+        from pageindex_mcp.client import remote as remote_mod
+
+        cases = [
+            ("convert", "readiness_gate", "requeue"),
+            ("convert", "retries_exhausted", "requeue"),
+            ("convert", "retries_exhausted", "legacy"),
+            ("ocr_retry", "readiness_gate", "requeue"),
+            ("ocr_retry", "readiness_gate", "legacy"),
+            # HR4 fix: the converter itself (not the pre-loop readiness gate)
+            # raises DoclingUnavailable -- e.g. _remote_pdf_to_markdown's
+            # "not enough time left" guard when DOCLING_SERVICE_TIMEOUT_S is
+            # clamped below _MIN_USEFUL_CALL_S (60s). This must be caught
+            # BEFORE the generic `except Exception` / _classify_transient_
+            # failure walk, so it never reaches GATE_AGPL_STRUCTURAL and the
+            # AGPL converter is never invoked -- on the very first attempt,
+            # with no transient retry.
+            ("convert", "converter_raises_directly", "requeue"),
+            ("convert", "converter_raises_directly", "legacy"),
+        ]
+        for site, trigger, policy in cases:
+            label = f"{site}/{trigger}/{policy}"
+            chain, _primary, agpl = _gate_chain(ValueError("local path unused"))
+            if trigger == "converter_raises_directly":
+                remote = AsyncMock(
+                    side_effect=remote_mod.DoclingUnavailable(
+                        "not enough time left for a docling call "
+                        "(< 60s remaining before the child deadline)"
+                    )
+                )
+            else:
+                remote = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+            gate = AsyncMock()
+            if trigger == "readiness_gate":
+                gate.side_effect = remote_mod.DoclingUnavailable("no docling backend")
+            client = _make_gate_client()
+            client._staging_key = "uploads/staging/j/doc.pdf"
+            state = _make_gate_state()
+            cfg = dataclasses.replace(
+                indexer_mod.pipeline_config,
+                docling_unavailable_policy=policy,
+                converter_retry_backoff_s=0.0,
+            )
+            remote_settings = dataclasses.replace(
+                indexer_mod.settings, docling_service_url="http://docling.test"
+            )
+            with (
+                patch.object(indexer_mod, "pdf_markdown_converters", lambda chain=chain: chain),
+                patch.object(indexer_mod, "pipeline_config", cfg),
+                patch.object(indexer_mod, "settings", remote_settings),
+                patch.object(indexer_mod, "CONVERTER_TRANSIENT_RETRY_COUNT", 2),
+                patch.object(indexer_mod, "_retry_sleep", AsyncMock()),
+                patch.object(indexer_mod, "wait_for_docling_ready", gate),
+                patch.object(indexer_mod, "_remote_pdf_to_markdown", remote),
+                patch.object(remote_mod, "wait_for_docling_ready", gate),
+                patch.object(remote_mod, "_remote_pdf_to_markdown", remote),
+                patch.object(recovery_mod, "ensure_tessdata", lambda langs: ["deu"]),
+                patch.object(indexer_mod, "decision", MagicMock()) as decision_mock,
+            ):
+                if site == "convert":
+                    call = client._convert_to_tree(
+                        state, "/nonexistent/doc.pdf", "doc.pdf", ".pdf", "latin", None
+                    )
+                else:
+                    state.use_remote = True
+                    state.md_content = "some text"
+                    call = client._execute_ocr_retry(
+                        state,
+                        "/nonexistent/doc.pdf",
+                        "doc.pdf",
+                        ".pdf",
+                        "latin",
+                        reason_label="garble",
+                        splice_label="garble",
+                        use_keep_best=False,
+                        metric_fail_label="still_garbled",
+                    )
+                if policy == "requeue":
+                    with pytest.raises(remote_mod.DoclingUnavailable):
+                        await call
+                else:
+                    result = await call
+                    if site == "ocr_retry":
+                        assert result is False, label
+
+            agpl.assert_not_called()
+            gate.assert_awaited_once()
+            if trigger == "retries_exhausted":
+                expected_remote_calls = 3
+            elif trigger == "converter_raises_directly":
+                expected_remote_calls = 1
+            else:
+                expected_remote_calls = 0
+            assert remote.await_count == expected_remote_calls, label
+            if site == "convert":
+                page_index_calls = client._run_page_index_retrying.call_count
+                assert page_index_calls == (1 if policy == "legacy" else 0), label
+            assert [
+                c.kwargs["choice"]
+                for c in decision_mock.call_args_list
+                if c.kwargs.get("event") == "docling_unavailable_outcome"
+            ] == ["requeue" if policy == "requeue" else "legacy_fallback"], label
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -2734,7 +2944,17 @@ async def test_cli_runtime_error_from_index_exits_1(tmp_pdf: Path, monkeypatch):
 async def test_cli_success_json_shape_and_handshake(tmp_pdf: Path, monkeypatch):
     """RFC-028 D0: exactly 2 stdout lines — the startup handshake
     ({"handshake": true, ...}) followed by the result JSON, whose keys are
-    exactly {ok, doc_id, peak_rss_kib, duration_ms} with the right types."""
+    exactly {ok, doc_id, peak_rss_kib, duration_ms} with the right types.
+
+    QA fix (finding 2): when the parent (subprocess_mgr) passes
+    PAGEINDEX_CHILD_KILL_DEADLINE_EPOCH -- the real epoch it will kill this
+    child at, which can be sooner than start_epoch + MAX_EFFECTIVE_TIMEOUT
+    whenever the ingest-lock/memory-admission wait ate into the arq job
+    budget before spawn -- the child's own PAGEINDEX_CHILD_DEADLINE_EPOCH
+    must clamp to the sooner of the two, never the self-computed one alone.
+    """
+    import time as _time
+
     import pageindex_mcp.converters_cli as cli_module
     from pageindex_mcp.converters_cli import main
 
@@ -2743,10 +2963,29 @@ async def test_cli_success_json_shape_and_handshake(tmp_pdf: Path, monkeypatch):
     monkeypatch.setattr(cli_module, "_stdout", fake_stdout)
     _neutralize_llm_gate(monkeypatch)
 
-    with patch(
-        "pageindex_mcp.client.CustomPageIndexClient.index",
-        new_callable=AsyncMock,
-        return_value="deadbeef",
+    tight_kill_epoch = _time.time() + 30.0
+    monkeypatch.setenv(cli_module._ENV_CHILD_KILL_DEADLINE_EPOCH, f"{tight_kill_epoch:.0f}")
+    monkeypatch.delenv(cli_module._ENV_CHILD_DEADLINE_EPOCH, raising=False)
+
+    # main()'s own finally block restores PAGEINDEX_CHILD_DEADLINE_EPOCH to
+    # its pre-call value (here: absent) before returning, so the clamped
+    # value must be captured while main() is still running -- spy on the
+    # helper rather than reading os.environ after the fact.
+    _real_child_deadline_epoch = cli_module._child_deadline_epoch
+    captured: dict[str, float] = {}
+
+    def _spy_child_deadline_epoch(start_epoch, max_effective_timeout):
+        result = _real_child_deadline_epoch(start_epoch, max_effective_timeout)
+        captured["epoch"] = result
+        return result
+
+    with (
+        patch.object(cli_module, "_child_deadline_epoch", side_effect=_spy_child_deadline_epoch),
+        patch(
+            "pageindex_mcp.client.CustomPageIndexClient.index",
+            new_callable=AsyncMock,
+            return_value="deadbeef",
+        ),
     ):
         exit_code = await main()
 
@@ -2764,6 +3003,11 @@ async def test_cli_success_json_shape_and_handshake(tmp_pdf: Path, monkeypatch):
     assert isinstance(payload["doc_id"], str) and len(payload["doc_id"]) > 0
     assert isinstance(payload["peak_rss_kib"], int) and payload["peak_rss_kib"] >= 0
     assert isinstance(payload["duration_ms"], int) and payload["duration_ms"] >= 0
+
+    # The child's self-deadline must be clamped to the parent's tighter kill
+    # deadline, not the MAX_EFFECTIVE_TIMEOUT-based self-computed one (which
+    # would be ~3600s out, far past tight_kill_epoch).
+    assert captured["epoch"] == pytest.approx(tight_kill_epoch, abs=2.0)
 
 
 def test_cli_stdout_not_polluted_by_logs_or_stray_prints(tmp_pdf: Path, tmp_path: Path):

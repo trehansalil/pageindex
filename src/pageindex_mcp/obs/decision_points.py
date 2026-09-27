@@ -126,6 +126,8 @@ _X_OCRLANGS = "pageindex_mcp.converters.ocr_langs"
 _X_PRECLASSIFY = "pageindex_mcp.converters.preclassify"
 _S_DOCUMENTS = "pageindex_mcp.storage.documents"
 _W_SUBPROC = "pageindex_mcp.worker.subprocess_mgr"
+_W_JOB = "pageindex_mcp.worker.job"
+_C_REMOTE = "pageindex_mcp.client.remote"
 
 
 # ---------------------------------------------------------------------------
@@ -757,6 +759,31 @@ _INDEXER_POINTS: tuple[DecisionPoint, ...] = (
         choices=("remote_docling", "local_converter_chain"),
         attrs=("docling_service_url_set", "staging_key_set"),
         note="Booleans only -- never the URL or the staging key.",
+    ),
+    _p(
+        event="converter_transient_retry",
+        phase=Phase.CONVERT,
+        module=_C_INDEXER,
+        function="_convert_to_tree",
+        choices=("retry_same_converter",),
+        attrs=("converter_name", "attempt", "backoff_s", "elapsed_s", "budget_s"),
+        cap=6,
+        always_emits=False,
+        note="Coldstart Q5 item 1: RETRY re-enters the same converter after this "
+        "backoff. Replaces the bare logger.info that claimed a retry the old "
+        "for-loop never made.",
+    ),
+    _p(
+        event="docling_unavailable_outcome",
+        phase=Phase.CONVERT,
+        module=_C_INDEXER,
+        function="_docling_unavailable_outcome",
+        choices=("requeue", "legacy_fallback"),
+        attrs=("policy", "defer_s", "waited_s"),
+        always_emits=False,
+        note="Coldstart Q5 item 4: DOCLING_UNAVAILABLE_POLICY applied after the "
+        "readiness gate or the remote retries gave up. Called from "
+        "_convert_to_tree and RecoveryMixin._execute_ocr_retry.",
     ),
     _p(
         event="pdf_converter_dispatch_mode",
@@ -1751,8 +1778,10 @@ _PIPELINE_POINTS: tuple[DecisionPoint, ...] = (
             "pymupdf4llm_primary_docling_secondary",
             "pymupdf4llm_only_docling_unavailable",
             "pymupdf4llm_only_docling_missing_requested",
+            "docling_only_pymupdf4llm_missing",
+            "no_converters_installed",
         ),
-        attrs=("configured_primary", "have_docling", "allow_agpl_fallback"),
+        attrs=("configured_primary", "have_docling", "have_pymupdf4llm", "allow_agpl_fallback"),
         note=(
             "Hard Rule 4 adjacency: builds the ordered chain indexer.py walks. "
             "The walk/fallback POLICY lives in indexer.py "
@@ -1893,6 +1922,59 @@ _WORKER_POINTS: tuple[DecisionPoint, ...] = (
 
 
 # ---------------------------------------------------------------------------
+# client/remote.py -- Docling readiness gate (coldstart Q4/Q5 item 2)
+# ---------------------------------------------------------------------------
+_REMOTE_POINTS: tuple[DecisionPoint, ...] = (
+    _p(
+        event="docling_backend_state",
+        phase=Phase.CONVERT,
+        module=_C_REMOTE,
+        function="wait_for_docling_ready",
+        choices=("ready", "starting", "down", "none", "stale"),
+        attrs=("target", "phase", "since_s", "reason", "autostarts_today"),
+        always_emits=False,
+        note="Mirrors the infra controller's docling:backend value (Redis db 1) "
+        "at the moment the gate reads it. 'reason' is the controller's bounded "
+        "label (e.g. autostart cap), never document content.",
+    ),
+    _p(
+        event="docling_readiness_wait",
+        phase=Phase.CONVERT,
+        module=_C_REMOTE,
+        function="wait_for_docling_ready",
+        choices=(
+            "ready",
+            "timeout",
+            "mac_short_wait_expired",
+            "no_backend_fail_fast",
+            "skipped_local",
+        ),
+        attrs=("backend", "waited_ms", "polls", "budget_s", "last_error"),
+        always_emits=False,
+        note="last_error is an exception CLASS name or http_<status>, never str(exc).",
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
+# worker/job.py -- job abort (coldstart Q5 item 6)
+# ---------------------------------------------------------------------------
+_JOB_POINTS: tuple[DecisionPoint, ...] = (
+    _p(
+        event="job_aborted",
+        phase=Phase.CONVERT,
+        module=_W_JOB,
+        function="process_document_job",
+        choices=("arq_abort", "operator_kill"),
+        attrs=("phase", "child_killed", "remote_cancel_sent"),
+        always_emits=False,
+        note="arq_abort: CancelledError in the worker (Job.abort or eviction); "
+        "operator_kill: scripts/kill_job.py --force, outside src/.",
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
 # storage/documents.py -- quarantine persistence
 # ---------------------------------------------------------------------------
 _STORAGE_POINTS: tuple[DecisionPoint, ...] = (
@@ -1924,6 +2006,8 @@ DECISION_POINTS: tuple[DecisionPoint, ...] = (
     + _PIPELINE_POINTS
     + _STORAGE_POINTS
     + _WORKER_POINTS
+    + _REMOTE_POINTS
+    + _JOB_POINTS
 )
 
 

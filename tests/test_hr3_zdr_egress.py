@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -181,6 +182,7 @@ def _make_docling_settings(**overrides) -> SimpleNamespace:
         pii_corpus=True,
         docling_service_url=_ZDR_URL,
         docling_service_timeout_s=600,
+        docling_connect_timeout_s=5.0,
         docling_service_bearer_token="",
     )
     defaults.update(overrides)
@@ -796,6 +798,7 @@ class TestFullPipelinePiiCorpusZdrCompliant:
                 openai_base_url=url,
                 docling_service_url=url,
                 docling_service_timeout_s=600,
+                docling_connect_timeout_s=5.0,
                 docling_service_bearer_token="",
             )
             before = {path: _counter_value(path) for path in paths}
@@ -1889,7 +1892,10 @@ class TestRemoteCorrelationHeaders:
             ):
                 await call()
             (post,) = [p for p in fake_client.posts if "/convert/" in p["url"]]
-            return post["headers"]
+            headers = dict(post["headers"])
+            # Coldstart Q5 item 7: always sent, epoch seconds in the future.
+            assert float(headers.pop("X-Deadline")) > time.time()
+            return headers
 
         full = await _headers(
             lambda: _remote_pdf_to_markdown("staging/key.pdf", page_count=140),

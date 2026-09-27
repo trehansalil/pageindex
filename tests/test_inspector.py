@@ -461,6 +461,8 @@ class TestInspectorForcedOcrOnRemoteDoclingRoute:
         monkeypatch.setattr(_rec, "settings", remote_settings)
         remote = AsyncMock(return_value=("# Heading\n\nBody text\n", []))
         monkeypatch.setattr(_idx, "_remote_pdf_to_markdown", remote)
+        # Coldstart readiness gate: the backend is up (no Redis/health probe).
+        monkeypatch.setattr(_idx, "wait_for_docling_ready", AsyncMock())
         mocks["remote"] = remote
         return mocks
 

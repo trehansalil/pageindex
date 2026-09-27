@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import tempfile
+import time
 from typing import TYPE_CHECKING
 
 from ..config import (
@@ -390,8 +391,17 @@ class RecoveryMixin:
         """
         # Lazy imports for cross-submodule deps
         from .images import TREE_PATH_PICTURE_SPLICE_ENABLED, _log_pic_splice_trace
-        from .indexer import _renormalize_bidi_guarded, _split_converter_output
-        from .remote import _remote_pdf_to_markdown
+        from .indexer import (
+            _docling_unavailable_outcome,
+            _renormalize_bidi_guarded,
+            _split_converter_output,
+        )
+        from .remote import (
+            DoclingUnavailable,
+            _remote_pdf_to_markdown,
+            child_deadline_monotonic,
+            wait_for_docling_ready,
+        )
 
         # ---- Pre-retry snapshot (GARBLE/LOW_CONTENT only) ----
         pre_retry: RecoveryOutcome | None = None
@@ -477,6 +487,18 @@ class RecoveryMixin:
                     reason="remote",
                     attrs={"use_remote": True},
                 )
+                # Coldstart Q5 item 2: the readiness gate before this remote
+                # call too -- recovery can run long after the first one.
+                _ready_t0 = time.monotonic()
+                try:
+                    await wait_for_docling_ready(deadline=child_deadline_monotonic())
+                except DoclingUnavailable as _unavailable:
+                    # requeue: re-raises (see `except DoclingUnavailable` below).
+                    _docling_unavailable_outcome(
+                        _unavailable, waited_s=time.monotonic() - _ready_t0
+                    )
+                    # legacy: skip the OCR retry, as a failed retry always did.
+                    return False
                 assert self._staging_key is not None, "use_remote=True but _staging_key is None"
                 state.md_content, state.pic_results = await _remote_pdf_to_markdown(
                     self._staging_key,
@@ -648,6 +670,11 @@ class RecoveryMixin:
                 },
             )
             return _ocr_applied
+        except DoclingUnavailable:
+            # Must leave the converter child as error=DoclingUnavailable so
+            # the worker defers the job; the generic handler below would turn
+            # it into a silent "OCR retry failed" (coldstart Q5 item 4).
+            raise
         except Exception as ocr_exc:
             OCR_ESCALATION_TOTAL.labels(result="error").inc()
             logger.error(

@@ -17,7 +17,7 @@ import redis.asyncio as aioredis
 from arq import Retry
 
 from ..cache import get_async_redis
-from ..config import effective_config_snapshot
+from ..config import effective_config_snapshot, settings
 from ..job_status import JobStatus, _job_key, _set_job_status
 from ..memory_admission import wait_for_memory
 from ..metrics import (
@@ -27,6 +27,7 @@ from ..metrics import (
     UPLOADS,
 )
 from ..obs import bind_log_context
+from ..obs.decisions import decision
 from ..storage import delete_staging, download_staging
 from ..storage.ingest_lock import IngestLockBusy
 from .constants import CHILD_GRACE_SECONDS, JOB_TIMEOUT, MAX_EFFECTIVE_TIMEOUT, REAP_GRACE
@@ -60,6 +61,38 @@ _ARQ_FUNCTION_TIMEOUT = MAX_EFFECTIVE_TIMEOUT + REAP_GRACE
 #: RFC-050 D7: how long a job whose ingest-lock wait expired is deferred
 #: before arq re-runs it. arq counts the requeue against max_tries.
 INGEST_LOCK_REQUEUE_DEFER_S = 600
+#: Coldstart Q5 item 4: the converter child's error class for "no usable
+#: Docling backend". Matched by NAME -- it crosses the process boundary in the
+#: child's error JSON, and importing the class would add a worker->client edge.
+DOCLING_UNAVAILABLE_ERROR = "DoclingUnavailable"
+#: Bound on each best-effort await in the cancellation handler, so a hung
+#: Redis or docling-service cannot hold a cancelled job open.
+_CANCEL_BOOKKEEPING_TIMEOUT_S = 5.0
+
+
+async def _post_docling_cancel(job_id: str) -> bool:
+    """Best-effort ``POST {docling_service_url}/cancel/{job_id}`` (coldstart Q5
+    items 6/9): stop an orphaned remote conversion. Never raises; True only
+    when the service acknowledged with a 2xx. A 404 (nothing running for this
+    job, or an older service without the endpoint) is not an error."""
+    if not settings.docling_service_url:
+        return False
+    import httpx
+
+    headers: dict[str, str] = {"X-Job-Id": job_id}
+    if settings.docling_service_bearer_token:
+        headers["Authorization"] = f"Bearer {settings.docling_service_bearer_token}"
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=2.0, read=3.0, write=3.0, pool=3.0)
+        ) as client:
+            resp = await client.post(
+                f"{settings.docling_service_url}/cancel/{job_id}", headers=headers
+            )
+        return 200 <= resp.status_code < 300
+    except Exception:
+        logger.warning("Best-effort docling cancel failed for job=%s", job_id, exc_info=True)
+        return False
 
 
 async def _dlq_push_on_final_attempt(
@@ -152,6 +185,8 @@ async def process_document_job(  # noqa: C901, PLR0915
         # Default to keeping the staged file; only purge it on terminal outcomes so
         # arq retries can re-download the original document from MinIO.
         cleanup_staging = False
+        # Where a cancellation landed (job_aborted's ``phase`` attr).
+        job_phase = "setup"
         logger.info("Worker processing: job=%s staging_key=%s", job_id, staging_key)
         try:
             # Stamp a wall-clock start time (epoch seconds, NOT time.monotonic which is
@@ -230,6 +265,7 @@ async def process_document_job(  # noqa: C901, PLR0915
                         exc_info=True,
                     )
 
+            job_phase = "convert"
             try:
                 result = await _run_converter_subprocess(
                     local_path,
@@ -321,7 +357,55 @@ async def process_document_job(  # noqa: C901, PLR0915
                 logger.error("Converter child timed out: job=%s", job_id)
                 raise
             except ConverterChildError as exc:
-                if exc.error_class == "LLMTransientFailure":
+                job_try = ctx.get("job_try", 1)
+                if exc.error_class == DOCLING_UNAVAILABLE_ERROR and job_try < MAX_TRIES:
+                    # QA fix (finding 3): kill_job.py --force writes
+                    # reason=operator_killed and can race a worker that turns
+                    # out not to be dead after all (its own docstring warns of
+                    # exactly this). ERROR->ERROR is always a permitted
+                    # transition, so without this check the requeue below
+                    # would silently resurrect an operator-killed job by
+                    # overwriting operator_killed with waiting_for_docling and
+                    # scheduling another attempt -- the opposite of what
+                    # --force asked for. Skip only the requeue; the terminal
+                    # docling_unavailable path below still runs and is a
+                    # single overwrite, not a resurrecting retry loop.
+                    current_reason = await redis.hget(_job_key(job_id), "reason")
+                    if isinstance(current_reason, bytes):
+                        current_reason = current_reason.decode()
+                    if current_reason == "operator_killed":
+                        logger.warning(
+                            "Docling unavailable for job=%s but it is already "
+                            "operator_killed; skipping requeue.",
+                            job_id,
+                        )
+                    else:
+                        # Coldstart Q5 item 4: no usable Docling backend. Defer the
+                        # job instead of burning LLM calls on the legacy path. arq
+                        # counts the requeue against max_tries; the final try falls
+                        # through to a terminal error + DLQ below.
+                        defer_s = settings.docling_unavailable_defer_s
+                        await _set_job_status(
+                            redis,
+                            job_id,
+                            JobStatus.ERROR,
+                            ttl=JOB_TTL,
+                            reason="waiting_for_docling",
+                            error=f"docling unavailable; requeued in {defer_s}s "
+                            f"(try {job_try}/{MAX_TRIES})",
+                            **job_start_fields,
+                        )
+                        logger.warning(
+                            "Docling unavailable: job=%s requeued in %ss (try %s/%s)",
+                            job_id,
+                            defer_s,
+                            job_try,
+                            MAX_TRIES,
+                        )
+                        raise Retry(defer=defer_s) from exc
+                if exc.error_class == DOCLING_UNAVAILABLE_ERROR:
+                    reason = "docling_unavailable"
+                elif exc.error_class == "LLMTransientFailure":
                     reason = _classify_llm_failure(exc.stderr_tail)
                 else:
                     classification = _CHILD_ERROR_REGISTRY.get(
@@ -368,6 +452,7 @@ async def process_document_job(  # noqa: C901, PLR0915
                     return ""
                 raise
 
+            job_phase = "persist"
             doc_id = result["doc_id"]
             # A flat-document result (RFC-004 Amendment 1) carries a content_class:
             # the job still completes as a SUCCESS (status=done), but surfaces the
@@ -476,8 +561,48 @@ async def process_document_job(  # noqa: C901, PLR0915
                 cleanup_staging = True
             raise
         except Retry:
-            # Deliberate requeue (ingest lock busy): status already written;
-            # not an upload failure, keep staging for the next try.
+            # Deliberate requeue (ingest lock busy, docling unavailable):
+            # status already written; not an upload failure, keep staging.
+            raise
+        except asyncio.CancelledError:
+            # Coldstart Q5 item 6: arq Job.abort() (allow_abort_jobs=True) or a
+            # shutdown cancels the task. subprocess_mgr already kills the child
+            # process group on cancel; what was missing is the record (the
+            # status sat at `processing` for an hour until the reaper) and the
+            # remote cancel (the docling-service kept converting an orphan).
+            # Staging is kept: arq may re-run the job. Always re-raised.
+            try:
+                async with asyncio.timeout(_CANCEL_BOOKKEEPING_TIMEOUT_S):
+                    await _set_job_status(
+                        redis,
+                        job_id,
+                        JobStatus.ERROR,
+                        ttl=JOB_TTL,
+                        reason="aborted",
+                        error=f"job cancelled during {job_phase}",
+                        **job_start_fields,
+                    )
+                    UPLOADS.labels(status="error").inc()
+                    await _mirror_bridged_incr("uploads_total:error")
+            except Exception:
+                logger.warning("Failed to record aborted status: job=%s", job_id, exc_info=True)
+            remote_cancel_sent = False
+            try:
+                async with asyncio.timeout(_CANCEL_BOOKKEEPING_TIMEOUT_S):
+                    remote_cancel_sent = await _post_docling_cancel(job_id)
+            except Exception:
+                logger.warning("Docling cancel timed out: job=%s", job_id, exc_info=True)
+            decision(
+                event="job_aborted",
+                choice="arq_abort",
+                reason="job task cancelled",
+                attrs={
+                    "phase": job_phase,
+                    "child_killed": job_phase == "convert",
+                    "remote_cancel_sent": remote_cancel_sent,
+                },
+            )
+            logger.warning("Worker job cancelled: job=%s phase=%s", job_id, job_phase)
             raise
         except Exception as exc:
             await _set_job_status(
