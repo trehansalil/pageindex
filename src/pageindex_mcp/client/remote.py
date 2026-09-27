@@ -40,6 +40,14 @@ _remote_pipeline_version_behind: int | None = None
 # already use; CLIENT_BUILD_SHA was a never-wired legacy name that left this
 # permanently "unknown". Prefer BUILD_SHA, fall back to the legacy name.
 _CLIENT_BUILD_SHA = os.environ.get("BUILD_SHA") or os.environ.get("CLIENT_BUILD_SHA", "unknown")
+# RFC-052 R5 AC1/AC8: best-effort per-job /capacity snapshot + build-skew
+# warning. Short timeout -- an older service (404), a timeout or a network
+# error must never fail or meaningfully delay a conversion.
+_CAPACITY_TIMEOUT_S = 2.0
+# Dedup key: (backend, service_build_sha). Warn at most once per pair per
+# process so a worker that is itself "unknown" in local dev does not spam a
+# WARNING on every job.
+_capacity_skew_warned: set[tuple[str, str]] = set()
 
 
 async def _check_remote_docling_version(httpx_client) -> None:
@@ -47,6 +55,9 @@ async def _check_remote_docling_version(httpx_client) -> None:
 
     Fetched once per process. commit_sha is the primary skew signal (catches every
     converter-behaviour change); pipeline_version is a secondary, coarser signal.
+    The commit_sha comparison is ``_build_sha_mismatch`` (RFC-052 R5 AC8's
+    prefix rule), the same rule the per-job ``/capacity`` check uses, so the
+    two skew signals in one process never disagree.
 
     When ``REMOTE_VERSION_ENFORCE`` is set, an observed ``pipeline_version``
     skew stops being advisory and raises :class:`RemoteVersionSkewError`, so a
@@ -62,7 +73,11 @@ async def _check_remote_docling_version(httpx_client) -> None:
             _remote_docling_version = ver_resp.json()
             remote_sha = _remote_docling_version.get("commit_sha", "unknown")
             remote_pv = _remote_docling_version.get("pipeline_version", 0)
-            if remote_sha != _CLIENT_BUILD_SHA:
+            # F2: share the AC8 comparison rule with the /capacity check
+            # (_build_sha_mismatch) instead of an exact-string compare, so a
+            # 12-hex Mac SHA and a 40-hex CI SHA sharing that prefix agree
+            # between the two call sites instead of one false-warning.
+            if _build_sha_mismatch(_CLIENT_BUILD_SHA, remote_sha):
                 logger.warning(
                     "Remote Docling SHA %s != client SHA %s", remote_sha, _CLIENT_BUILD_SHA
                 )
@@ -89,6 +104,96 @@ async def _check_remote_docling_version(httpx_client) -> None:
             f"{CURRENT_PIPELINE_VERSION}; blocked by REMOTE_VERSION_ENFORCE. Redeploy the "
             f"Docling service or unset REMOTE_VERSION_ENFORCE to fall back to warn-only."
         )
+
+
+def _build_sha_mismatch(local_sha: str, remote_sha: str) -> bool:
+    """RFC-052 R5 AC8: is ``remote_sha`` (the backend's) skewed vs ``local_sha``
+    (this worker's own ``BUILD_SHA``)?
+
+    Compared on the shorter side's length: CI stamps the full 40-hex commit
+    SHA, while the Mac's ``install.sh`` writes a 12-hex ``git rev-parse
+    --short=12`` SHA. A 40-char and a 12-char SHA that share that 12-char
+    prefix must NOT be treated as skewed.
+
+    Either side being ``"unknown"`` or empty counts as a mismatch -- the
+    contract gives no "unknown is fine" exception, so this errs toward
+    warning. The caller dedupes per (backend, remote_sha) so a worker that is
+    itself "unknown" in local dev warns once per backend, not once per job.
+
+    F1: the shorter side must be at least 7 chars (git's default abbreviation
+    length) to be compared at all. Without this floor, a degenerate SHA
+    (e.g. a truncated ``BUILD_SHA="a"``) would share a trivial 1-char prefix
+    with almost anything and silently suppress a real skew warning.
+    """
+    if not local_sha or not remote_sha or local_sha == "unknown" or remote_sha == "unknown":
+        return True
+    n = min(len(local_sha), len(remote_sha))
+    if n < 7:
+        return True
+    return local_sha[:n] != remote_sha[:n]
+
+
+async def _log_capacity_snapshot(client, headers: dict[str, str]) -> None:
+    """RFC-052 R5 AC1/AC8: GET the chosen backend's ``/capacity`` and log it.
+
+    Best-effort only: a 404 (older service without the route), a timeout or
+    any other network error is logged at DEBUG and swallowed -- this must
+    never fail or meaningfully delay the conversion it rides along with, so
+    it uses a short timeout and is never allowed to raise.
+
+    The snapshot is logged as one structured decision record (HR3: no
+    document content, only capacity numbers). Separately, a backend whose
+    ``build_sha`` is skewed from this worker's own gets a WARNING, logged at
+    most once per (backend, build_sha) per process (see
+    ``_build_sha_mismatch`` and ``_capacity_skew_warned``).
+    """
+    try:
+        resp = await client.get(
+            f"{settings.docling_service_url}/capacity",
+            headers=headers,
+            timeout=_CAPACITY_TIMEOUT_S,
+        )
+        resp.raise_for_status()
+        snapshot = resp.json()
+    except Exception as e:
+        logger.debug("Could not fetch /capacity snapshot: %s", e)
+        return
+
+    try:
+        backend = snapshot.get("backend") or "unknown"
+        decision(
+            event="docling_capacity_snapshot",
+            choice="logged",
+            reason=backend,
+            attrs={
+                "backend": backend,
+                "build_sha": snapshot.get("build_sha"),
+                "effective_cpus": snapshot.get("effective_cpus"),
+                "free_mem_bytes": snapshot.get("free_mem_bytes"),
+                "safe_procs": snapshot.get("safe_procs"),
+                "busy_slots": snapshot.get("busy_slots"),
+                "max_slots": snapshot.get("max_slots"),
+                "spp_ewma": snapshot.get("spp_ewma"),
+                # "_count" suffix, not "spp_samples": that key trips the
+                # decision-registry's content-attr substring guard ("sample").
+                "spp_sample_count": snapshot.get("spp_samples"),
+            },
+        )
+
+        remote_sha = snapshot.get("build_sha") or "unknown"
+        key = (backend, remote_sha)
+        # This IS the RFC-052 R5 AC8 build-skew check for P3 (single active
+        # remote); P5 widens it to every eligible backend in the split.
+        if _build_sha_mismatch(_CLIENT_BUILD_SHA, remote_sha) and key not in _capacity_skew_warned:
+            _capacity_skew_warned.add(key)
+            logger.warning(
+                "Docling backend %s build_sha %s != worker build_sha %s",
+                backend,
+                remote_sha,
+                _CLIENT_BUILD_SHA,
+            )
+    except Exception as e:  # pragma: no cover - logging must never break a job
+        logger.debug("Could not process /capacity snapshot: %s", e)
 
 
 def _converter_contract(converter_name: str | None) -> str | None:
@@ -592,6 +697,13 @@ async def _remote_pdf_to_markdown(
         )
         resp.raise_for_status()
         data = resp.json()
+        # RFC-052 R5 AC1/AC8: best-effort capacity snapshot + build-skew
+        # warning, same bearer token as /convert. Never allowed to fail or
+        # delay the conversion -- the result is already in hand.
+        capacity_headers: dict[str, str] = {}
+        if settings.docling_service_bearer_token:
+            capacity_headers["Authorization"] = f"Bearer {settings.docling_service_bearer_token}"
+        await _log_capacity_snapshot(client, capacity_headers)
     pic_results: list[dict] = []
     for pr in data.get("picture_results", []):
         raw_b64 = pr.get("png_bytes", "")
