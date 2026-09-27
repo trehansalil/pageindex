@@ -19,6 +19,7 @@ into a separately deployable container.
 | GET    | `/health`        | Readiness probe — returns `{"status": "ok", "in_flight": 0}` (see below) |
 | POST   | `/convert/pdf`   | Convert PDF → markdown + pictures    |
 | POST   | `/convert/image` | Convert image → markdown (OCR)       |
+| GET    | `/capacity`      | What this backend can take on now (bearer-authed, RFC-052 R5) |
 
 ### GET /health
 
@@ -32,6 +33,33 @@ routes (`/health`, `/version`) are not counted. The Mac auto-updater
 (`macos/update.sh`) restarts the service only when this is `0`; a response
 without the field is treated as an older build and the restart is deferred.
 
+### GET /capacity
+
+Bearer-authed like `/convert/*`. Host resources, slots, timing and the
+build only; nothing about any document (HR3).
+
+```json
+{"backend":"mac","build_sha":"…","effective_cpus":12.0,"total_mem_bytes":68719476736,
+ "free_mem_bytes":41000000000,"reserve_bytes":4294967296,"chunk_pages":10,
+ "per_proc_peak_bytes":1543503872,"safe_procs":12,"busy_slots":0,"max_slots":1,
+ "spp_ewma":19.2,"spp_samples":27}
+```
+
+- `effective_cpus`: the cgroup CPU quota (Linux), P-cores + 0.5 × E-cores (macOS).
+- `total_mem_bytes`: the same total the planner sizes from.
+- `free_mem_bytes`: `min(cgroup memory.max − memory.current, MemAvailable)` on
+  Linux; `vm_stat` free + inactive + speculative on macOS. `null` if unreadable,
+  and `safe_procs` is then `0`.
+- `safe_procs = min(floor(effective_cpus), floor((free − reserve) / per_proc_peak))`,
+  `per_proc_peak = WORKER_BASE_BYTES + chunk_pages × PER_PAGE_BYTES`. It can be `0`.
+- `spp_ewma`: seconds per page per process over recent `ok` chunks (from the
+  `docling_chunk` records, so it stays at the prior with `PAGEINDEX_LOG_DECISIONS=off`);
+  `DOCLING_SPP_PRIOR` while `spp_samples` is `0`.
+- `build_sha`: `BUILD_SHA`, the same value as `/version`'s `commit_sha`.
+
+Each conversion also clamps its own process count by `safe_procs` for its real
+chunk size, planned once it holds its conversion slot (RFC-052 R5 AC2).
+
 ### POST /convert/pdf
 
 ```json
@@ -41,6 +69,14 @@ without the field is treated as an older build and the restart is deferred.
   "ocr_lang_override": ["deu", "eng"]
 }
 ```
+
+Optional `page_start` / `page_end` (RFC-052 R5 AC3): convert only those pages,
+0-based and **inclusive** (the `docling_chunk` convention). Both or neither;
+`0 <= page_start <= page_end < page count`, else 422. `page_classes` and
+`pages_with_tables` stay document-level and are rebased to the slice here.
+The response's picture `page` numbers are the slice's own, so a caller merging
+shards adds `page_start`; `applied.page_range` echoes the range. Without a
+range the request takes the whole-document path unchanged.
 
 Response:
 
@@ -101,7 +137,11 @@ docker run -p 8080:8080 \
 |--------------------------------|---------|------------------------------------------------|
 | `DOCLING_SERVICE_BEARER_TOKEN` | (empty) | Bearer token for auth; **required** — the service refuses to start without it |
 | `DOCLING_SERVICE_ALLOW_ANONYMOUS` | (empty) | `1` allows an empty token (local dev container only, never an exposed pod) |
-| `DOCLING_MAX_CONCURRENT`      | `1`     | Conversions run at once; others queue (each peaks ~2 GB RSS) |
+| `DOCLING_MAX_CONCURRENT`      | `1`     | Conversions run at once; others queue (each peaks ~2 GB RSS). `/capacity` `max_slots` |
+| `DOCLING_RESERVE_BYTES`       | `805306368` (768 MiB) | Memory `safe_procs` leaves free, in the planner clamp and `/capacity` |
+| `DOCLING_CHUNK_PAGES`         | `10`    | Chunk size `/capacity` quotes `safe_procs` for (each conversion clamps for its own) |
+| `DOCLING_SPP_PRIOR`           | `40`    | `spp_ewma` before any chunk has finished (design: Mac 19, cpx62 40) |
+| `DOCLING_BACKEND_NAME`        | hostname | `/capacity` `backend`, and the `docling_chunk` / Loki `host` label |
 | `DOWNLOAD_TIMEOUT_S`          | `120`   | Timeout for downloading PDFs from presigned URL |
 | `DOCLING_ARTIFACTS_PATH`      | (baked) | Path to pre-downloaded Docling model weights   |
 | `TESSDATA_PREFIX`             | (baked) | Path to Tesseract trained data files           |

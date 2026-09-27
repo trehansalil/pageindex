@@ -20,9 +20,16 @@ The per-process figures below are measurements, not tunables; re-measure them
 from __future__ import annotations
 
 import contextlib
+import dataclasses
+import logging
 import math
 import os
+import re
+import subprocess
+import sys
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 _MIB = 1024 * 1024
 
@@ -62,6 +69,11 @@ class DoclingPlan:
     threads_per_worker: int
     # pages_per_chunk >= page_count means a single in-process pass.
     pages_per_chunk: int
+    # RFC-052 R5 AC2: the free memory the worker count was clamped against,
+    # and the safe_procs it allowed. None when the plan was not clamped
+    # (explicit sizing, or free memory unreadable).
+    free_memory_bytes: int | None = None
+    safe_procs: int | None = None
 
 
 def _read(path: str) -> str | None:
@@ -113,10 +125,167 @@ def available_memory_bytes() -> int:
     return min(candidates) if candidates else 4096 * _MIB
 
 
+# ---------------------------------------------------------------------------
+# RFC-052 R5 AC1/AC2: free memory and safe_procs
+# ---------------------------------------------------------------------------
+
+_VM_STAT_PAGE_SIZE = re.compile(r"page size of (\d+) bytes")
+_VM_STAT_FREE_KEYS = ("Pages free", "Pages inactive", "Pages speculative")
+
+
+def parse_vm_stat(text: str) -> int | None:
+    """macOS ``vm_stat`` output -> free + inactive + speculative, in bytes.
+
+    ``None`` when the page size or any of the three counters is missing.
+    """
+    size = _VM_STAT_PAGE_SIZE.search(text or "")
+    if size is None:
+        return None
+    counts: dict[str, int] = {}
+    for line in text.splitlines():
+        key, sep, value = line.partition(":")
+        if sep and key.strip() in _VM_STAT_FREE_KEYS:
+            with contextlib.suppress(ValueError):
+                counts[key.strip()] = int(value.strip().rstrip("."))
+    if len(counts) != len(_VM_STAT_FREE_KEYS):
+        return None
+    return sum(counts.values()) * int(size.group(1))
+
+
+def _run_vm_stat() -> str:
+    """``vm_stat``'s stdout; empty on any failure (never raises)."""
+    try:
+        return subprocess.run(
+            ["vm_stat"], capture_output=True, text=True, timeout=5, check=False
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _meminfo_available() -> int | None:
+    for line in (_read("/proc/meminfo") or "").splitlines():
+        if line.startswith("MemAvailable:"):
+            with contextlib.suppress(IndexError, ValueError):
+                return int(line.split()[1]) * 1024
+    return None
+
+
+def _cgroup_headroom() -> int | None:
+    """The cgroup's limit minus its current usage (v2, else v1); None if unlimited."""
+    for limit_path, usage_path in (
+        ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"),
+        (
+            "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+            "/sys/fs/cgroup/memory/memory.usage_in_bytes",
+        ),
+    ):
+        limit, usage = _read(limit_path), _read(usage_path)
+        if limit is None:
+            continue
+        if limit == "max" or usage is None:
+            return None
+        try:
+            return max(0, int(limit) - int(usage))
+        except ValueError:
+            return None
+    return None
+
+
+def free_memory_bytes() -> int | None:
+    """Memory a new conversion process could use right now; None if unknown.
+
+    Linux: ``min(cgroup memory.max - memory.current, /proc/meminfo
+    MemAvailable)`` -- the node is overcommitted, so the cgroup's own
+    headroom is not enough (RFC-052 design, ``/capacity``). macOS: ``vm_stat``
+    free + inactive + speculative. Unlike ``available_memory_bytes`` (the
+    total, for plan sizing) this moves with every conversion.
+    """
+    if sys.platform == "darwin":
+        return parse_vm_stat(_run_vm_stat())
+    candidates = [v for v in (_cgroup_headroom(), _meminfo_available()) if v is not None]
+    return min(candidates) if candidates else None
+
+
+def reserve_bytes() -> int:
+    """Memory ``safe_procs`` leaves untouched: ``DOCLING_RESERVE_BYTES``, else
+    ``PARENT_RESERVE_BYTES`` (the service process and its chunk results)."""
+    raw = os.environ.get("DOCLING_RESERVE_BYTES", "").strip()
+    if not raw:
+        return PARENT_RESERVE_BYTES
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        logger.warning("ignoring malformed DOCLING_RESERVE_BYTES=%r", raw)
+        return PARENT_RESERVE_BYTES
+
+
+def per_proc_peak_bytes(chunk_pages: int) -> int:
+    """Peak memory of one chunk process converting ``chunk_pages`` pages."""
+    return WORKER_BASE_BYTES + chunk_pages * PER_PAGE_BYTES
+
+
+def compute_safe_procs(
+    effective_cpus: float, free_bytes: int, reserve: int, chunk_pages: int
+) -> int:
+    """``min(floor(effective_cpus), floor((free - reserve) / per_proc_peak))``,
+    never negative. 0 means not even one process fits (R5 AC5)."""
+    by_memory = (free_bytes - reserve) // per_proc_peak_bytes(chunk_pages)
+    return int(max(0, min(math.floor(effective_cpus), by_memory)))
+
+
 def plan_docling(
+    page_count: int,
+    cpus: int | None = None,
+    memory_bytes: int | None = None,
+    free_bytes: int | None = None,
+) -> DoclingPlan:
+    """How to convert a ``page_count``-page PDF within this container's limits.
+
+    Sized from the TOTAL memory (``available_memory_bytes``) as before, then
+    the worker count is clamped by ``safe_procs`` computed from the FREE
+    memory (RFC-052 R5 AC2). ``free_bytes`` is read live when the call sizes
+    live (``memory_bytes`` not given); an explicit ``memory_bytes`` without
+    ``free_bytes`` is not clamped, and neither is an unreadable free memory.
+    """
+    plan = _plan_from_total(page_count, cpus, memory_bytes)
+    if free_bytes is None and memory_bytes is None:
+        free_bytes = free_memory_bytes()
+    if free_bytes is None:
+        return plan
+    safe = compute_safe_procs(plan.cpus, free_bytes, reserve_bytes(), plan.pages_per_chunk)
+    workers = min(plan.workers, max(1, safe))
+    clamped = dataclasses.replace(
+        plan,
+        workers=workers,
+        threads_per_worker=plan.threads_per_worker
+        if workers == plan.workers
+        else max(1, plan.cpus // workers),
+        free_memory_bytes=free_bytes,
+        safe_procs=safe,
+    )
+    if safe < 1:
+        logger.warning(
+            "docling plan clamp: safe_procs=0 (%d MiB free, %d MiB reserve, %d MiB per "
+            "process); converting with 1 process anyway",
+            free_bytes // _MIB,
+            reserve_bytes() // _MIB,
+            per_proc_peak_bytes(plan.pages_per_chunk) // _MIB,
+        )
+    elif workers < plan.workers:
+        logger.info(
+            "docling plan clamp: %d -> %d processes by free memory (%d MiB free, safe_procs=%d)",
+            plan.workers,
+            workers,
+            free_bytes // _MIB,
+            safe,
+        )
+    return clamped
+
+
+def _plan_from_total(
     page_count: int, cpus: int | None = None, memory_bytes: int | None = None
 ) -> DoclingPlan:
-    """How to convert a ``page_count``-page PDF within this container's limits."""
+    """The plan from the total CPU and memory alone (the pre-R5 planner)."""
     cpus = cpus or available_cpus()
     memory_bytes = memory_bytes or available_memory_bytes()
     budget = memory_bytes - PARENT_RESERVE_BYTES
