@@ -105,7 +105,7 @@ docker run -p 8080:8080 \
 | `DOWNLOAD_TIMEOUT_S`          | `120`   | Timeout for downloading PDFs from presigned URL |
 | `DOCLING_ARTIFACTS_PATH`      | (baked) | Path to pre-downloaded Docling model weights   |
 | `TESSDATA_PREFIX`             | (baked) | Path to Tesseract trained data files           |
-| `DOCLING_DO_OCR`              | `1`     | Enable OCR in Docling pipeline                 |
+| `DOCLING_DO_OCR`              | `0`     | OCR policy: `0`/unset = page-class driven (forced on when a request has no usable page classes -- absent, kill switch, page-count mismatch, or parse failure); `1`/`true`/`yes` = force on; anything else (e.g. `off`) = force off |
 
 ## Worker Configuration
 

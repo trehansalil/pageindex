@@ -72,7 +72,9 @@ ip=\$(tailscale ip -4 2>/dev/null | head -1)
 [ -n "\$ip" ] || { echo "tailscale not up" >&2; sleep 30; exit 1; }
 export DOCLING_SERVICE_BEARER_TOKEN=\$(cat token)
 export DOCLING_ARTIFACTS_PATH="$ROOT/models" TESSDATA_PREFIX="$ROOT/tessdata"
-export DOCLING_DO_OCR=1 DOCLING_MAX_CONCURRENT=1 DOWNLOAD_TIMEOUT_S=120
+# RFC-052 R3 AC3: DOCLING_DO_OCR=0 is page-class driven (1 would force OCR on
+# every page). A request without page classes still gets OCR (R2 AC7).
+export DOCLING_DO_OCR=0 DOCLING_MAX_CONCURRENT=1 DOWNLOAD_TIMEOUT_S=120
 export DOCLING_BLOCK_PRIVATE_URLS=1  # no NetworkPolicy fences a Mac's egress
 export MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 export HF_HUB_OFFLINE=1 BUILD_SHA=\$(cat BUILD_SHA 2>/dev/null || echo unknown)
