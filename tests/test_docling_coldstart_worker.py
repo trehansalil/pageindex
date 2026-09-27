@@ -1,4 +1,4 @@
-# ALLOW-NEW-TEST-FILE: coldstart worker fixes span config, remote, cache and worker modules
+# ALLOW-NEW-TEST-FILE: not tests/test_converters.py because fixes span remote, cache and worker
 """Docling cold-start fixes, worker side (coldstart investigation Q5 items 1-7).
 
 The converter-chain RETRY / DoclingUnavailable-policy tests live with the

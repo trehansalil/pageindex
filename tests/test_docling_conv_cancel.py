@@ -1,3 +1,4 @@
+# ALLOW-NEW-TEST-FILE: not tests/test_converters.py because it needs fake chunk processes
 """Chunked-Docling cancellation and chunk-child correlation (coldstart spec
 Q5 items 8 and 11). No real chunk process is spawned and no model loads."""
 

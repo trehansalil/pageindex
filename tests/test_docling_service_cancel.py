@@ -1,3 +1,4 @@
+# ALLOW-NEW-TEST-FILE: not tests/test_obs_logging.py because it tests endpoints, not logs
 """docling-service cold-start cancellation (coldstart spec Q5 items 8-10).
 
 Endpoint coroutines are called directly, as test_obs_logging.py does: no
