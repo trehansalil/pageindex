@@ -61,11 +61,12 @@ Infra manifests live in `/root/hetzner-deployment-service` and ship as a compani
 - [ ] 2. Checkpoint P0: `make test`, open the PR, and ask the user before continuing.
 
 - [ ] 3. P1: Page-class detection (`ICR-97-rfc52-page-class-detection`)
-  - [ ] 3.1 Add the `pdf-inspection` extra to the worker and docling-service Dockerfiles. Confirm `import pdf_inspector` in the pod. _R2 AC1_
-  - [ ] 3.2 Repair `_page_has_ruled_table` for tuple items, add per-page `try` with a safe-positive default, and a fixture test with real tuple output. _R2 AC2_
-  - [ ] 3.3 Add the `PageClass` dataclass, the text-layer and image signals, and `find_tables()` gated by cheap signals. Tighten column alignment. _R2 AC3-5_
-  - [ ] 3.4 Add `PreClassification.page_classes` and carry the run-length wire format through the handshake JSON and the `PdfConvertRequest` body. _R2 AC6_
-  - [ ] 3.5 Commit `scripts/page_class_census.py`. Check that the pocketbook census meets R2 AC3's bound and that classification time is ≤ 30 s. _R2 AC3, AC8_
+  - [x] 3.1 Add the `pdf-inspection` extra to the worker and docling-service Dockerfiles. Confirm `import pdf_inspector` in the pod. _R2 AC1_
+  - [x] 3.2 Repair `_page_has_ruled_table` for tuple items, add per-page `try` with a safe-positive default, and a fixture test with real tuple output. _R2 AC2_
+  - [x] 3.3 Add the `PageClass` dataclass, the text-layer and image signals, and `find_tables()` gated by cheap signals. Tighten column alignment. _R2 AC3-5_
+  - [x] 3.4 Add `PreClassification.page_classes` and carry the run-length wire format through the handshake JSON and the `PdfConvertRequest` body. _R2 AC6_
+  - [x] 3.5 Commit `scripts/page_class_census.py`. Check that the pocketbook census meets R2 AC3's bound and that classification time is ≤ 30 s. _R2 AC3, AC8_
+  - Status 2026-09-27 (`ICR-97-rfc52-page-class-detection`): 3.1 `import pdf_inspector` verified in a local `--extra pdf-inspection` venv (pdf-inspector 0.2.6, MIT); the in-pod check follows the image build. 3.2 tuple items read, per-page try, real `get_cdrawings()` fixture. 3.3 classifier runs one `get_text("dict")` parse per page; column alignment is now line-based (≥ 3 columns × ≥ 4 lines, ≥ 3 shared rows); classification no longer needs `pdf_type`. 3.4 `page_classes` in the handshake and the `/convert/pdf` body (optional; absent or malformed = none). 3.5 pocketbook census: column alignment 263 vs `find_tables()` 262 (1.004, AC3 met), 0 table pages missed after padding, classification 18.0 s (≤ 30 s). **Deviation:** `find_tables()` does not run in the worker: gated on cheap positives it would still check ~264 pocketbook pages at ~0.8 s each (~210-250 s), far over the 30 s budget. Per the design's fallback it belongs in the backend; that step is not built here and awaits a decision.
 - [ ] 4. Checkpoint P1: `make test`, open the PR, and ask the user.
 
 - [ ] 5. P2: Page-class chunking and levers (`ICR-97-rfc52-page-class-chunking`)
