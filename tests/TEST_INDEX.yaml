@@ -72,6 +72,7 @@ mappings:
       - test_converters.py
       - test_selective_tableformer.py
       - test_docling_coldstart_worker.py   # readiness gate, split timeouts
+      - test_docling_capacity_client.py    # RFC-052 R5: /capacity snapshot, build skew
 
   client/llm.py:
     coverage_threshold: 90
@@ -304,6 +305,7 @@ mappings:
   converters/docling_resources.py:
     tests:
       - test_converters.py
+      - test_docling_capacity.py   # RFC-052 R5: free-memory clamp, safe_procs
 
   converters/pipeline.py:
     tests:

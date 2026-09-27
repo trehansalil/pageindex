@@ -237,7 +237,7 @@ Defects:
    - `spp_ewma`: seconds per page per process, an exponentially weighted moving average over recent chunks;
    - `build_sha`.
 2. `available_memory_bytes()` SHALL keep its current meaning (total, for plan sizing). The planner SHALL additionally clamp its worker count by `safe_procs` computed from **free** memory.
-3. `PdfConvertRequest` SHALL accept an optional `page_start` / `page_end`. The service slices with fitz and rebases pictures and page classes. Omitting the range keeps today's whole-document behaviour.
+3. `PdfConvertRequest` SHALL accept an optional `page_start` / `page_end`: 0-based and inclusive, the convention of the `docling_chunk` records. Both are required or neither; an invalid range is a 422. The service slices with fitz and rebases the page classes to the slice. Picture pages come back in the slice's own numbering, and the P5 merge adds `page_start`. Omitting the range keeps today's whole-document behaviour.
 4. The coordinator SHALL live in the worker's converter child (next to `_remote_pdf_to_markdown`). It SHALL query `/capacity` on the **named** Services of every backend that is up: `docling-service-mac` and docling-1's `docling-service`. The node controller's backend choice is read from a ConfigMap.
 
    It SHALL compute `rate_b = safe_procs_b / spp_b` and give each backend a contiguous initial allocation in proportion to its rate, aligned to R3 chunk boundaries. The remainder goes on a shared tail queue that backends pull from as their slots free (tail stealing).
