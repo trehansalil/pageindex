@@ -30,7 +30,7 @@ governs:
 
 ## Overview
 
-Four stacked PRs, each cut from the previous one:
+Six stacked PRs, each cut from the previous one (P4 and P5 added 2026-09-27; P5 is a later phase):
 
 | PR | Branch |
 |---|---|
@@ -38,6 +38,8 @@ Four stacked PRs, each cut from the previous one:
 | P1 | `ICR-97-rfc52-page-class-detection` |
 | P2 | `ICR-97-rfc52-page-class-chunking` |
 | P3 | `ICR-97-rfc52-capacity-split` |
+| P4 | `ICR-97-rfc52-table-capture` |
+| P5 (later) | `ICR-97-rfc52-mac-docling1-split` |
 
 Infra manifests live in `/root/hetzner-deployment-service` and ship as a companion PR per phase. Tests use `make test` only.
 
@@ -79,18 +81,14 @@ Infra manifests live in `/root/hetzner-deployment-service` and ship as a compani
   - [ ] 5.6 Choose the defaults from the benchmark (FAST only if it passes the R4 AC4 gate). Record the decision in the RFC as an amendment.
 - [ ] 6. Checkpoint P2: `make test`, open the PR, and ask the user.
 
-- [ ] 7. P3: Capacity split (`ICR-97-rfc52-capacity-split`)
+- [ ] 7. P3: Capacity reporting (`ICR-97-rfc52-capacity-split`). Scope cut 2026-09-27: docling-local dropped; the split moves to P5.
   - [ ] 7.1 docling-service `GET /capacity`: free memory on Linux and macOS, `safe_procs`, slots, the `spp_ewma` tracker, `build_sha`. _R5 AC1_
   - [ ] 7.2 The planner clamps its worker count by free-memory `safe_procs`. _R5 AC2_
   - [ ] 7.3 Add `page_start`/`page_end` to `PdfConvertRequest`: slice, rebase pictures and page classes. _R5 AC3_
-  - [ ] 7.4 The node controller writes `docling-active-backend` to a ConfigMap. The coordinator resolves the named Services from it. _R5 AC4_
-  - [ ] 7.5 Coordinator: eligibility (HR3, build SHA), proportional initial allocation, tail stealing, the shared deadline, retry and re-route, merge, and join heading-shift count. _R5 AC4, AC6-8_
-  - [ ] 7.6 Local gating: re-read `/capacity` per shard, hold the admission reservation, apply `PORTFOLIO_RESERVE_BYTES`. Set the docling-local manifest's limit to the planned peak and give it a low priority class. _R5 AC5_
-  - [ ] 7.7 Measure docling-local idle RSS and decide replicas 1 or 0. Replace the 16 GB guard in `docling-node.sh`. _R5 AC9_
-  - [ ] 7.8 HR3: exempt in-cluster backends for PII documents and never allow the Mac. Test the eligibility table. _R5 AC7_
-  - [ ] 7.9 Add a stub-backend integration test for stealing, the deadline, and re-route after a failure. _Test strategy_
-  - [ ] 7.10 Deploy with `DOCLING_SPLIT_ENABLED=0`. Run a parity check on the pocketbook with split off and on, plus a forced-low-memory run showing 0 local shards and no OOM events. _R5 AC10, R6_
-- [ ] 8. Checkpoint P3: `make test`, open the PR, and get the user's go-ahead before switching on `DOCLING_SPLIT_ENABLED=1`.
+  - [ ] 7.4 Build-skew check: the worker compares the active remote's `build_sha` and logs a WARNING on mismatch. _R5 AC8_
+  - [ ] 7.5 Infra companion: delete the `docling-service-local` Deployment and the `docling-node.sh local on` path. _R5 AC5, NG7_
+  - [ ] 7.6 Forced-low-memory run on the active remote: the planner clamps, no OOM events. _Test strategy_
+- [ ] 8. Checkpoint P3: `make test`, open the PR, and ask the user.
 
 - [ ] 9. P4 (proposed 2026-09-27): Table capture, search and bypass (`ICR-97-rfc52-table-capture`)
   - [ ] 9.1 Process-pool `find_tables()` in the worker: pool sized by cgroup CPU and free memory, per-process memory kill, `capture_failed` pages. Overlap it with remote conversion. _R7 AC1-3_
@@ -101,6 +99,14 @@ Infra manifests live in `/root/hetzner-deployment-service` and ship as a compani
   - [ ] 9.6 OCR bypass on clean text-layer table pages; TableFormer skip on pages with no table; `bypass` field in `docling_chunk`; per-bypass kill switches; `force_full_page_ocr` overrides all. _R9 AC1-2, 4-6_
   - [ ] 9.7 Benchmark grid replacement (`find_tables` vs TableFormer, changed-cell ratio). Enable `TABLES_TRUST_BYPASS` only at ≤ 2%. _R9 AC3_
 - [ ] 10. Checkpoint P4: `make test`, open the PR, and ask the user.
+
+- [ ] 11. P5 (later): Mac + docling-1 together (`ICR-97-rfc52-mac-docling1-split`)
+  - [ ] 11.1 The node controller keeps docling-1 up alongside the Mac when split is on, and writes the live backend set to a ConfigMap. The coordinator resolves the named Services from it. _R5 AC4_
+  - [ ] 11.2 Coordinator: eligibility (HR3, build SHA), proportional initial allocation, tail stealing, per-shard `/capacity` check, the shared deadline, retry and re-route, merge, and join heading-shift count. _R5 AC4, AC6_
+  - [ ] 11.3 HR3: docling-1 eligible for PII documents, the Mac never. Test the eligibility table. _R5 AC7_
+  - [ ] 11.4 Add a stub-backend integration test for stealing, the deadline, and re-route after a failure. _Test strategy_
+  - [ ] 11.5 Deploy with `DOCLING_SPLIT_ENABLED=0`. Run a parity check on the pocketbook with split off and on. _R5 AC10, R6_
+- [ ] 12. Checkpoint P5: `make test`, open the PR, and get the user's go-ahead before switching on `DOCLING_SPLIT_ENABLED=1`.
 
 ## Notes
 
