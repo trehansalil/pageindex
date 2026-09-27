@@ -92,6 +92,16 @@ Infra manifests live in `/root/hetzner-deployment-service` and ship as a compani
   - [ ] 7.10 Deploy with `DOCLING_SPLIT_ENABLED=0`. Run a parity check on the pocketbook with split off and on, plus a forced-low-memory run showing 0 local shards and no OOM events. _R5 AC10, R6_
 - [ ] 8. Checkpoint P3: `make test`, open the PR, and get the user's go-ahead before switching on `DOCLING_SPLIT_ENABLED=1`.
 
+- [ ] 9. P4 (proposed 2026-09-27): Table capture, search and bypass (`ICR-97-rfc52-table-capture`)
+  - [ ] 9.1 Process-pool `find_tables()` in the worker: pool sized by cgroup CPU and free memory, per-process memory kill, `capture_failed` pages. Overlap it with remote conversion. _R7 AC1-3_
+  - [ ] 9.2 Persist `processed/<doc_id>.tables.json` (bbox, cells, markdown, source, coverage, `node_id`, caption). Keep TableFormer tables alongside and link them by bbox. Add it to `_ERASURE_MANIFEST` (no dedicated erasure test, per user). _R7 AC4-6, HR2_
+  - [ ] 9.3 Serve stored table cells directly to retrieval answers. HR4 legal review deferred by the user (2026-09-27); track it as an open item. _R7 AC7-8_
+  - [ ] 9.4 Table descriptions through the tree's LLM tier (HR3), table child nodes in the slim tree under a token budget, and the page-content tool returning the markdown. _R8 AC1-4_
+  - [ ] 9.5 Table question set (≥ 10 pocketbook questions): search with vs without table nodes. _R8 AC5_
+  - [ ] 9.6 OCR bypass on clean text-layer table pages; TableFormer skip on pages with no table; `bypass` field in `docling_chunk`; per-bypass kill switches; `force_full_page_ocr` overrides all. _R9 AC1-2, 4-6_
+  - [ ] 9.7 Benchmark grid replacement (`find_tables` vs TableFormer, changed-cell ratio). Enable `TABLES_TRUST_BYPASS` only at ≤ 2%. _R9 AC3_
+- [ ] 10. Checkpoint P4: `make test`, open the PR, and ask the user.
+
 ## Notes
 
 - No operator steps remain for 1.9 and 1.10 beyond a one-time `install.sh` on the Mac. Claude still never runs hcloud mutations.
