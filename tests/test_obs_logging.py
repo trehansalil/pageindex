@@ -871,11 +871,18 @@ def test_docling_service_binds_correlation_headers_and_logs_json(docling_service
     async def probe(scope, receive, send):
         in_flight.append((await docling_service_app.health())["in_flight"])
 
+    docling_service_app._warmup_done = True  # module is fresh per fixture
     counter = docling_service_app.InFlightMiddleware(probe)
     asyncio.run(counter({"type": "http", "path": "/convert/pdf"}, None, None))
     asyncio.run(counter({"type": "http", "path": "/health"}, None, None))
     assert in_flight == [1, 0]
-    assert asyncio.run(docling_service_app.health()) == {"status": "ok", "in_flight": 0}
+    assert asyncio.run(docling_service_app.health()) == {
+        "status": "ok",
+        "in_flight": 0,
+        "current_job_id": None,
+        "started_at": None,
+        "ready": False,  # warm-up done but never succeeded (no subprocess ran)
+    }
     assert any(
         m.cls is docling_service_app.InFlightMiddleware
         for m in docling_service_app.app.user_middleware

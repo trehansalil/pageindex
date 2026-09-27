@@ -11,21 +11,26 @@ import dataclasses
 import functools
 import logging
 import os
+import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from enum import StrEnum
 
 from ..config import MAX_DOCLING_PAGES, pipeline_config
+from ..obs.context import current_context
 from ..obs.decisions import decision
 from ..picture_plane import OcrEngine, strip_unresolved_image_markers
 from ..script import RtlDecision
 from .docling_conv import (
+    DoclingCancelled,
     _docling_converter,
     _patch_hierarchical_infer,
     _pdf_to_markdown_docling_chunked,
     _peak_rss_bytes,
     _repair_docling_tables,
     _resolve_do_ocr,
+    _run_docling_chunk_with_timeout,
     emit_docling_chunk,
 )
 from .headings import (
@@ -301,6 +306,9 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
     workers: int = 1,
     num_threads: int | None = None,
     pages_with_tables: set[int] | None = None,
+    cancel_event: threading.Event | None = None,
+    progress: dict | None = None,
+    deadline: float | None = None,
 ) -> tuple[str, list[PictureResult], dict[str, dict]]:
     """MIT-licensed layout-aware PDF route (RFC-003 D3 / HR4 AGPL escape).
 
@@ -332,6 +340,26 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
         (set in the container image; unset locally -> weights fetched from HF on first use)
 
     Raises on empty extraction so the caller falls back to the next converter.
+
+    ``cancel_event`` (docling-service, coldstart Q5 item 8) is forwarded to the
+    chunked path only, which checks it between chunks. It is passed on only
+    when set, so a chunked implementation without the keyword keeps working.
+
+    ``progress`` (coldstart Q5 item 8, QA finding 5), when given, is a plain
+    ``dict`` the chunked path fills in as ``{"total": <chunk count>, "done":
+    <chunks completed>}`` -- read by docling-service's cancellation record
+    (``chunks_done``/``chunks_total``). Also forwarded only when not ``None``.
+
+    ``deadline`` (repair cycle 2, finding 2), when given together with
+    ``cancel_event``, is an epoch-seconds absolute deadline (docling-service's
+    ``X-Deadline``) that bounds the single killable "chunk" the direct route
+    runs the whole document as (see below): its remaining seconds become that
+    chunk's timeout, instead of the fixed ``_CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S``
+    the multi-chunk route uses per chunk. ``None`` (no X-Deadline sent) means
+    no tighter cap than the old, non-cancellable inline path had: the chunk
+    runs unbounded, subject only to ``cancel_event``. Ignored when
+    ``cancel_event`` is ``None`` (the plain in-process direct route never
+    reaches the timeout machinery at all).
     """
     # RFC-027 D7: oversized PDFs die to CHILD_TIMEOUT on a single direct-conversion
     # pass. Guard the page count via pymupdf (no pymupdf4llm -- CLAUDE.md Hard
@@ -371,6 +399,9 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
                     "page_count_guard_failed": page_count_guard_failed,
                 },
             )
+        _cancel_kw: dict = {} if cancel_event is None else {"cancel_event": cancel_event}
+        if progress is not None:
+            _cancel_kw["progress"] = progress
         return _pdf_to_markdown_docling_chunked(
             pdf_path,
             page_count=page_count,
@@ -381,6 +412,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
             workers=workers,
             num_threads=num_threads,
             pages_with_tables=pages_with_tables,
+            **_cancel_kw,
         )
 
     if logger.isEnabledFor(logging.INFO):
@@ -394,6 +426,69 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
                 "page_count_guard_failed": page_count_guard_failed,
             },
         )
+
+    # Coldstart Q5 item 8 (QA finding 1): a direct-route request that carries a
+    # ``cancel_event`` (docling-service) must be as killable as the chunked
+    # route. Run it as a single "chunk" covering the whole document in the
+    # existing killable subprocess -- the child re-enters this function
+    # without ``cancel_event``, so it takes the plain direct route (its page
+    # count is <= ``effective_max_pages`` by construction here) exactly as
+    # below, just out of process. No ``cancel_event`` -> this branch is never
+    # taken and the rest of the function runs unchanged (byte-identical).
+    if cancel_event is not None:
+        _direct_do_table_structure = pages_with_tables is None or bool(pages_with_tables)
+        _direct_stats: dict = {}
+        _direct_started = time.monotonic()
+        _direct_outcome = "error"
+        if progress is not None:
+            progress["total"] = 1
+            progress.setdefault("done", 0)
+        # Finding 2 (repair cycle 2): the multi-chunk route's fixed
+        # per-chunk cap (_CHUNKED_DOCLING_PER_CHUNK_TIMEOUT_S) is sized for
+        # ITS chunks, not for this single "whole document" chunk -- using it
+        # here would impose a new hard cap the old, non-cancellable inline
+        # path never had. Derive the cap from the caller's own X-Deadline
+        # instead, and leave it unbounded (None -- the timeout machinery
+        # then waits on cancel_event alone) when no deadline was given.
+        _direct_timeout_s = max(1.0, deadline - time.time()) if deadline is not None else None
+        try:
+            if cancel_event.is_set():
+                raise DoclingCancelled(f"cancelled before direct conversion: {pdf_path}")
+            direct_result = _run_docling_chunk_with_timeout(
+                pdf_path,
+                force_full_page_ocr=force_full_page_ocr,
+                ocr_lang_override=ocr_lang_override,
+                timeout_s=_direct_timeout_s,
+                expected_script=expected_script,
+                num_threads=num_threads,
+                do_table_structure=_direct_do_table_structure,
+                log_context=dict(current_context()),
+                stats=_direct_stats,
+                cancel_event=cancel_event,
+            )
+            _direct_outcome = "ok"
+            if progress is not None:
+                progress["done"] = 1
+            return direct_result
+        except DoclingCancelled:
+            _direct_outcome = "cancelled"
+            raise
+        except FuturesTimeoutError:
+            _direct_outcome = "timeout"
+            raise
+        finally:
+            emit_docling_chunk(
+                chunk="1/1",
+                page_start=0 if page_count > 0 else None,
+                page_end=page_count - 1 if page_count > 0 else None,
+                do_table_structure=_direct_do_table_structure,
+                do_ocr=_resolve_do_ocr(force_full_page_ocr),
+                duration_s=time.monotonic() - _direct_started,
+                peak_rss_bytes=_direct_stats.get("peak_rss_bytes"),
+                outcome=_direct_outcome,
+                page_count=page_count,
+                single_shot=True,
+            )
 
     # Reuse the process-cached converter (see _docling_converter): a fresh
     # DocumentConverter per call leaks ~250 MB/doc that torch never frees.
@@ -957,6 +1052,11 @@ def pdf_markdown_converters() -> list[ConverterChainEntry]:
     # and call reset_pipeline_config() instead of patching os.getenv directly.
     primary = pipeline_config.pdf_converter.strip().lower()
     have_docling = importlib.util.find_spec("docling") is not None
+    # Coldstart Q5 item 5: a converter whose module is not installed must not
+    # be in the chain at all. Listed-but-missing, its ImportError reads as a
+    # STRUCTURAL failure and decides routing (the Scaleway node had docling
+    # but not pymupdf4llm).
+    have_pymupdf4llm = importlib.util.find_spec("pymupdf4llm") is not None
 
     if not have_docling and not pipeline_config.allow_agpl_fallback:
         from ..metrics import AGPL_FALLBACK_TOTAL
@@ -980,7 +1080,7 @@ def pdf_markdown_converters() -> list[ConverterChainEntry]:
         )
 
     chain: list[ConverterChainEntry] = []
-    if pipeline_config.allow_agpl_fallback:
+    if pipeline_config.allow_agpl_fallback and have_pymupdf4llm:
         chain.append(
             ConverterChainEntry(
                 name="pymupdf4llm",
@@ -1000,7 +1100,7 @@ def pdf_markdown_converters() -> list[ConverterChainEntry]:
             chain.insert(0, docling_entry)
         else:
             chain.append(docling_entry)
-            if pipeline_config.allow_agpl_fallback:
+            if pipeline_config.allow_agpl_fallback and have_pymupdf4llm:
                 from ..metrics import AGPL_FALLBACK_TOTAL
 
                 AGPL_FALLBACK_TOTAL.labels(reason="operator_configured").inc()
@@ -1013,9 +1113,21 @@ def pdf_markdown_converters() -> list[ConverterChainEntry]:
 
         AGPL_FALLBACK_TOTAL.labels(reason="docling_missing").inc()
 
+    if not chain:
+        logger.error(
+            "No PDF converter is installed (docling=%s, pymupdf4llm=%s); every PDF "
+            "falls through to the legacy page_index path.",
+            have_docling,
+            have_pymupdf4llm,
+        )
+
     if logger.isEnabledFor(logging.INFO):
-        if primary == DOCLING_CONVERTER_NAME and have_docling:
+        if not chain:
+            _chain_choice = "no_converters_installed"
+        elif primary == DOCLING_CONVERTER_NAME and have_docling:
             _chain_choice = "docling_primary"
+        elif have_docling and not have_pymupdf4llm:
+            _chain_choice = "docling_only_pymupdf4llm_missing"
         elif have_docling and pipeline_config.allow_agpl_fallback:
             _chain_choice = "pymupdf4llm_primary_docling_secondary"
         elif have_docling:
@@ -1029,6 +1141,7 @@ def pdf_markdown_converters() -> list[ConverterChainEntry]:
             attrs={
                 "configured_primary": primary,
                 "have_docling": have_docling,
+                "have_pymupdf4llm": have_pymupdf4llm,
                 "allow_agpl_fallback": pipeline_config.allow_agpl_fallback,
             },
         )
