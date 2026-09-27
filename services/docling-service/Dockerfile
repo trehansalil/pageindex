@@ -11,11 +11,11 @@ ENV UV_HTTP_TIMEOUT=600
 # Install dependencies from the main project lockfile (same deps as the
 # worker image — Docling, torch-cpu, fitz, tesseract bindings, etc.).
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN uv sync --frozen --no-dev --extra pdf-inspection --no-install-project
 
 # Copy full source — the service imports from pageindex_mcp.converters.
 COPY src/ ./src/
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --extra pdf-inspection
 
 # Install service-specific deps (FastAPI + uvicorn + httpx).
 RUN uv pip install "fastapi>=0.115.0" "uvicorn[standard]>=0.30.0" "httpx>=0.27.0"
