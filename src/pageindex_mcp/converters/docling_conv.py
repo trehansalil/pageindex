@@ -13,9 +13,11 @@ import multiprocessing
 import os
 import queue as queue_mod
 import re
+import signal
 import socket
 import sys
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
@@ -25,7 +27,13 @@ if TYPE_CHECKING:
     from docling.document_converter import DocumentConverter
 
 from ..obs.constants import FLAT_FIELDS_ATTR, KIND_DECISION
-from ..obs.context import bind_log_context, current_context, propagate
+from ..obs.context import (
+    bind_log_context,
+    current_context,
+    disable_main_thread_ambient,
+    enable_main_thread_ambient,
+    propagate,
+)
 from ..picture_plane import OcrEngine
 from ..script import is_arabic_char as _is_arabic_char
 from .types import PictureResult
@@ -596,6 +604,14 @@ _TABLEFORMER_MODE = "accurate"
 _IN_CHUNK_CHILD = False
 
 
+class DoclingCancelled(RuntimeError):
+    """The caller set the chunked conversion's ``cancel_event``.
+
+    Deliberately not a ``FuturesTimeoutError``: a timed-out chunk degrades to
+    a pymupdf text layer, a cancelled one stops the whole document.
+    """
+
+
 def _peak_rss_bytes() -> int | None:
     """This process's peak RSS in bytes (``getrusage(RUSAGE_SELF).ru_maxrss``).
 
@@ -682,6 +698,98 @@ def emit_docling_chunk(  # noqa: PLR0913
         pass
 
 
+def _pdeathsig_watchdog_should_kill(initial_ppid: int, current_ppid: int) -> bool:
+    """True once the parent that started this chunk child has changed.
+
+    A changed ``os.getppid()`` means the original parent exited and this
+    process was reparented (to init/pid 1 on Linux, launchd on macOS) --
+    the condition the watchdog thread (``_pdeathsig_watchdog_loop``) polls
+    for on platforms without ``PR_SET_PDEATHSIG`` (macOS, the Mac docling
+    host). Pulled out as a pure function (repair cycle 2, finding 3) so the
+    decision is unit-testable without starting a real thread or process.
+    """
+    return current_ppid != initial_ppid
+
+
+def _pdeathsig_watchdog_loop(initial_ppid: int, poll_s: float = 2.0) -> None:
+    """Poll ``os.getppid()`` and kill this process's group once it changes.
+
+    Started as a daemon thread (``_start_pdeathsig_watchdog``) in a spawned
+    chunk child on platforms without ``PR_SET_PDEATHSIG``. Backstop for an
+    OOM-killed/SIGTERMed docling-service: after ``os.setsid()`` this child is
+    no longer in the service's process group, so the service dying no longer
+    signals it -- it (and any Tesseract grandchildren) would otherwise run a
+    multi-minute Docling pass for a request nobody is waiting on. Best-effort
+    and silent throughout: this must never surface into, or interrupt, an
+    otherwise-healthy conversion.
+    """
+    try:
+        while True:
+            time.sleep(poll_s)
+            if _pdeathsig_watchdog_should_kill(initial_ppid, os.getppid()):
+                with contextlib.suppress(OSError, ProcessLookupError):
+                    os.killpg(os.getpgid(0), signal.SIGKILL)
+                return
+    except Exception:  # pragma: no cover - best-effort background thread
+        pass
+
+
+def _start_pdeathsig_watchdog(initial_ppid: int) -> None:
+    """Start ``_pdeathsig_watchdog_loop`` as a daemon thread."""
+    threading.Thread(
+        target=_pdeathsig_watchdog_loop,
+        args=(initial_ppid,),
+        name="docling-chunk-pdeathsig-watchdog",
+        daemon=True,
+    ).start()
+
+
+def _install_parent_death_safeguard() -> None:
+    """Best-effort: make sure this chunk child does not outlive its parent.
+
+    Repair cycle 2, finding 3: after ``os.setsid()`` (above) this child
+    leaves the docling-service's process group, so an OOM-killed or
+    SIGTERMed service no longer takes it down by signal propagation -- it
+    would orphan itself (and Tesseract's grandchildren) mid-conversion.
+
+    On Linux, ``PR_SET_PDEATHSIG`` asks the kernel to SIGKILL this process
+    the instant its parent dies; ``os.getppid()`` is re-checked right after
+    the ``prctl`` call to close the race where the parent already died
+    between reading its pid and the ``prctl`` landing -- ``PR_SET_PDEATHSIG``
+    fires ON death, not for "already dead", so that race would otherwise
+    leave the child running forever with the signal never delivered.
+
+    macOS (the Mac docling host) has no ``prctl``; a lightweight watchdog
+    thread polls ``os.getppid()`` instead (``_start_pdeathsig_watchdog``).
+    The watchdog is also the fallback if ``prctl`` itself is unavailable or
+    fails on a Linux build without it.
+
+    Always suppressed: a failure here must never interrupt a conversion.
+    """
+    parent_pid = os.getppid()
+    if sys.platform.startswith("linux"):
+        try:
+            import ctypes
+
+            libc = ctypes.CDLL("libc.so.6", use_errno=True)
+            _PR_SET_PDEATHSIG = 1
+            if libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0) == 0:
+                if _pdeathsig_watchdog_should_kill(parent_pid, os.getppid()):
+                    # The parent died between os.getppid() above and the
+                    # prctl call landing -- SIGKILL fires on death, not on
+                    # "already dead", so nothing would otherwise ever arrive.
+                    with contextlib.suppress(OSError, ProcessLookupError):
+                        os.kill(os.getpid(), signal.SIGKILL)
+                return
+            logger.debug("prctl(PR_SET_PDEATHSIG) returned non-zero; falling back to the watchdog")
+        except Exception:
+            logger.debug(
+                "prctl(PR_SET_PDEATHSIG) unavailable; falling back to the watchdog thread",
+                exc_info=True,
+            )
+    _start_pdeathsig_watchdog(parent_pid)
+
+
 def _docling_chunk_worker(  # noqa: PLR0913
     result_queue: multiprocessing.Queue,
     pdf_path: str,
@@ -711,6 +819,21 @@ def _docling_chunk_worker(  # noqa: PLR0913
     """
     global _IN_CHUNK_CHILD
 
+    # QA finding 6 (optional): put this child in its own process group so a
+    # terminate/kill from the parent (see _run_docling_chunk_with_timeout)
+    # can take Tesseract's grandchildren with it via os.killpg -- a plain
+    # proc.terminate()/kill() only signals this one PID and orphans them.
+    # Best-effort: already a session/group leader (rare) or an unsupported
+    # platform must not stop the conversion.
+    with contextlib.suppress(OSError, AttributeError):
+        os.setsid()
+    # QA finding 3 (repair cycle 2): os.setsid() above takes this child out
+    # of the service's process group, so a killed/OOM'd service no longer
+    # brings it down via signal propagation. Best-effort parent-death
+    # safeguard so it does not run on as an orphan.
+    with contextlib.suppress(Exception):
+        _install_parent_death_safeguard()
+
     if num_threads:
         os.environ["DOCLING_NUM_THREADS"] = str(num_threads)
         os.environ["OMP_NUM_THREADS"] = str(num_threads)
@@ -721,6 +844,11 @@ def _docling_chunk_worker(  # noqa: PLR0913
     from .pipeline import pdf_to_markdown_docling
 
     _IN_CHUNK_CHILD = True
+    # Docling's Tesseract OCR runs on threads of its own, which read no
+    # binding and logged job_id: null. This spawned child converts exactly one
+    # chunk, so the main thread's binding is unambiguous for them (same
+    # argument as converters_cli). Enabled BEFORE the bind so it mirrors in.
+    enable_main_thread_ambient()
     try:
         with bind_log_context(**(log_context or {})):
             result = pdf_to_markdown_docling(
@@ -741,6 +869,22 @@ def _docling_chunk_worker(  # noqa: PLR0913
             result_queue.put(("error", RuntimeError(f"{type(exc).__name__}: {exc}"), rss))
     finally:
         _IN_CHUNK_CHILD = False
+        disable_main_thread_ambient()
+
+
+def _signal_chunk_process_group(proc, sig: int) -> None:
+    """Best-effort ``os.killpg`` alongside the caller's own ``proc.terminate``/
+    ``kill`` (QA finding 6): the child sets its own process group via
+    ``os.setsid()`` (``_docling_chunk_worker``), so this also reaches
+    Tesseract's OCR grandchildren, which a plain signal to ``proc.pid`` alone
+    would orphan. Never raises -- the process may already be gone, or
+    ``os.setsid()`` may have failed in the child (unsupported platform).
+    """
+    pid = getattr(proc, "pid", None)
+    if pid is None:
+        return
+    with contextlib.suppress(OSError, AttributeError, ProcessLookupError):
+        os.killpg(os.getpgid(pid), sig)
 
 
 def _run_docling_chunk_with_timeout(  # noqa: PLR0913
@@ -748,14 +892,24 @@ def _run_docling_chunk_with_timeout(  # noqa: PLR0913
     *,
     force_full_page_ocr: bool,
     ocr_lang_override: list[str] | None,
-    timeout_s: float,
+    timeout_s: float | None,
     expected_script: str | None = None,
     num_threads: int | None = None,
     do_table_structure: bool = True,
     log_context: dict | None = None,
     stats: dict | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[str, list[PictureResult]]:
     """Run one Docling chunk conversion in a killable subprocess (D0 fix).
+
+    ``cancel_event`` (set by docling-service when its client goes away) is
+    polled with the deadline; once set, the child is terminated exactly as on
+    a timeout and ``DoclingCancelled`` is raised instead.
+
+    ``timeout_s`` may be ``None`` (repair cycle 2, finding 2): the direct
+    (single-chunk) route passes ``None`` when the caller sent no X-Deadline,
+    meaning "no cap of its own" -- the loop below then only ends via
+    ``cancel_event`` or the child dying/reporting, never via elapsed time.
 
     ``log_context`` is forwarded to the child (RFC-052 R1 AC6). When ``stats``
     is given, ``stats["peak_rss_bytes"]`` is filled from the child's own
@@ -790,12 +944,16 @@ def _run_docling_chunk_with_timeout(  # noqa: PLR0913
     # the timeout and misreport a *successful* chunk as timed out. The poll
     # loop also detects a child that died without reporting (native segfault
     # in Docling/OCR), which a bare blocking get() would hang on forever.
-    deadline = time.monotonic() + timeout_s
+    deadline = time.monotonic() + timeout_s if timeout_s is not None else math.inf
     outcome: tuple | None = None
+    cancelled = False
     while outcome is None:
         try:
             outcome = result_queue.get(timeout=1.0)
         except queue_mod.Empty:
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                break
             if time.monotonic() >= deadline:
                 break
             if not proc.is_alive():
@@ -808,17 +966,23 @@ def _run_docling_chunk_with_timeout(  # noqa: PLR0913
                     break
     if outcome is None:
         if proc.is_alive():
+            _signal_chunk_process_group(proc, signal.SIGTERM)
             proc.terminate()
             proc.join(5)
             if proc.is_alive():
+                _signal_chunk_process_group(proc, signal.SIGKILL)
                 proc.kill()
                 proc.join()
-            raise FuturesTimeoutError(f"Docling chunk timed out after {timeout_s}s: {pdf_path}")
+            if not cancelled:
+                raise FuturesTimeoutError(f"Docling chunk timed out after {timeout_s}s: {pdf_path}")
+        if cancelled:
+            raise DoclingCancelled(f"Docling chunk cancelled: {pdf_path}")
         raise RuntimeError(
             f"Docling chunk worker died without a result (exitcode={proc.exitcode}): {pdf_path}"
         )
     proc.join(5)
     if proc.is_alive():  # lingering after reporting -- reap it
+        _signal_chunk_process_group(proc, signal.SIGKILL)
         proc.kill()
         proc.join()
     status, payload, peak_rss = outcome
@@ -827,6 +991,19 @@ def _run_docling_chunk_with_timeout(  # noqa: PLR0913
     if status == "error":
         raise cast(Exception, payload)
     return cast("tuple[str, list[PictureResult], dict[str, dict]]", payload)
+
+
+def _mark_chunk_progress_done(progress: dict | None, lock: threading.Lock) -> None:
+    """Increment ``progress["done"]`` under ``lock`` (QA finding 5).
+
+    No-op when the caller passed no ``progress`` dict. A free function (not a
+    closure inside ``_pdf_to_markdown_docling_chunked``) so it does not count
+    toward that function's own cyclomatic complexity.
+    """
+    if progress is None:
+        return
+    with lock:
+        progress["done"] = progress.get("done", 0) + 1
 
 
 def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
@@ -839,8 +1016,19 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
     workers: int = 1,
     num_threads: int | None = None,
     pages_with_tables: set[int] | None = None,
+    cancel_event: threading.Event | None = None,
+    progress: dict | None = None,
 ) -> tuple[str, list[PictureResult], dict[str, dict]]:
     """RFC-027 D7 chunked-Docling route for PDFs exceeding MAX_DOCLING_PAGES.
+
+    Once ``cancel_event`` is set, no further chunk starts and the running
+    ones are terminated; the call raises ``DoclingCancelled``.
+
+    ``progress`` (QA finding 5, docling-service cancellation record), when
+    given, is filled in as ``{"total": chunk_count, "done": <completed>}`` --
+    "done" counts chunks that actually finished (``ok`` or a timed-out chunk's
+    pymupdf fallback), not ones cancelled or errored, and is updated under a
+    lock since chunks convert concurrently across ``workers`` pool threads.
 
     Splits ``pdf_path`` into ``ceil(page_count / max_pages)`` page-boundary
     chunks via ``pymupdf`` (``fitz``) -- the project's single PDF-primitive
@@ -870,6 +1058,10 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
 
     chunk_count = math.ceil(page_count / max_pages)
     workers = max(1, min(workers, chunk_count))
+    if progress is not None:
+        progress["total"] = chunk_count
+        progress.setdefault("done", 0)
+    _progress_lock = threading.Lock()
     logger.info(
         "chunked-Docling route: %s (%d pages) -> %d chunk(s) of <= %d pages, %d at a time",
         pdf_path,
@@ -908,6 +1100,8 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
             )
 
         try:
+            if cancel_event is not None and cancel_event.is_set():
+                raise DoclingCancelled(f"cancelled before chunk {index + 1}/{chunk_count}")
             chunk_md, chunk_pics, _chunk_stages = _run_docling_chunk_with_timeout(
                 path,
                 force_full_page_ocr=force_full_page_ocr,
@@ -918,7 +1112,11 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
                 do_table_structure=chunk_has_tables,
                 log_context=log_context,
                 stats=stats,
+                cancel_event=cancel_event,
             )
+        except DoclingCancelled:
+            record("cancelled")
+            raise
         except FuturesTimeoutError:
             record("timeout")
             # RFC-027 D7: an individually heavy chunk still times out on the
@@ -938,10 +1136,12 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
                 return "\n\n".join(page.get_text() or "" for page in chunk_doc), []
             finally:
                 chunk_doc.close()
+                _mark_chunk_progress_done(progress, _progress_lock)
         except BaseException:
             record("error")
             raise
         record("ok")
+        _mark_chunk_progress_done(progress, _progress_lock)
         return chunk_md, chunk_pics
 
     starts = [i * max_pages for i in range(chunk_count)]

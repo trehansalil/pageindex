@@ -84,4 +84,11 @@
 #                  save_raw / load_extracted_md / get_document / delete_doc
 #                  against an in-memory MinIO (HR2). Measured with
 #                  `bash scripts/gates/test_budget.sh`.
-979
+# 2026-09-27  1004 ICR-97 docling cold-start/cancel: +25. +12 of it is
+#                  already on master (RFC-052 P0/P1 landed without a
+#                  baseline bump: 991 collected at 8e0bb99). +13 new: the
+#                  worker retry/readiness/requeue/abort table tests, and the
+#                  docling-service cancel, orphan pre-emption and killable
+#                  direct-route tests, already collapsed into parametrized
+#                  tables. Measured with `bash scripts/gates/test_budget.sh`.
+1004

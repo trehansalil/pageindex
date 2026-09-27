@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import os
 import signal
 import sys
@@ -36,6 +37,17 @@ logger = logging.getLogger(__name__)
 
 # How long to wait between SIGTERM and SIGKILL when reaping a child process group.
 KILL_GRACE_SECONDS = 10.0
+
+# QA fix (finding 2): converters_cli.py sets its own self-deadline as
+# start_epoch + MAX_EFFECTIVE_TIMEOUT, but THIS parent actually kills the
+# child at min(MAX_EFFECTIVE_TIMEOUT, deadline_left) -- deadline_left shrinks
+# below MAX_EFFECTIVE_TIMEOUT whenever the ingest-lock wait or the memory-
+# admission gate ate into the arq job budget before the child was even
+# spawned. Passed as an epoch so the child can clamp its own deadline to
+# whichever is sooner. The margin keeps the child's self-deadline strictly
+# before the actual kill, not exactly at it.
+ENV_CHILD_KILL_DEADLINE_EPOCH = "PAGEINDEX_CHILD_KILL_DEADLINE_EPOCH"
+_CHILD_KILL_DEADLINE_MARGIN_S = 5.0
 
 # Upper bound (bytes) on the stderr_tail retained for ConverterChildError /
 # ConverterOOMError -- matches the byte budget the pre-streaming implementation
@@ -408,6 +420,17 @@ async def _run_converter_child(  # noqa: C901, PLR0915
     deadline_left = _deadline_left(deadline)
     if deadline_left < 1.0:
         raise TimeoutError("arq job deadline exhausted before converter spawn")
+    # QA fix (finding 2): tell the child the real epoch at which this parent
+    # will kill it, known now (before spawn) -- converters_cli.py takes
+    # min(its own start_epoch + MAX_EFFECTIVE_TIMEOUT, this) so a retry it
+    # judges "dial-able" against its own deadline is also dial-able against
+    # the deadline that actually governs it. Only set when finite: an
+    # unbounded deadline (e.g. preprocess_client, which passes no deadline)
+    # leaves the child's own MAX_EFFECTIVE_TIMEOUT-based deadline untouched.
+    if math.isfinite(deadline_left):
+        child_env[ENV_CHILD_KILL_DEADLINE_EPOCH] = (
+            f"{time.time() + deadline_left - _CHILD_KILL_DEADLINE_MARGIN_S:.0f}"
+        )
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,

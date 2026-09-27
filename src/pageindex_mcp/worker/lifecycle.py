@@ -228,6 +228,9 @@ class WorkerSettings:
     max_tries = MAX_TRIES
     job_timeout = JOB_TIMEOUT
     max_jobs = MAX_JOBS
+    # Coldstart Q5 item 6: arq defaults this to False, which made Job.abort()
+    # a silent no-op. process_document_job records the abort (reason=aborted).
+    allow_abort_jobs = True
     # Sweep for jobs orphaned mid-processing once a minute (second=0) and once at
     # boot, so a worker restart immediately reconciles anything a prior crash left
     # frozen in status=processing. unique=True -> only one worker runs each tick;

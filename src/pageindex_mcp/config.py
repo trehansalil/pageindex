@@ -133,6 +133,26 @@ class Settings:
     docling_service_url: str | None
     docling_service_timeout_s: int
     docling_service_bearer_token: str
+    # Coldstart Q5 item 3: connect timeout for the remote Docling transport,
+    # split from ``docling_service_timeout_s`` (the READ timeout) so a SYN
+    # blackhole fails in seconds instead of holding for the full read budget.
+    docling_connect_timeout_s: float
+    # Coldstart Q4/Q5 item 2: readiness-gate budgets before the first remote
+    # call. ``ready_wait`` covers a docling-1 node that is still starting,
+    # ``mac_wait`` rides out a Mac blip, ``ready_poll`` is the /health cadence.
+    docling_ready_wait_s: float
+    docling_mac_wait_s: float
+    docling_ready_poll_s: float
+    # Coldstart QA fix 1: target=none is "no backend reported, but the
+    # controller has not proven autostart is impossible" (e.g. "mac down, no
+    # demand") most of the time -- once this job stays in-progress waiting
+    # here, IT is the demand, and the very next controller tick (~30-36s) can
+    # flip target to node/starting. Budget at least two ticks before giving
+    # up; a permanent reason (autostart cap/disabled) still fails fast with
+    # zero polls (see _none_reason_is_permanent in client/remote.py).
+    docling_none_wait_s: float
+    # Coldstart Q5 item 4: arq ``Retry(defer=...)`` for a DoclingUnavailable job.
+    docling_unavailable_defer_s: int
     # Route prefix the S3 API is served under for *direct* calls. Applied in the
     # HTTP client (see minio_client.py) because the SDK rejects a path in an
     # endpoint. Empty for a direct-to-MinIO endpoint such as a ClusterIP.
@@ -343,6 +363,12 @@ def _load_settings() -> Settings:
         docling_service_url=(os.environ.get("DOCLING_SERVICE_URL") or "").rstrip("/") or None,
         docling_service_timeout_s=int(os.environ.get("DOCLING_SERVICE_TIMEOUT_S", "600")),
         docling_service_bearer_token=os.environ.get("DOCLING_SERVICE_BEARER_TOKEN", ""),
+        docling_connect_timeout_s=float(os.environ.get("DOCLING_CONNECT_TIMEOUT_S", "5")),
+        docling_ready_wait_s=float(os.environ.get("DOCLING_READY_WAIT_S", "300")),
+        docling_mac_wait_s=float(os.environ.get("DOCLING_MAC_WAIT_S", "45")),
+        docling_ready_poll_s=float(os.environ.get("DOCLING_READY_POLL_S", "5")),
+        docling_none_wait_s=float(os.environ.get("DOCLING_NONE_WAIT_S", "90")),
+        docling_unavailable_defer_s=int(os.environ.get("DOCLING_UNAVAILABLE_DEFER_S", "120")),
         minio_path_prefix=_normalize_route_prefix(os.environ.get("MINIO_PATH_PREFIX", "")),
         minio_presign_endpoint=os.environ.get("MINIO_PRESIGN_ENDPOINT") or None,
         minio_presign_secure=os.environ.get("MINIO_PRESIGN_SECURE", "true").strip().lower()
@@ -413,6 +439,20 @@ def _envbool(key: str, default: str) -> bool:
     return os.environ.get(key, default).strip().lower() in ("1", "true", "yes")
 
 
+DOCLING_UNAVAILABLE_POLICIES: tuple[str, ...] = ("requeue", "legacy")
+
+
+def _docling_unavailable_policy(raw: str) -> str:
+    """Normalise DOCLING_UNAVAILABLE_POLICY; a typo must fail loudly at
+    startup, never silently pick a branch."""
+    value = raw.strip().lower()
+    if value not in DOCLING_UNAVAILABLE_POLICIES:
+        raise ValueError(
+            f"DOCLING_UNAVAILABLE_POLICY={raw!r} must be one of {DOCLING_UNAVAILABLE_POLICIES}"
+        )
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Zone-5: PipelineConfig — single frozen snapshot of all pipeline-behavior
 # env vars.  Replaces three competing read sites (effective_config_snapshot
@@ -468,6 +508,14 @@ class PipelineConfig:
 
     # --- Converter chain transient-failure retry policy -----------------------
     converter_transient_retry_count: int
+    # Coldstart Q5 item 1: base of the exponential backoff between RETRY
+    # attempts on the same converter (factor 2, cap 60 s -- see indexer.py).
+    converter_retry_backoff_s: float
+    # Coldstart Q5 item 4: what a DoclingUnavailable does. ``requeue``
+    # (default) raises it out of the converter child so the worker defers the
+    # arq job; ``legacy`` is the pre-fix behaviour -- fall through to the
+    # legacy page_index path in-process.
+    docling_unavailable_policy: str
 
     # --- Zone: converter-chain fallback + AGPL gating -------------------------
     # ``agpl_structural_fallback_enabled`` gates the STRUCTURAL-failure walk
@@ -594,6 +642,10 @@ class PipelineConfig:
             rfc029_min_chars_per_node=float(os.environ.get("RFC029_MIN_CHARS_PER_NODE", "150")),
             converter_transient_retry_count=int(
                 os.environ.get("CONVERTER_TRANSIENT_RETRY_COUNT", "1")
+            ),
+            converter_retry_backoff_s=float(os.environ.get("CONVERTER_RETRY_BACKOFF_S", "5")),
+            docling_unavailable_policy=_docling_unavailable_policy(
+                os.environ.get("DOCLING_UNAVAILABLE_POLICY", "requeue")
             ),
             agpl_structural_fallback_enabled=_envbool("AGPL_STRUCTURAL_FALLBACK_ENABLED", "true"),
             remote_version_enforce=_envbool("REMOTE_VERSION_ENFORCE", "false"),

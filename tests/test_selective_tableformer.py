@@ -417,7 +417,15 @@ class TestRemotePdfToMarkdownPayload:
                 pii_corpus=False,
                 docling_service_url="http://fake:8000",
                 docling_service_bearer_token="",
-                docling_service_timeout_s=30,
+                # QA fix 2 (coldstart): _remote_pdf_to_markdown now clamps the
+                # read timeout to the converter child's remaining deadline and
+                # refuses to dial out at all below _MIN_USEFUL_CALL_S (60s) of
+                # remaining time. No child deadline is set in this test (no
+                # PAGEINDEX_CHILD_DEADLINE_EPOCH env var), so the configured
+                # value IS the effective read timeout -- keep it realistic
+                # (prod default) rather than a value the new floor would
+                # itself reject as "not enough time for a useful call".
+                docling_service_timeout_s=600,
             ),
         )
         monkeypatch.setattr(

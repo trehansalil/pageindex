@@ -20,6 +20,7 @@ are redirected to stderr so they cannot pollute the JSON-lines stdout contract.
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -36,6 +37,13 @@ from .obs.context import bind_log_context, disable_main_thread_ambient, enable_m
 # result); all logging must go to stderr (Property 13, R12.11).
 configure_obs()
 
+# Must equal client.remote.ENV_CHILD_DEADLINE_EPOCH (not imported: that
+# module pulls the heavy client package in before the handshake).
+_ENV_CHILD_DEADLINE_EPOCH = "PAGEINDEX_CHILD_DEADLINE_EPOCH"
+# Must equal worker.subprocess_mgr.ENV_CHILD_KILL_DEADLINE_EPOCH (not
+# imported: same heavy-import-before-handshake reason as above).
+_ENV_CHILD_KILL_DEADLINE_EPOCH = "PAGEINDEX_CHILD_KILL_DEADLINE_EPOCH"
+
 # _stdout is the stream used for the final JSON output line.
 # It is a module-level variable so tests can monkeypatch it to a StringIO.
 _stdout = sys.stdout
@@ -44,6 +52,28 @@ _stdout = sys.stdout
 def _emit(payload: dict) -> None:
     """Write exactly one JSON line to _stdout and flush."""
     print(json.dumps(payload), file=_stdout, flush=True)
+
+
+def _child_deadline_epoch(start_epoch: float, max_effective_timeout: float) -> float:
+    """This child's ``PAGEINDEX_CHILD_DEADLINE_EPOCH`` value.
+
+    QA fix (finding 2): ``start_epoch + max_effective_timeout`` is only an
+    upper bound -- the parent (subprocess_mgr) actually kills this child at
+    ``min(MAX_EFFECTIVE_TIMEOUT, deadline_left-at-spawn)``, and deadline_left
+    shrinks below ``MAX_EFFECTIVE_TIMEOUT`` whenever the ingest-lock wait or
+    the memory-admission gate ate into the arq job budget before spawn --
+    which the upper bound alone knows nothing about. When the parent has
+    passed the real (already-margined) kill epoch via
+    ``PAGEINDEX_CHILD_KILL_DEADLINE_EPOCH``, take whichever is sooner, so a
+    retry judged dial-able against this deadline is also dial-able against
+    the deadline that actually governs this child.
+    """
+    self_deadline_epoch = start_epoch + max_effective_timeout
+    raw_kill_deadline = os.environ.get(_ENV_CHILD_KILL_DEADLINE_EPOCH)
+    if raw_kill_deadline:
+        with contextlib.suppress(ValueError):
+            self_deadline_epoch = min(self_deadline_epoch, float(raw_kill_deadline))
+    return self_deadline_epoch
 
 
 def _log_context_from_env() -> dict:
@@ -99,6 +129,8 @@ async def main() -> int:  # noqa: PLR0915
     sys.stdout = sys.stderr
 
     start = time.monotonic()
+    start_epoch = time.time()
+    prior_deadline = os.environ.get(_ENV_CHILD_DEADLINE_EPOCH)
 
     # Gate 12.C (2026-09-19): Docling runs its OCR stages on threads of its
     # own, where every ContextVar reads back its default -- 86 records from
@@ -157,6 +189,17 @@ async def main() -> int:  # noqa: PLR0915
             if pre_classification is not None:
                 handshake_payload["pre_classification"] = pre_classification
             _emit(handshake_payload)
+
+            # Coldstart Q5 item 7: this child's approximate wall-clock deadline,
+            # read by client/remote.py for X-Deadline and the readiness wait.
+            # The parent kills the child at most MAX_EFFECTIVE_TIMEOUT after
+            # spawning it; its own monotonic deadline is not visible here, so
+            # this is an upper bound -- all X-Deadline needs. Imported after the
+            # handshake: the worker package __init__ is not light.
+            from pageindex_mcp.worker.constants import MAX_EFFECTIVE_TIMEOUT
+
+            deadline_epoch = _child_deadline_epoch(start_epoch, MAX_EFFECTIVE_TIMEOUT)
+            os.environ[_ENV_CHILD_DEADLINE_EPOCH] = f"{deadline_epoch:.0f}"
 
             client = None
             try:
@@ -265,6 +308,11 @@ async def main() -> int:  # noqa: PLR0915
             except Exception:  # pragma: no cover - never let flush break the CLI contract
                 _log.debug("litellm langfuse_otel flush skipped", exc_info=True)
             sys.stdout = orig_stdout
+            # In-process callers (tests) must not inherit this child's deadline.
+            if prior_deadline is None:
+                os.environ.pop(_ENV_CHILD_DEADLINE_EPOCH, None)
+            else:
+                os.environ[_ENV_CHILD_DEADLINE_EPOCH] = prior_deadline
             # Symmetry with enable_main_thread_ambient() above: the process is
             # about to exit, but in-process callers (tests) must not inherit
             # a registered ambient thread.

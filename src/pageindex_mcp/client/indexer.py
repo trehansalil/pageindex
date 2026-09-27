@@ -8,6 +8,7 @@ import dataclasses
 import hashlib
 import logging
 import os
+import random
 import re
 import shutil
 import tempfile
@@ -350,6 +351,52 @@ _TRANSIENT_EXCEPTION_TYPES: tuple[type[BaseException], ...] = (
     asyncio.TimeoutError,
 )
 
+# Coldstart Q5 item 1: RETRY re-enters the SAME converter after an exponential
+# backoff -- base ``pipeline_config.converter_retry_backoff_s`` (5 s default),
+# factor 2, capped at 60 s, plus up to 20% jitter -- for at most
+# CONVERTER_TRANSIENT_RETRY_COUNT attempts AND at most this much wall clock
+# per converter. Whichever runs out first ends RETRY, and the classification
+# then reaches BLOCK_AGPL/REJECT (HR4: a transient failure never walks into an
+# AGPL converter).
+_CONVERTER_RETRY_BACKOFF_FACTOR: float = 2.0
+_CONVERTER_RETRY_BACKOFF_CAP_S: float = 60.0
+_CONVERTER_RETRY_JITTER: float = 0.2
+_CONVERTER_RETRY_TOTAL_BUDGET_S: float = 300.0
+# Indirections so tests can drive the backoff with a fake clock.
+_retry_sleep = asyncio.sleep
+_retry_clock = time.monotonic
+
+
+def _converter_retry_backoff(attempt: int) -> float:
+    """Un-jittered backoff before retry number *attempt* (1-based)."""
+    base = pipeline_config.converter_retry_backoff_s * (
+        _CONVERTER_RETRY_BACKOFF_FACTOR ** (attempt - 1)
+    )
+    return min(base, _CONVERTER_RETRY_BACKOFF_CAP_S)
+
+
+def _docling_unavailable_outcome(exc: BaseException, *, waited_s: float) -> None:
+    """Coldstart Q5 item 4: record what a DoclingUnavailable does, then do it.
+
+    ``requeue`` (default) re-raises, so the exception leaves the converter
+    child as ``error=DoclingUnavailable`` and the worker defers the arq job.
+    ``legacy`` returns, and the caller falls through to the legacy page_index
+    path exactly as before the fix -- but observably, never silently.
+    """
+    policy = pipeline_config.docling_unavailable_policy
+    decision(
+        event="docling_unavailable_outcome",
+        choice="legacy_fallback" if policy == "legacy" else "requeue",
+        reason="docling backend unavailable after readiness wait / retries",
+        attrs={
+            "policy": policy,
+            "defer_s": settings.docling_unavailable_defer_s,
+            "waited_s": round(waited_s, 1),
+        },
+    )
+    if policy != "legacy":
+        raise exc
+
 
 def _quarantine_defects(state, *extra: str) -> list[str]:
     """RFC-050 D3b: defect CODES for quarantine/<sha256>.meta.json -- the
@@ -384,7 +431,8 @@ def _classify_transient_failure(exc: BaseException) -> bool:
        module name so httpx is not a hard import-time dependency).
     3. Any exception carrying a ``status_code`` attribute >= 500 (covers
        ``httpx.HTTPStatusError`` and similar HTTP-wrapper exceptions for
-       server-side errors like 502/503/504).
+       server-side errors like 502/503/504), or == 499 (QA fix 3: docling-
+       service's own ``X-Deadline`` self-abort, not a structural failure).
 
     Everything else (``ValueError``, ``RuntimeError``, ``ImportError``,
     parse-level exceptions) is classified as structural.
@@ -392,27 +440,32 @@ def _classify_transient_failure(exc: BaseException) -> bool:
     if isinstance(exc, _TRANSIENT_EXCEPTION_TYPES):
         return True
 
-    # httpx exceptions: TimeoutException and ConnectError are not subclasses
-    # of the stdlib types above, so check by module/class name to avoid a
-    # hard dependency on httpx at import time.
+    # httpx exceptions are not subclasses of the stdlib types above, so check
+    # by module/class name to avoid a hard dependency on httpx at import time.
+    # Every httpx TransportError (timeouts, connect/read/write errors, "Server
+    # disconnected", proxy errors) is the network or the remote going away --
+    # e.g. the docling pod OOM-killed mid-request or its node reaped. Only the
+    # two that mean OUR request is malformed are structural.
     exc_module = type(exc).__module__ or ""
     if exc_module.startswith("httpx"):
-        exc_class = type(exc).__name__
-        if exc_class in (
-            "TimeoutException",
-            "ConnectTimeout",
-            "ReadTimeout",
-            "WriteTimeout",
-            "PoolTimeout",
-            "ConnectError",
-        ):
+        is_transport = any(
+            k.__name__ == "TransportError" and (k.__module__ or "").startswith("httpx")
+            for k in type(exc).__mro__
+        )
+        if is_transport and type(exc).__name__ not in ("UnsupportedProtocol", "LocalProtocolError"):
             return True
 
     # HTTP 5xx status code (server error) on any exception that carries one.
+    # QA fix 3: also 499 (client-closed-request) -- docling-service returns
+    # it when ITS OWN X-Deadline poll (every 2s) fires first; that is the
+    # service self-aborting an overrun call, not a parse/structural failure,
+    # so it must never be classified structural and walk into GATE_AGPL_
+    # STRUCTURAL (a silent AGPL fallback).
     status_code = getattr(exc, "status_code", None)
     if status_code is not None:
         try:
-            if int(status_code) >= 500:
+            code = int(status_code)
+            if code >= 500 or code == 499:
                 return True
         except (TypeError, ValueError):
             pass
@@ -424,7 +477,8 @@ def _classify_transient_failure(exc: BaseException) -> bool:
         resp_status = getattr(response, "status_code", None)
         if resp_status is not None:
             try:
-                if int(resp_status) >= 500:
+                resp_code = int(resp_status)
+                if resp_code >= 500 or resp_code == 499:
                     return True
             except (TypeError, ValueError):
                 pass
@@ -445,8 +499,11 @@ from .llm import (  # noqa: E402
 )
 from .recovery import RecoveryMixin  # noqa: E402
 from .remote import (  # noqa: E402
+    DoclingUnavailable,
     _converter_contract,
     _remote_pdf_to_markdown,
+    child_deadline_monotonic,
+    wait_for_docling_ready,
 )
 
 
@@ -891,8 +948,23 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 pre_classification.get("page_classes") if pre_classification else None
             )
 
+            if state.use_remote:
+                # Coldstart Q5 item 2: never send the first remote request into
+                # a backend that is down or still starting (a SYN blackhole).
+                _ready_t0 = time.monotonic()
+                try:
+                    await wait_for_docling_ready(deadline=child_deadline_monotonic())
+                except DoclingUnavailable as _unavailable:
+                    _docling_unavailable_outcome(
+                        _unavailable, waited_s=time.monotonic() - _ready_t0
+                    )
+                    chain = []  # legacy policy: straight to legacy page_index
+
             _transient_attempts: int = 0  # Zone-7: per-converter transient retry counter
-            for idx, entry in enumerate(chain):
+            _retry_budget_start = _retry_clock()
+            idx = 0
+            while idx < len(chain):
+                entry = chain[idx]
                 conv_name = entry.name
                 conv_fn = entry.fn
                 _conv_supports_ocr = entry.supports_ocr
@@ -998,6 +1070,26 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     state.used_converter = conv_name
                     state.supports_ocr = _conv_supports_ocr
                     break
+                except DoclingUnavailable as _docling_unavailable_exc:
+                    # HR4 fix: DoclingUnavailable (e.g. the remote transport
+                    # refusing to dial out because too little time is left
+                    # before the child deadline) must never reach the
+                    # transient/structural classification below -- a
+                    # STRUCTURAL verdict there can walk straight into an AGPL
+                    # converter (GATE_AGPL_STRUCTURAL) even though this is a
+                    # pure infra-unavailability signal, not a parse failure.
+                    # Route it directly to the same outcome the readiness-wait
+                    # DoclingUnavailable above gets: requeue (re-raise) or
+                    # legacy fallback, per DOCLING_UNAVAILABLE_POLICY -- never
+                    # the AGPL policy walk.
+                    md_content = None
+                    state.pic_results = []
+                    _docling_unavailable_outcome(
+                        _docling_unavailable_exc,
+                        waited_s=_retry_clock() - _retry_budget_start,
+                    )
+                    chain = []  # legacy policy: straight to legacy page_index
+                    break
                 except Exception as conv_exc:
                     md_content = None
                     state.pic_results = []
@@ -1047,7 +1139,34 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     # classified BEFORE the generic end-of-chain/WALK branches,
                     # or a structural failure into an AGPL converter would fall
                     # through to the bare `else` (its former, ungated behavior).
-                    if _is_transient and _transient_attempts < CONVERTER_TRANSIENT_RETRY_COUNT:
+                    _retry_elapsed_s = _retry_clock() - _retry_budget_start
+                    _next_backoff_s = _converter_retry_backoff(_transient_attempts + 1)
+                    _retry_budget_left_s = _CONVERTER_RETRY_TOTAL_BUDGET_S - _retry_elapsed_s
+                    # QA fix 2: a retry that cannot complete before the
+                    # converter child is killed is worse than no retry -- it
+                    # burns the backoff sleep and then dies as
+                    # converter_timeout instead of ever reaching
+                    # DoclingUnavailable/requeue. ``None`` deadline (no
+                    # converter-child boundary, e.g. under test) means
+                    # unbounded, so it never blocks a retry.
+                    # HR4 fix: also hold back _CHILD_DEADLINE_MARGIN_S, the
+                    # same margin _effective_read_timeout_s() reserves before
+                    # comparing against _MIN_USEFUL_CALL_S -- otherwise a
+                    # retry judged "has time" here can still find read_s
+                    # clamped below _MIN_USEFUL_CALL_S once it actually tries
+                    # to dial, and raise DoclingUnavailable instead of the
+                    # dial-able retry this check promised.
+                    _child_deadline_mono = child_deadline_monotonic()
+                    _has_time_for_retry = _child_deadline_mono is None or (
+                        _child_deadline_mono - _retry_clock() - _next_backoff_s
+                        >= _remote_mod._MIN_USEFUL_CALL_S + _remote_mod._CHILD_DEADLINE_MARGIN_S
+                    )
+                    if (
+                        _is_transient
+                        and _transient_attempts < CONVERTER_TRANSIENT_RETRY_COUNT
+                        and _next_backoff_s <= _retry_budget_left_s
+                        and _has_time_for_retry
+                    ):
                         _failure_policy = ConverterFailurePolicy.RETRY
                     elif _is_transient and next_is_agpl:
                         _failure_policy = ConverterFailurePolicy.BLOCK_AGPL
@@ -1086,17 +1205,32 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     )
 
                     if _failure_policy is ConverterFailurePolicy.RETRY:
-                        # Retry the same converter: bump attempt counter,
-                        # rewind idx so the for-loop re-enters this entry.
+                        # Retry the same converter: idx is left unchanged, so
+                        # the while-loop re-enters chain[idx] after a backoff.
                         _transient_attempts += 1
-                        logger.info(
-                            "Retrying '%s' for %s (attempt %d/%d).",
-                            conv_name,
-                            filename,
-                            _transient_attempts,
-                            CONVERTER_TRANSIENT_RETRY_COUNT,
+                        _backoff_s = min(
+                            _next_backoff_s
+                            + random.uniform(0.0, _next_backoff_s * _CONVERTER_RETRY_JITTER),
+                            _retry_budget_left_s,
                         )
+                        decision(
+                            event="converter_transient_retry",
+                            choice="retry_same_converter",
+                            reason=f"transient {type(conv_exc).__name__}, retrying same converter",
+                            attrs={
+                                "converter_name": conv_name,
+                                "attempt": _transient_attempts,
+                                "backoff_s": round(_backoff_s, 2),
+                                "elapsed_s": round(_retry_elapsed_s, 2),
+                                "budget_s": _CONVERTER_RETRY_TOTAL_BUDGET_S,
+                            },
+                        )
+                        await _retry_sleep(_backoff_s)
                         continue
+
+                    _remote_transient_exhausted = (
+                        state.use_remote and _conv_supports_ocr and _is_transient
+                    )
 
                     if _failure_policy is ConverterFailurePolicy.BLOCK_AGPL:
                         AGPL_FALLBACK_TOTAL.labels(reason="transient_blocked").inc()
@@ -1109,6 +1243,14 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                             filename,
                             chain[next_idx].name,
                         )
+                        if _remote_transient_exhausted:
+                            _docling_unavailable_outcome(
+                                DoclingUnavailable(
+                                    f"remote {conv_name} still failing after "
+                                    f"{_transient_attempts} retries"
+                                ),
+                                waited_s=_retry_elapsed_s,
+                            )
                         break
 
                     if _failure_policy is ConverterFailurePolicy.REJECT:
@@ -1118,6 +1260,14 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                             conv_name,
                             filename,
                         )
+                        if _remote_transient_exhausted:
+                            _docling_unavailable_outcome(
+                                DoclingUnavailable(
+                                    f"remote {conv_name} still failing after "
+                                    f"{_transient_attempts} retries"
+                                ),
+                                waited_s=_retry_elapsed_s,
+                            )
                         break
 
                     if _failure_policy is ConverterFailurePolicy.GATE_AGPL_STRUCTURAL:
@@ -1150,13 +1300,17 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                             chain[next_idx].name,
                         )
                         # Same as WALK: reset the per-converter transient
-                        # attempt counter before moving to the next entry.
+                        # attempt counter and budget before moving on.
                         _transient_attempts = 0
+                        _retry_budget_start = _retry_clock()
+                        idx += 1
                         continue
 
                     # ConverterFailurePolicy.WALK — walk to next converter.
-                    # Reset transient attempt counter for the next converter.
+                    # Reset transient attempt counter and budget for it.
                     _transient_attempts = 0
+                    _retry_budget_start = _retry_clock()
+                    idx += 1
                     if _is_transient:
                         logger.info(
                             "Transient failure on '%s'; next converter '%s' is "

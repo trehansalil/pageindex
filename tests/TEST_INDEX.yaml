@@ -33,6 +33,7 @@ mappings:
       - test_hr3_zdr_egress.py
       - test_recovery.py
       - test_worker.py
+      - test_docling_coldstart_worker.py   # cold start: retry, requeue, HR4
 
   client/images.py:
     coverage_threshold: 90
@@ -70,6 +71,7 @@ mappings:
       - test_config.py
       - test_converters.py
       - test_selective_tableformer.py
+      - test_docling_coldstart_worker.py   # readiness gate, split timeouts
 
   client/llm.py:
     coverage_threshold: 90
@@ -172,6 +174,7 @@ mappings:
       - test_worker.py            # primary
       - test_density_gate.py
       - test_storage.py
+      - test_docling_coldstart_worker.py   # DoclingUnavailable requeue, abort
 
   worker/lifecycle.py:
     coverage_threshold: 85
@@ -213,6 +216,7 @@ mappings:
     tests:
       - test_cache.py            # primary
       - test_storage.py
+      - test_docling_coldstart_worker.py   # docling:backend read (db 1)
 
   config.py:
     tests:
@@ -285,6 +289,8 @@ mappings:
       - test_recovery.py
       - test_density_gate.py
       - test_selective_tableformer.py
+      - test_docling_conv_cancel.py        # cancel_event, killable chunk child
+      - test_docling_service_cancel.py     # service-side cancel / pre-emption
 
   converters/preclassify.py:
     tests:
@@ -305,6 +311,7 @@ mappings:
       - test_obs_logging.py
       - test_bidi.py
       - test_recovery.py
+      - test_docling_conv_cancel.py        # killable direct route
 
   converters/formats.py:
     tests:
