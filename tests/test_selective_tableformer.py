@@ -8,7 +8,6 @@ the remote/service path.
 from __future__ import annotations
 
 import threading
-import types
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,65 +18,80 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
-def _fake_page(h_lines: int = 0, v_lines: int = 0):
-    """Create a fake fitz page with controllable horizontal/vertical lines."""
-    drawings = []
-    for i in range(h_lines):
-        p1 = types.SimpleNamespace(x=0.0, y=float(i * 10))
-        p2 = types.SimpleNamespace(x=100.0, y=float(i * 10))
-        drawings.append({"items": [("l", p1, p2)]})
-    for i in range(v_lines):
-        p1 = types.SimpleNamespace(x=float(i * 10), y=0.0)
-        p2 = types.SimpleNamespace(x=float(i * 10), y=100.0)
-        drawings.append({"items": [("l", p1, p2)]})
+def _ruled_pdf_page(h_lines: int, v_lines: int, *, rects: bool = False):
+    """A REAL fitz page (saved + reopened) with *h_lines* horizontal and
+    *v_lines* vertical rules, drawn as lines or as thin filled rects.
 
-    page = MagicMock()
-    page.get_cdrawings.return_value = drawings
-    return page
-
-
-def _fake_page_with_blocks(blocks: list[tuple[float, float, float, float]]):
-    """Create a fake fitz page with controllable text blocks.
-
-    Each block is (x0, y0, x1, y1) — the first four elements of a
-    ``page.get_text("blocks")`` tuple.
+    RFC-052 R2 AC2: the old fakes handed ``_page_has_ruled_table`` Point/Rect
+    objects, so the suite stayed green while every real ``get_cdrawings()``
+    item -- a plain tuple -- raised AttributeError in production.
     """
-    page = MagicMock()
-    page.get_cdrawings.return_value = []
-    full_blocks = [(x0, y0, x1, y1, "text", 0, 0) for x0, y0, x1, y1 in blocks]
-    page.get_text.return_value = full_blocks
-    return page
-
-
-# ---------------------------------------------------------------------------
-# _page_has_ruled_table
-# ---------------------------------------------------------------------------
+    fitz = pytest.importorskip("fitz")
+    doc = fitz.open()
+    page = doc.new_page()
+    for i in range(h_lines):
+        y = 100 + i * 20
+        if rects:
+            page.draw_rect(fitz.Rect(50, y, 300, y + 1), fill=(0, 0, 0))
+        else:
+            page.draw_line((50, y), (300, y))
+    for i in range(v_lines):
+        x = 50 + i * 100
+        if rects:
+            page.draw_rect(fitz.Rect(x, 100, x + 1, 160), fill=(0, 0, 0))
+        else:
+            page.draw_line((x, 100), (x, 160))
+    reopened = fitz.open("pdf", doc.tobytes())
+    return reopened, reopened[0]
 
 
 class TestPageHasRuledTable:
-    def test_returns_false_below_thresholds(self):
+    @pytest.mark.parametrize(
+        ("h_lines", "v_lines", "rects", "expected"),
+        [(2, 2, False, False), (3, 3, False, True), (3, 3, True, True)],
+        ids=["below-threshold", "line-items", "rect-items"],
+    )
+    def test_real_cdrawings_tuple_items(self, h_lines, v_lines, rects, expected):
         from pageindex_mcp.converters.preclassify import _page_has_ruled_table
 
-        page = _fake_page(h_lines=2, v_lines=2)
-        assert _page_has_ruled_table(page) is False
+        doc, page = _ruled_pdf_page(h_lines, v_lines, rects=rects)
+        with doc:
+            items = [it for d in page.get_cdrawings() for it in d["items"]]
+            # The fixture must exercise the tuple form, or it proves nothing.
+            assert items and all(isinstance(it[1], tuple) for it in items)
+            assert _page_has_ruled_table(page) is expected
 
-    def test_returns_true_at_thresholds(self):
-        from pageindex_mcp.converters.preclassify import _page_has_ruled_table
+    def test_one_failing_page_is_marked_positive_alone(self, tmp_path, monkeypatch, caplog):
+        """R2 AC2: a raise on one page marks only that page (safe default),
+        logs WARNING, and detection still classifies every other page."""
+        import logging
 
-        page = _fake_page(h_lines=3, v_lines=3)
-        assert _page_has_ruled_table(page) is True
+        fitz = pytest.importorskip("fitz")
+        from pageindex_mcp.converters import preclassify
 
-    def test_rect_items_count_as_lines(self):
-        from pageindex_mcp.converters.preclassify import _page_has_ruled_table
+        cfg = MagicMock()
+        cfg.allow_agpl_fallback = True
+        monkeypatch.setattr("pageindex_mcp.config.pipeline_config", cfg)
+        monkeypatch.setenv("TABLEFORMER_SKIP_ENABLED", "1")
+        doc = fitz.open()
+        for _ in range(7):
+            doc.new_page().insert_text((72, 72), "Plain prose on a page without any table. " * 3)
+        path = str(tmp_path / "seven.pdf")
+        doc.save(path)
+        doc.close()
 
-        page = MagicMock()
-        items = []
-        for _ in range(3):
-            items.append(("re", types.SimpleNamespace(width=100.0, height=2.0)))
-        for _ in range(3):
-            items.append(("re", types.SimpleNamespace(width=2.0, height=100.0)))
-        page.get_cdrawings.return_value = [{"items": items}]
-        assert _page_has_ruled_table(page) is True
+        real = preclassify._page_has_ruled_table
+
+        def flaky(page, **kw):
+            if page.number == 3:
+                raise AttributeError("'tuple' object has no attribute 'x'")
+            return real(page, **kw)
+
+        monkeypatch.setattr(preclassify, "_page_has_ruled_table", flaky)
+        caplog.set_level(logging.WARNING, logger=preclassify.logger.name)
+        pages, _method = preclassify.detect_pages_with_tables(path)
+        assert pages == {2, 3, 4}  # page 3 plus its +/-1 padding, nothing else
+        assert any("page 3" in r.getMessage() for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +121,13 @@ class TestDetectPagesWithTables:
         assert pages is None
         assert method is None
 
-    def test_returns_page_indices_with_tables(self, monkeypatch):
+    def test_real_pdf_page_classes_and_padding(self, tmp_path, monkeypatch):
+        """RFC-052 R2 AC3-5 on a REAL 12-page PDF: prose, a borderless column
+        table (p2), a ruled table (p6), a raster image (p9) and a blank page
+        (p11). Tables are padded +/-1; the blank page keeps TableFormer (text
+        signals cannot see a table there). find_tables() confirmation narrows
+        only the cheap positives."""
+        fitz = pytest.importorskip("fitz")
         from pageindex_mcp.converters import preclassify
 
         cfg = MagicMock()
@@ -115,34 +135,43 @@ class TestDetectPagesWithTables:
         monkeypatch.setattr("pageindex_mcp.config.pipeline_config", cfg)
         monkeypatch.setenv("TABLEFORMER_SKIP_ENABLED", "1")
 
-        page_no_table = _fake_page(h_lines=0, v_lines=0)
-        page_with_table = _fake_page(h_lines=5, v_lines=5)
+        prose = "The insured person must report every claim within thirty days. " * 12
+        doc = fitz.open()
+        for i in range(12):
+            page = doc.new_page()
+            if i == 11:
+                continue
+            if i == 2:
+                for r in range(5):
+                    for c, x in enumerate((72, 230, 390)):
+                        page.insert_text((x, 100 + r * 18), f"Region {r} value {c}")
+                continue
+            page.insert_textbox(fitz.Rect(72, 72, 540, 400), prose)
+            if i == 6:
+                for k in range(3):
+                    page.draw_line((72, 450 + k * 20), (400, 450 + k * 20))
+                    page.draw_line((72 + k * 150, 450), (72 + k * 150, 490))
+            if i == 9:
+                pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 40, 40))
+                pix.clear_with(128)
+                page.insert_image(fitz.Rect(72, 420, 272, 620), pixmap=pix)
+        path = str(tmp_path / "twelve.pdf")
+        doc.save(path)
+        doc.close()
 
-        fake_doc = MagicMock()
-        fake_doc.__len__ = MagicMock(return_value=3)
-        fake_doc.__getitem__ = MagicMock(
-            side_effect=lambda idx: page_with_table if idx == 1 else page_no_table
-        )
-        fake_doc.__enter__ = MagicMock(return_value=fake_doc)
-        fake_doc.__exit__ = MagicMock(return_value=False)
+        classes, method = preclassify.detect_page_classes(path)
+        assert [pc.flags for pc in classes] == [
+            "T--", "T-t", "T-t", "T-t", "T--", "T-t",
+            "T-t", "T-t", "T--", "Ti-", "T-t", "--t",
+        ]  # fmt: skip
+        assert method == "vector+column_alignment+no_text_layer"
+        pages, method2 = preclassify.detect_pages_with_tables(path)
+        assert pages == {1, 2, 3, 5, 6, 7, 10, 11}
+        assert method2 == method
 
-        fake_fitz = MagicMock()
-        fake_fitz.open.return_value = fake_doc
-
-        import builtins
-
-        original_import = builtins.__import__
-
-        def _inject_fitz(name, *args, **kwargs):
-            if name == "fitz":
-                return fake_fitz
-            return original_import(name, *args, **kwargs)
-
-        monkeypatch.setattr(builtins, "__import__", _inject_fitz)
-        pages, method = preclassify.detect_pages_with_tables("/fake/path.pdf")
-        # page 1 has a table; neighbor padding adds pages 0 and 2
-        assert pages == {0, 1, 2}
-        assert method == "vector"
+        confirmed, cmethod = preclassify.classify_pages(path, confirm_tables=True)
+        assert [i for i, pc in enumerate(confirmed) if pc.has_tables] == [10, 11]
+        assert cmethod == "no_text_layer+find_tables"
 
 
 # ---------------------------------------------------------------------------
@@ -187,17 +216,25 @@ class TestPreclassifyPageSetLogging:
             "detection_method": "vector",
             "pages_needing_ocr": "3",
             "pages_needing_ocr_count": 1,
+            "page_class_counts": None,
+            "pageclass_ocr_pages": None,
         }
 
         def boom(_path):
             raise RuntimeError("tuple items")
 
         caplog.clear()
-        monkeypatch.setattr(preclassify, "detect_pages_with_tables", boom)
-        assert preclassify._detect_tables_if_text_based("/x.pdf", "text_based") == (None, None)
+        monkeypatch.setattr(preclassify, "detect_page_classes", boom)
+        assert preclassify._detect_page_classes_safe("/x.pdf") == (None, None)
         assert [r.levelno for r in caplog.records] == [logging.WARNING]
+        monkeypatch.undo()
 
-        # pdf_inspector missing: pdf_type stays unknown, detection never runs.
+        # pdf_inspector missing: pdf_type stays unknown (WARNING), but page
+        # classification no longer depends on it (RFC-052 R2 AC1). A blank
+        # page has no text layer, so it keeps OCR and TableFormer.
+        cfg = MagicMock()
+        cfg.allow_agpl_fallback = True
+        monkeypatch.setattr("pageindex_mcp.config.pipeline_config", cfg)
         doc = fitz.open()
         doc.new_page()
         path = str(tmp_path / "one.pdf")
@@ -206,12 +243,15 @@ class TestPreclassifyPageSetLogging:
         caplog.clear()
         monkeypatch.setattr(docling_conv, "_pdf_inspector_available", False)
         result = preclassify.preclassify_document(path, "one.pdf")
-        assert result.pages_with_tables is None
+        assert result.pages_with_tables == {0}
+        assert [pc.flags for pc in result.page_classes] == ["--t"]
         warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
         assert any("pdf_inspector not installed" in m for m in warnings), warnings
         summaries = [r for r in caplog.records if r.getMessage().startswith("preclassify page")]
         assert summaries[0].levelno == logging.INFO
-        assert summaries[0].attrs["pages_with_tables"] is None
+        assert summaries[0].attrs["pages_with_tables"] == "0"
+        assert summaries[0].attrs["page_class_counts"] == {"--t": 1}
+        assert summaries[0].attrs["pageclass_ocr_pages"] == "0"
 
 
 class TestPreClassificationTablesSerialization:
@@ -315,8 +355,25 @@ class TestChunkedDoclingTableStructure:
 
 class TestPdfConvertRequestField:
     def test_default_is_none(self, docling_service_app):
-        req = docling_service_app.PdfConvertRequest(presigned_url="https://example.com/test.pdf")
+        """Both optional fields default to None, so an older worker's body
+        still validates; a missing or malformed page_classes means "no page
+        classes" (every model on), never a 422 (RFC-052 R2 AC6/AC7)."""
+        app = docling_service_app
+        req = app.PdfConvertRequest(presigned_url="https://example.com/test.pdf")
         assert req.pages_with_tables is None
+        assert req.page_classes is None
+        assert app._request_page_classes(req) is None
+
+        ok = app.PdfConvertRequest(
+            presigned_url="https://example.com/test.pdf",
+            page_classes=[[0, 1, "T--"], [2, 2, "T-t"]],
+        )
+        assert [pc.flags for pc in app._request_page_classes(ok)] == ["T--", "T--", "T-t"]
+
+        bad = app.PdfConvertRequest(
+            presigned_url="https://example.com/test.pdf", page_classes=[[5, 1, "T--"], 7]
+        )
+        assert app._request_page_classes(bad) is None
 
 
 # ---------------------------------------------------------------------------
@@ -376,14 +433,22 @@ class TestRemotePdfToMarkdownPayload:
 
         monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: FakeClient())
 
-        md, pics = asyncio.run(
+        ranges = [[0, 1, "T--"], [2, 2, "T-t"]]
+        md, _pics = asyncio.run(
             remote._remote_pdf_to_markdown(
                 "test-key",
                 pages_with_tables=[0, 2],
+                page_classes=ranges,
             )
         )
         assert captured_payload["pages_with_tables"] == [0, 2]
+        # RFC-052 R2 AC6: the run-length page classes travel verbatim.
+        assert captured_payload["page_classes"] == ranges
         assert md == "# test"
+
+        captured_payload.clear()
+        asyncio.run(remote._remote_pdf_to_markdown("test-key"))
+        assert captured_payload["page_classes"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -391,33 +456,35 @@ class TestRemotePdfToMarkdownPayload:
 # ---------------------------------------------------------------------------
 
 
+def _grid_lines(xs, rows: int, *, jitter: float = 0.0, stagger: float = 0.0):
+    """Text-line boxes starting at each x in *xs*, one per row; *stagger*
+    shifts each column's rows down so no row is shared across columns."""
+    return [
+        (x + r * jitter, 100.0 + r * 18 + c * stagger, x + 80.0, 110.0 + r * 18 + c * stagger)
+        for r in range(rows)
+        for c, x in enumerate(xs)
+    ]
+
+
 class TestPageHasColumnAlignment:
-    def test_returns_true_for_two_column_table(self):
+    @pytest.mark.parametrize(
+        ("lines", "expected"),
+        [
+            (_grid_lines((72, 230, 390), 5), True),
+            # 1-px drift per row stays inside the 12-px x bins.
+            (_grid_lines((96, 230, 384), 4, jitter=1.0), True),
+            # Two aligned x-positions -- the old loose test fired on this,
+            # which is indented prose, not a table (RFC-052 R2 AC3).
+            (_grid_lines((72, 100), 8), False),
+            # Three aligned columns whose lines never share a row.
+            (_grid_lines((72, 230, 390), 5, stagger=7.0), False),
+        ],
+        ids=["3x5-table", "quantized-drift", "two-columns", "too-few-rows"],
+    )
+    def test_strict_alignment(self, lines, expected):
         from pageindex_mcp.converters.preclassify import _page_has_column_alignment
 
-        blocks = []
-        for row in range(5):
-            blocks.append((100.0, float(row * 20), 200.0, float(row * 20 + 15)))
-            blocks.append((300.0, float(row * 20), 400.0, float(row * 20 + 15)))
-        page = _fake_page_with_blocks(blocks)
-        assert _page_has_column_alignment(page) is True
-
-    def test_returns_false_for_single_column_prose(self):
-        from pageindex_mcp.converters.preclassify import _page_has_column_alignment
-
-        blocks = [(50.0, float(row * 20), 500.0, float(row * 20 + 15)) for row in range(10)]
-        page = _fake_page_with_blocks(blocks)
-        assert _page_has_column_alignment(page) is False
-
-    def test_quantization_groups_nearby_x_coords(self):
-        from pageindex_mcp.converters.preclassify import _page_has_column_alignment
-
-        blocks = []
-        for row in range(4):
-            blocks.append((96.0 + row * 1, float(row * 20), 200.0, float(row * 20 + 15)))
-            blocks.append((288.0 + row * 1, float(row * 20), 400.0, float(row * 20 + 15)))
-        page = _fake_page_with_blocks(blocks)
-        assert _page_has_column_alignment(page, min_blocks_per_col=3) is True
+        assert _page_has_column_alignment(lines=lines) is expected
 
 
 class TestAddNeighborPadding:
@@ -430,111 +497,6 @@ class TestAddNeighborPadding:
         from pageindex_mcp.converters.preclassify import _add_neighbor_padding
 
         assert _add_neighbor_padding({0}, page_count=3) == {0, 1}
-
-
-class TestCascadeDetection:
-    def test_column_alignment_detects_borderless_table(self, monkeypatch):
-        from pageindex_mcp.converters import preclassify
-
-        cfg = MagicMock()
-        cfg.allow_agpl_fallback = True
-        monkeypatch.setattr("pageindex_mcp.config.pipeline_config", cfg)
-        monkeypatch.setenv("TABLEFORMER_SKIP_ENABLED", "1")
-
-        col_blocks = []
-        for row in range(5):
-            col_blocks.append((100.0, float(row * 20), 200.0, float(row * 20 + 15)))
-            col_blocks.append((300.0, float(row * 20), 400.0, float(row * 20 + 15)))
-
-        page_with_cols = MagicMock()
-        page_with_cols.get_cdrawings.return_value = []
-        page_with_cols.get_text.return_value = [
-            (x0, y0, x1, y1, "text", 0, 0) for x0, y0, x1, y1 in col_blocks
-        ]
-
-        page_empty = MagicMock()
-        page_empty.get_cdrawings.return_value = []
-        page_empty.get_text.return_value = []
-
-        fake_doc = MagicMock()
-        fake_doc.__len__ = MagicMock(return_value=3)
-        fake_doc.__getitem__ = MagicMock(
-            side_effect=lambda idx: page_with_cols if idx == 1 else page_empty
-        )
-        fake_doc.__enter__ = MagicMock(return_value=fake_doc)
-        fake_doc.__exit__ = MagicMock(return_value=False)
-
-        fake_fitz = MagicMock()
-        fake_fitz.open.return_value = fake_doc
-
-        import builtins
-
-        original_import = builtins.__import__
-
-        def _inject_fitz(name, *args, **kwargs):
-            if name == "fitz":
-                return fake_fitz
-            return original_import(name, *args, **kwargs)
-
-        monkeypatch.setattr(builtins, "__import__", _inject_fitz)
-        pages, method = preclassify.detect_pages_with_tables("/fake/path.pdf")
-        # page 1 detected via column alignment; padding adds 0 and 2
-        assert pages == {0, 1, 2}
-        assert method == "column_alignment"
-
-    def test_both_methods_fire(self, monkeypatch):
-        from pageindex_mcp.converters import preclassify
-
-        cfg = MagicMock()
-        cfg.allow_agpl_fallback = True
-        monkeypatch.setattr("pageindex_mcp.config.pipeline_config", cfg)
-        monkeypatch.setenv("TABLEFORMER_SKIP_ENABLED", "1")
-
-        page_ruled = _fake_page(h_lines=5, v_lines=5)
-        page_ruled.get_text.return_value = []
-
-        col_blocks = [(100.0, float(r * 20), 200.0, float(r * 20 + 15)) for r in range(5)]
-        col_blocks += [(300.0, float(r * 20), 400.0, float(r * 20 + 15)) for r in range(5)]
-        page_col = MagicMock()
-        page_col.get_cdrawings.return_value = []
-        page_col.get_text.return_value = [
-            (x0, y0, x1, y1, "text", 0, 0) for x0, y0, x1, y1 in col_blocks
-        ]
-
-        fake_doc = MagicMock()
-        fake_doc.__len__ = MagicMock(return_value=4)
-        fake_doc.__getitem__ = MagicMock(
-            side_effect=lambda idx: (
-                page_ruled
-                if idx == 0
-                else page_col
-                if idx == 2
-                else MagicMock(
-                    get_cdrawings=MagicMock(return_value=[]),
-                    get_text=MagicMock(return_value=[]),
-                )
-            )
-        )
-        fake_doc.__enter__ = MagicMock(return_value=fake_doc)
-        fake_doc.__exit__ = MagicMock(return_value=False)
-
-        fake_fitz = MagicMock()
-        fake_fitz.open.return_value = fake_doc
-
-        import builtins
-
-        original_import = builtins.__import__
-
-        def _inject_fitz(name, *args, **kwargs):
-            if name == "fitz":
-                return fake_fitz
-            return original_import(name, *args, **kwargs)
-
-        monkeypatch.setattr(builtins, "__import__", _inject_fitz)
-        pages, method = preclassify.detect_pages_with_tables("/fake/path.pdf")
-        assert 0 in pages
-        assert 2 in pages
-        assert method == "vector+column_alignment"
 
 
 class TestDetectionMethodSerialization:
@@ -550,3 +512,49 @@ class TestDetectionMethodSerialization:
 
         restored = PreClassification.from_dict(d)
         assert restored.detection_method == "vector+column_alignment"
+
+
+class TestPageClassWireFormat:
+    def test_run_length_roundtrip_needs_and_malformed_input(self, caplog):
+        """RFC-052 R2 AC6: page classes cross the handshake JSON as inclusive
+        run-length ranges; UD2 decides needs_ocr; anything that is not a
+        gap-free cover of [0, N) is rejected rather than half-applied."""
+        import json
+        import logging
+
+        from pageindex_mcp.converters.preclassify import (
+            PageClass,
+            PreClassification,
+            page_classes_from_ranges,
+            page_classes_to_ranges,
+        )
+
+        text_only = PageClass(True, False, False)
+        table = PageClass(True, False, True)
+        scanned = PageClass(False, True, False)
+        classes = [text_only] * 3 + [table] * 2 + [scanned] + [text_only]
+        ranges = [[0, 2, "T--"], [3, 4, "T-t"], [5, 5, "-i-"], [6, 6, "T--"]]
+        assert page_classes_to_ranges(classes) == ranges
+
+        # UD2: only a text-layer page with no images and no tables skips OCR.
+        assert [pc.needs_ocr for pc in (text_only, table, scanned)] == [False, True, True]
+        assert [pc.needs_tables for pc in (text_only, table, scanned)] == [False, True, False]
+
+        wire = json.loads(json.dumps(PreClassification(page_classes=classes).to_dict()))
+        assert wire["page_classes"] == ranges
+        assert PreClassification.from_dict(wire).page_classes == classes
+        assert PreClassification.from_dict({}).page_classes is None
+        assert "page_classes" not in PreClassification().to_dict()
+
+        for bad in (
+            [[1, 2, "T--"]],  # does not start at page 0
+            [[0, 1, "T--"], [3, 4, "T--"]],  # gap
+            [[0, 1, "T--"], [1, 2, "T--"]],  # overlap
+            [[0, 1, "Txx"]],  # unknown flag
+            [[0, 1]],  # wrong arity
+        ):
+            with pytest.raises(ValueError):
+                page_classes_from_ranges(bad)
+        caplog.set_level(logging.WARNING)
+        assert PreClassification.from_dict({"page_classes": [[1, 2, "T--"]]}).page_classes is None
+        assert any("malformed page_classes" in r.getMessage() for r in caplog.records)

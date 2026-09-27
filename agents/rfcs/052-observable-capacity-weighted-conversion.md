@@ -88,8 +88,9 @@ Defects:
 ### User decisions (2026-09-26)
 
 - **UD1. Backends.**
-  - **Remote:** exactly one active remote at a time: the **Mac if present, else docling-1**. They never run together; the existing `docling-node-controller` rule stays. Running both is deferred to a later horizontal-scaling experiment.
-  - **Local:** `docling-local` on portfolio is a **third, opportunistic** backend. It takes chunks **only when it has measured free memory** and otherwise gets nothing. No OOM risk is acceptable.
+  - **Remote:** exactly one active remote at a time: the **Mac if present, else docling-1**. The existing `docling-node-controller` rule stays.
+  - **Mac + docling-1 together** is delivered as a later phase (P5), not now.
+  - **No Docling on portfolio.** `docling-local` is dropped from this RFC (user decision, 2026-09-27). The only backends are the Mac, docling-1, or both together in P5.
 - **UD2. OCR by page.** A page that has a text layer, no images and no tables gets **no OCR**.
 - **UD3. Delivery.** One RFC delivered as stacked PRs. Branches share the prefix `ICR-97-rfc52-` with a distinct slug per phase (see [Implementation Plan](#implementation-plan)).
 - **UD4. TableFormer mode.** FAST vs ACCURATE is benchmarked in this RFC. The default changes only if quality holds.
@@ -97,7 +98,7 @@ Defects:
 ### Relationship to Prior RFCs
 
 - [[RFC-050]] R7 (selective table structure): this RFC **repairs** R7 (F1) and extends its per-chunk granularity into page-class chunking (R3).
-- [[RFC-050]] D1/D2 (offload-aware admission, `MAX_JOBS`): R5's local shards must hold the `pageindex:admission` reservation so the gate and the local backend don't double-book memory.
+- [[RFC-050]] D1/D2 (offload-aware admission, `MAX_JOBS`): unchanged. With no Docling on portfolio, no shard needs a `pageindex:admission` reservation.
 - [[RFC-027]] D7 (chunking loses the outline and re-levels headings at joins): every new join R3 and R5 add carries the same cost. It is measured in R4/R6.
 - [[RFC-046]] / HR5 (OCR attribution, garbling): R3's OCR skip must not remove the `force_full_page_ocr` escalation path (`client/recovery.py:453-483`).
 - [[RFC-051]] and the `docling-node-controller`: the controller keeps choosing the active remote. This RFC does not change that choice.
@@ -107,12 +108,13 @@ Defects:
 - **G1 (observability):** For one `job_id`, Grafana shows every log line across MCP server, worker, converter child, node controller, docling-1 and the Mac. This includes per-chunk page range, backend, table flag, OCR flag, duration and peak RSS.
 - **G2 (page-class correctness):** Every text-based PDF gets a working per-page classification: text layer, images, tables. TableFormer and OCR are enabled per chunk from it, so that a text-layer page with no image and no table runs neither (UD2).
 - **G3 (measured levers):** Measure seconds per page for OCR on/off (page-class) and TableFormer FAST vs ACCURATE on the pocketbook plus two contrast documents. Adopt a default only where the quality gates hold.
-- **G4 (capacity-weighted split):** One document's chunks are split between the active remote (Mac or docling-1) and `docling-local`, weighted by each backend's **live** free memory, effective CPU and measured speed. `docling-local` gets zero chunks whenever its safe budget is below one process. The algorithm is written for N backends so that later horizontal scaling needs configuration, not code.
-- **G5 (no OOM):** No step in this RFC can push portfolio below its reserved headroom. A local chunk is refused, never attempted, when the budget is insufficient.
+- **G4 (capacity-weighted split, phased):** Every backend reports its live capacity (P3). In P5, when the Mac and docling-1 are both up, one document's chunks are split between them, weighted by each backend's **live** free memory, effective CPU and measured speed. The algorithm is written for N backends so that later horizontal scaling needs configuration, not code.
+- **G5 (no OOM):** No Docling conversion runs on portfolio. Each backend clamps its process count by its own free memory (R5 AC2), so a busy backend refuses work rather than running out of memory.
 
 ## Non-Goals
 
-- **NG1:** Running the Mac and docling-1 concurrently. Deferred to a horizontal-scaling experiment (UD1).
+- **NG1:** Running the Mac and docling-1 concurrently **before P5**. Until P5 ships, only one remote is active (UD1).
+- **NG7:** Docling on portfolio (`docling-local`). Dropped 2026-09-27. Portfolio's 4 cores and about 2 GB free memory are left to the cluster; the worker's R7 table capture is the only extraction work there.
 - **NG2:** Resizing portfolio or adding nodes. The split must be correct at today's size and pick up capacity automatically later.
 - **NG3:** Replacing promtail with Alloy in-cluster, or changing Loki storage or retention. Promtail 3.0 stays. The Mac runs no log agent; docling-service pushes its own logs to Loki (D2).
 - **NG4:** Batch or multi-document throughput and KEDA changes. KEDA stays paused.
@@ -124,7 +126,7 @@ Defects:
 | Term | Definition |
 |---|---|
 | Active remote | The single off-portfolio Docling backend the node controller routes `docling-active` to: the Mac, else docling-1. |
-| docling-local | `docling-service-local` Deployment pinned to portfolio (today replicas 0, limits 2 CPU / 3584 Mi). |
+| docling-local | *Dropped (NG7).* `docling-service-local` Deployment on portfolio, replicas 0. Not a backend in this RFC. |
 | Backend | Any docling-service instance that reports `/capacity`. |
 | Page class | Per-page tuple `(has_text_layer, has_images, has_tables)` from R2. |
 | Shard | A contiguous page range sent to one backend in one request. The backend may sub-chunk it internally (`plan_docling`). |
@@ -210,9 +212,13 @@ Defects:
 4. FAST becomes the default only if the changed-cell ratio is ≤ 2%, no verdict gets worse, and garble does not increase. Otherwise it stays opt-in.
 5. Results SHALL be written to `audit/RFC052_CONVERSION_BENCH_<date>.md`.
 
-### Requirement 5: Capacity reporting and a capacity-weighted, OOM-safe split
+### Requirement 5: Capacity reporting (P3) and a Mac + docling-1 split (P5)
 
 **User story:** As the pipeline, I want to give each backend as much of one document as it can safely convert, and never more.
+
+**Phasing (2026-09-27):**
+- **P3:** AC1–AC3, AC5 and AC8. Capacity reporting, the free-memory clamp and the page-range API, all used by the single active remote.
+- **P5:** AC4, AC6, AC7 and AC10, plus R6. The split across the Mac and docling-1 running together.
 
 #### Acceptance Criteria
 
@@ -225,28 +231,22 @@ Defects:
    - `build_sha`.
 2. `available_memory_bytes()` SHALL keep its current meaning (total, for plan sizing). The planner SHALL additionally clamp its worker count by `safe_procs` computed from **free** memory.
 3. `PdfConvertRequest` SHALL accept an optional `page_start` / `page_end`. The service slices with fitz and rebases pictures and page classes. Omitting the range keeps today's whole-document behaviour.
-4. The coordinator SHALL live in the worker's converter child (next to `_remote_pdf_to_markdown`). It SHALL query `/capacity` on the **named** Services:
-   - the active remote, resolved from `docling-active`'s current endpoint;
-   - `docling-service-local`.
+4. The coordinator SHALL live in the worker's converter child (next to `_remote_pdf_to_markdown`). It SHALL query `/capacity` on the **named** Services of every backend that is up: `docling-service-mac` and docling-1's `docling-service`. The node controller's backend choice is read from a ConfigMap.
 
    It SHALL compute `rate_b = safe_procs_b / spp_b` and give each backend a contiguous initial allocation in proportion to its rate, aligned to R3 chunk boundaries. The remainder goes on a shared tail queue that backends pull from as their slots free (tail stealing).
-5. **OOM safety for docling-local:**
-   - (a) A zero-chunk allocation is the normal outcome when `safe_procs < 1`.
-   - (b) `/capacity` is re-read before **every** local shard; a failing check returns the shard to the queue for the remote.
-   - (c) A local shard SHALL hold a `pageindex:admission` reservation for its planned peak for its whole lifetime.
-   - (d) The docling-local pod's memory limit SHALL equal its planned peak, so an overrun kills the pod, not the host.
-   - (e) `PORTFOLIO_RESERVE_BYTES` (default 1.5 GiB) of host MemAvailable is never budgeted.
+5. **No Docling on portfolio (NG7):**
+   - The coordinator SHALL NOT dispatch to any backend scheduled on portfolio.
+   - The `docling-service-local` Deployment and the `docling-node.sh local on` path SHALL be removed in the infra companion PR.
+   - A backend whose `safe_procs < 1` gets zero chunks.
 6. **Failure handling:**
    - A failed or timed-out shard SHALL be retried once, on the other backend where one exists. Only then does the whole conversion fail.
    - All shards share the single `DOCLING_SERVICE_TIMEOUT_S` deadline.
    - A shard whose backend reports `busy_slots == max_slots` SHALL NOT be queued behind it.
 7. **HR3:** a backend is eligible for a document only if its routing policy allows it.
    - The Mac is **never** eligible when `PII_CORPUS=true`.
-   - In-cluster backends (docling-1, docling-local) SHALL be eligible for PII documents, replacing today's blanket block at `client/remote.py:126-131`.
+   - docling-1 (in-cluster) SHALL be eligible for PII documents, replacing today's blanket block at `client/remote.py:126-131`.
 8. **Build skew:** a backend whose `build_sha` differs from the coordinator's expected SHA SHALL be excluded, with a WARNING.
-9. `docling-local` SHALL be kept at **replicas 1 only when idle RSS ≤ 400 MiB**, measured in Phase 3. Otherwise it stays at replicas 0, and the coordinator treats it as absent.
-
-   `docling-node.sh local on`'s 16 GB guard SHALL be replaced by the `/capacity` check.
+9. *Removed 2026-09-27 (docling-local dropped, NG7).*
 10. Kill switch: `DOCLING_SPLIT_ENABLED=0` (default for the first deploy) sends the whole document to `docling-active`, as today.
 
 ### Requirement 6: Split quality parity
@@ -258,6 +258,60 @@ Defects:
 1. With the split on, the pocketbook SHALL produce the same verdict as with it off.
 2. The node count SHALL stay within ±3%, and heading-level changes SHALL be limited to shard joins, each counted and logged.
 3. `validate_tree()` still runs before `save_doc` (HR5). A split never bypasses it.
+
+### Requirement 7: Parallel table capture on portfolio, persisted, never discarded (proposed 2026-09-27, P4)
+
+**User story:** As the owner of the corpus, I want every table PyMuPDF finds to be kept as searchable data, found using the cores the worker actually has, without risking an OOM.
+
+Measured on 2026-09-27:
+- `find_tables()` costs 0.5–0.84 s/page and peaks at about 87 MiB per process.
+- The worker pod is limited to 2 CPU / 1536 Mi and was using 273 Mi.
+- Portfolio has 4 cores (load average 4–5) and about 2 GB available.
+- On pocketbook pages 101–130 the default `lines` strategy found only the ruled header box (6×2, top 7% of the page). The unruled indicator tables were missed.
+
+#### Acceptance Criteria
+
+1. `find_tables()` SHALL run in a process pool, not threads: PyMuPDF documents are not thread-safe, and the work holds the GIL. Each process SHALL open the PDF itself and take a contiguous page range.
+2. Pool size SHALL be `min(cgroup CPU quota, floor((cgroup free − TABLES_RESERVE_BYTES) / TABLES_PROC_BYTES), ceil(pages / TABLES_MIN_PAGES_PER_PROC))`. The size is re-computed per document and is ≥ 1.
+   - `TABLES_PROC_BYTES` defaults to 256 MiB (about 3× the measured peak).
+   - A process that exceeds it is killed. Its pages are marked `capture_failed`, and the document still converts.
+3. Capture SHALL run **concurrently with remote conversion**, not ahead of it. Only the veto set (cheap-signal positives, P1) blocks dispatch, and only when R9's bypasses are on. The job's wall time SHALL NOT grow by more than 5% on the pocketbook.
+4. Every table SHALL be persisted to `processed/<doc_id>.tables.json` with these fields:
+   - `table_id`, `page`, `bbox`, `rows`, `cols`;
+   - `header`, `cells` (text per cell), `markdown`;
+   - `source` (`pymupdf_find_tables` or `docling_tableformer`) and `strategy`;
+   - `coverage`, the share of the page's text characters inside the table;
+   - `node_id`, the tree node whose page range contains it;
+   - a nearby caption, if any, and a generated `description` (R8).
+5. Where TableFormer also produced a table on the same page, **both** SHALL be kept, linked by overlapping bbox. Neither SHALL be dropped.
+6. **HR2:** `processed/*.tables.json` SHALL join `_ERASURE_MANIFEST` and be purged by `delete_doc`. No dedicated erasure test (user decision, 2026-09-27).
+7. **HR4:** the tables are the output of AGPL PyMuPDF. **User decision, 2026-09-27:** they are served through search and the MCP surface now; the legal review is deferred and tracked as an open item, not a gate.
+8. Persisted table cells SHALL be usable directly by retrieval answers (RAG), so a table question is answered from stored cells without re-extracting the page at query time.
+
+### Requirement 8: Tables are part of search (proposed 2026-09-27, P4)
+
+**User story:** As an MCP client, I want a question answered by a table to find that table the same way a question answered by a section finds the tree node.
+
+#### Acceptance Criteria
+
+1. Each table SHALL appear in the slim search tree as a child of its `node_id`, with type `table`, a title (caption or header row) and a `description` of no more than about 30 tokens.
+2. Descriptions SHALL be generated like node summaries, through the same LLM tier and routing as the tree. **HR3:** PII corpora go only through the ZDR tier.
+3. The table nodes SHALL add no more than `TABLES_SEARCH_TOKEN_BUDGET` tokens (default 8k) to the search prompt. Over budget, low-coverage tables are dropped from the *search view* only, never from storage.
+4. The page-content tool SHALL return a table's `markdown` when a search selects it.
+5. A table-backed question set (at least 10 pocketbook questions) SHALL not answer worse than without table nodes.
+
+### Requirement 9: Signal-driven TableFormer and OCR bypass (proposed 2026-09-27, P4)
+
+**User story:** As the pipeline, I want the tables and text I have already extracted to switch off TableFormer, OCR or both on pages where they add nothing.
+
+#### Acceptance Criteria
+
+1. **Skip OCR** on a page that has a clean text layer (R2 AC5), no raster image ≥ `PAGECLASS_IMAGE_AREA_MIN`, and, if it has tables, clean non-empty `find_tables()` cell text. This replaces D5's rule that table pages keep OCR.
+2. **Skip TableFormer** on a page with zero `find_tables()` tables and no ruled or column-alignment signal. This is the existing R3 path.
+3. **Replace TableFormer with the `find_tables()` grid** on a page only when the table is ruled (`lines` strategy), its `coverage` is ≥ `TABLES_TRUST_COVERAGE` and the page has no unruled column-alignment region outside it. This bypass is off by default (`TABLES_TRUST_BYPASS=0`). It is switched on only if R4's benchmark shows a changed-cell ratio ≤ 2% against TableFormer on the pages it would cover.
+4. **Skip both** OCR and TableFormer when AC1 and AC2, or AC1 and AC3, hold for a whole R3 chunk.
+5. Each bypass SHALL be logged per chunk in the `docling_chunk` record (`bypass: ocr|tableformer|both`), and each SHALL have its own kill switch.
+6. `force_full_page_ocr` (HR5 recovery) SHALL override every bypass.
 
 ## Decision Summary
 
@@ -272,9 +326,12 @@ Defects:
 | D7 | TableFormer mode becomes config; default changes only on R4 evidence | Speed vs table fidelity is a quality decision (UD4). |
 | D8 | Coordinator in the worker's converter child | It already has presigning, the HR3 gate and the retry policy; a Mac coordinator would create a single point of failure and a callback path into the cluster. |
 | D9 | Proportional initial split plus tail stealing | A static split can't absorb a slow shard; pure stealing of small chunks wastes the Mac's 14-process parallelism. |
-| D10 | docling-local strictly opportunistic, fails closed | UD1 and G5: zero chunks is the normal outcome on today's portfolio. |
-| D11 | One remote at a time; no Mac + docling-1 concurrency | UD1; the N-backend algorithm makes it a configuration change later. |
+| D10 | No Docling on portfolio; `docling-local` dropped (2026-09-27) | Portfolio has 4 cores and about 2 GB free, and would get zero chunks almost always; the gating it needed was the RFC's main OOM risk. |
+| D11 | One remote at a time until P5; Mac + docling-1 together in P5 | UD1; the N-backend algorithm makes P5 a configuration change on top of P3. |
 | D12 | Stacked PRs `ICR-97-rfc52-<slug>` | UD3; matches RFC-050/051. |
+| D13 (proposed) | Keep every `find_tables()` result as searchable data; run it in a memory-sized process pool in the worker, overlapped with remote conversion | User, 2026-09-27: extracted table data must not be discarded. Processes because PyMuPDF is not thread-safe; overlap because conversion (about 800 s) dwarfs capture (about 125 s with 2 processes). |
+| D14 (proposed) | Tables become child nodes of the search tree, with short descriptions and a token budget | Reuses the one-call tree search and adds no second index; the budget protects search latency (about 96k tokens today). |
+| D15 (proposed) | OCR and TableFormer bypass from `find_tables()` signals; grid replacement off until benchmarked | TableFormer is about 93% of conversion time (28.7 of 28.9 s/page, 1 thread); the `lines` strategy missed the unruled pocketbook tables, so replacing TableFormer needs evidence. |
 
 ## Implementation Plan
 
@@ -285,7 +342,9 @@ Defects:
 | P0 | `ICR-97-rfc52-log-correlation` | R1: promtail fixes, headers, JSON logging in docling-service, chunk logs, dashboard, docling-1 toleration; then `ICR-97-rfc52-log-shipping-automation`: Loki Tailscale gateway, infra auto-apply, Mac in-process push and auto-updater | — |
 | P1 | `ICR-97-rfc52-page-class-detection` | R2: detector repair, `find_tables()`, image and text-layer signals, census script, images get the extra | P0 (to observe it) |
 | P2 | `ICR-97-rfc52-page-class-chunking` | R3 plus R4: run-length chunking, OCR by page class, TableFormer mode config, benchmark | P1 |
-| P3 | `ICR-97-rfc52-capacity-split` | R5 plus R6: `/capacity`, page-range API, coordinator, docling-local gating, parity check | P2 |
+| P3 | `ICR-97-rfc52-capacity-split` | R5 AC1–3, 5, 8: `/capacity`, free-memory clamp, page-range API, build-skew check, docling-local removal (infra) | P2 |
+| P4 (proposed) | `ICR-97-rfc52-table-capture` | R7 + R8 + R9: parallel table capture, `tables.json` persistence and erasure, table nodes in search, signal-driven bypasses | P2 (benchmark harness), P1 |
+| P5 (later) | `ICR-97-rfc52-mac-docling1-split` | R5 AC4, 6, 7, 10 plus R6: Mac + docling-1 together, coordinator, tail stealing, retry and re-route, HR3 eligibility, parity check | P3 |
 
 P0 ships first because every later acceptance criterion is verified through its logs. P3 ships with `DOCLING_SPLIT_ENABLED=0` and is switched on only after the R6 parity run.
 
@@ -311,13 +370,13 @@ P0 ships first because every later acceptance criterion is verified through its 
 - **Live:**
   - the R4 benchmark;
   - the R6 parity run on the pocketbook;
-  - a forced-low-memory run showing docling-local is refused (a `docling_chunk` backend histogram with 0 local shards, and no OOM events in `kubectl get events`).
+  - a forced-low-memory run on the active remote showing the planner clamps its process count (no OOM events in `kubectl get events`), and a `docling_chunk` backend histogram with no portfolio backend.
 
 ## Risks
 
 | Risk | Mitigation |
 |---|---|
-| docling-local steals memory from cluster pods (2026-09-17 class) | R5 AC5 (a)-(e); zero-chunk default; pod limit = planned peak; kill switch |
+| Conversion steals memory from cluster pods (2026-09-17 class) | Removed at source: no Docling on portfolio (NG7, D10). R7 table capture runs in the worker's own cgroup with a per-process memory cap. |
 | More joins cause heading re-levelling and outline loss (RFC-027 D7) | R6 parity bar; shard boundaries align to page-class chunk boundaries (no extra joins beyond R3) |
 | Page-class OCR skip hides a corrupt text layer | Garble screen in the text-layer test (R2 AC5); HR5 `force_full_page_ocr` escalation unchanged (R3 AC4) |
 | FAST TableFormer degrades tables silently | R4 AC4 gate; default unchanged without evidence |
@@ -328,7 +387,7 @@ P0 ships first because every later acceptance criterion is verified through its 
 
 ## Consequences
 
-- One document can use every backend that reports safe capacity. Today that means effectively the active remote alone, because docling-local will rarely qualify. Its value is the mechanism, which later nodes join by configuration.
+- Until P5, one document goes to one active remote (the Mac, else docling-1). From P5, it can use the Mac and docling-1 together, and later nodes join by configuration.
 - The measurable speed-up for the showcase is expected to come from P2 (OCR by page class, possibly FAST TableFormer), not from P3, on today's hardware. This RFC states that openly rather than promise a split speed-up.
 - Every conversion becomes explainable per chunk in Grafana.
 

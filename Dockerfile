@@ -15,12 +15,12 @@ ENV UV_HTTP_TIMEOUT=600
 
 # Install dependencies first (cache-friendly layer ordering)
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN uv sync --frozen --no-dev --extra pdf-inspection --no-install-project
 
 # Copy source and install the project itself
 COPY mcp_server.py gunicorn.conf.py ./
 COPY src/ ./src/
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --extra pdf-inspection
 
 # Pre-download docling model artifacts (layout + TableFormer — the only models the
 # PDF pipeline loads) INTO THE IMAGE so runtime workers never fetch weights over the

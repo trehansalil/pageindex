@@ -37,13 +37,13 @@ governs:
  POST /upload ──► MCP server ──► arq worker ──► converter child                   │
                       │                          │  preclassify (R2)             │
                       │                          │  chunker (R3)                 │
+                      │                          │  table capture (R7, pool) │
                       │                          │  coordinator (R5) ──┐         │
-                      │                          │                     │         │
-                      │          docling-service-local (opportunistic) ◄┤ /capacity│
-                      │          promtail DS ──► Loki ──► Grafana      │ /convert │
+                      │          promtail DS ──► Loki ──► Grafana      │ /capacity│
+                      │          (no Docling on portfolio — NG7)       │ /convert │
                       └────────────────────────────────────────────────┼──────────┘
                                                                         │
-                         active remote (exactly one, chosen by node controller)
+                         until P5: exactly one active remote (node controller); P5: both
                          ├─ Mac (Tailscale, public presigned URL)  — in-process push ─► loki-tailscale-gateway (100.120.146.20:3100, push-only) ─► Loki
                          └─ docling-1 (cpx62, private net)         — promtail DS (tolerates taint)
 ```
@@ -171,10 +171,12 @@ chunks = [c for r in runs for c in split(r, max=plan.pages_per_chunk)]
 
 - `safe_procs = min(floor(effective_cpus), floor((free_mem − reserve) / per_proc_peak))`, where `per_proc_peak = WORKER_BASE_BYTES + chunk_pages·PER_PAGE_BYTES`.
 - **Linux `free_mem`:** `min(cgroup memory.max − memory.current, /proc/meminfo MemAvailable)`. The host MemAvailable is visible in the pod through `/proc/meminfo`. Because the node is 158% overcommitted, the cgroup limit alone is not enough.
-- **docling-local reserve:** `max(reserve, PORTFOLIO_RESERVE_BYTES=1.5 GiB)`.
-- **`spp_ewma` with no samples:** a configured prior per backend (`DOCLING_SPP_PRIOR`: Mac 19, cpx62 40, portfolio 60).
+- **`spp_ewma` with no samples:** a configured prior per backend (`DOCLING_SPP_PRIOR`: Mac 19, cpx62 40).
+- **P3 use (one active remote):** the service's own planner clamps its process count by `safe_procs`. The worker logs the `/capacity` snapshot per job. Allocation below is P5 only.
 
-### Allocation
+### Allocation (P5: Mac + docling-1 together)
+
+Backends are `docling-service-mac` and docling-1's `docling-service`. Nothing scheduled on portfolio is ever a candidate (NG7).
 
 ```
 eligible = [b for b in backends if hr3_ok(b, doc) and b.build_sha == expected and b.safe_procs >= 1]
@@ -190,17 +192,9 @@ tail     = remaining chunks → shared queue; each backend pulls one shard of
 - **Placement:** the fastest backend gets the front of the document and the others take contiguous blocks after it. This keeps joins at run boundaries.
 - **Shard size:** at most `safe_procs × chunk_pages` pages, so a backend's internal plan fills its processes in one wave.
 
-**Local gating (RFC R5 AC5),** before each local shard:
-1. Re-read `/capacity`; `safe_procs < 1` puts the shard back in the queue.
-2. `admission.reserve(bytes=per_proc_peak × procs, ttl=deadline)`; failure puts the shard back in the queue.
-3. Dispatch.
-4. Release the reservation in `finally`.
+**Per-shard check:** before each shard, re-read that backend's `/capacity`; `safe_procs < 1` or `busy_slots == max_slots` puts the shard back in the queue. A backend that refuses connections is marked absent (cached 60 s).
 
-**docling-local pod:**
-- `resources.limits.memory` = the planned peak for `safe_procs_max=1` (≈ 1.9 GiB with the parent);
-- `requests.memory` = idle RSS;
-- low `priorityClassName`;
-- replicas 1 only if the measured idle RSS is ≤ 400 MiB. Otherwise replicas 0, and the coordinator gets a connection-refused and marks it absent (cached 60 s).
+**docling-local:** dropped (RFC NG7, D10). The infra companion to P3 deletes the `docling-service-local` Deployment and the `docling-node.sh local on` path.
 
 ### Failure, deadline and merge
 
@@ -214,6 +208,6 @@ tail     = remaining chunks → shared queue; each backend pulls one shard of
 
 - **P1 (coverage):** the shards' page ranges partition `[0, N)`.
 - **P2 (need monotonicity):** no page is converted with fewer models than its class needs.
-- **P3 (OOM safety):** docling-local never starts a shard when `MemAvailable − planned_peak < PORTFOLIO_RESERVE_BYTES`.
+- **P3 (OOM safety):** no Docling conversion is dispatched to portfolio, and no backend starts more processes than its free-memory `safe_procs`.
 - **P4 (HR3):** no PII document reaches a non-cluster backend.
 - **P5 (fallback):** with split disabled or no eligible backend, behaviour is byte-identical to today's `docling-active` path.

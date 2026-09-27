@@ -886,6 +886,10 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             _pages_with_tables: list[int] | None = None
             if pre_classification and "pages_with_tables" in pre_classification:
                 _pages_with_tables = pre_classification["pages_with_tables"]
+            # RFC-052 R2 AC6: run-length page classes, forwarded as-is.
+            _page_classes: list[list] | None = (
+                pre_classification.get("page_classes") if pre_classification else None
+            )
 
             _transient_attempts: int = 0  # Zone-7: per-converter transient retry counter
             for idx, entry in enumerate(chain):
@@ -916,6 +920,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                                 expected_script=expected_script,
                                 pages_with_tables=_pages_with_tables,
                                 page_count=state.pdf_page_count,
+                                page_classes=_page_classes,
                             )
                         else:
                             if state.pre_garbled:
@@ -929,6 +934,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                                 expected_script=expected_script,
                                 pages_with_tables=_pages_with_tables,
                                 page_count=state.pdf_page_count,
+                                page_classes=_page_classes,
                             )
                     elif force_full_page and _conv_supports_ocr:
                         decision(
