@@ -297,6 +297,10 @@ mappings:
       - test_script.py
       - test_selective_tableformer.py
 
+  converters/page_class_chunker.py:
+    tests:
+      - test_selective_tableformer.py   # primary: chunker properties P1/P2
+
   converters/docling_resources.py:
     tests:
       - test_converters.py
@@ -311,6 +315,7 @@ mappings:
       - test_obs_logging.py
       - test_bidi.py
       - test_recovery.py
+      - test_selective_tableformer.py   # page-class switches, direct route
       - test_docling_conv_cancel.py        # killable direct route
 
   converters/formats.py:
