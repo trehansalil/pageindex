@@ -29,7 +29,7 @@ from typing import Annotated, Literal
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from pageindex_mcp.converters.docling_conv import DoclingCancelled
 from pageindex_mcp.obs.context import bind_log_context, current_context
@@ -91,7 +91,34 @@ BLOCK_PRIVATE_URLS = os.environ.get("DOCLING_BLOCK_PRIVATE_URLS", "") == "1"
 # workers call in parallel; extra requests queue here instead of OOM-killing
 # the pod.
 MAX_CONCURRENT = max(1, int(os.environ.get("DOCLING_MAX_CONCURRENT", "1")))
-_convert_slots = asyncio.Semaphore(MAX_CONCURRENT)
+
+
+class _CountingSemaphore(asyncio.Semaphore):
+    """``asyncio.Semaphore`` that also exposes how many holders currently
+    hold it, via an explicit counter rather than the private ``_value``
+    attribute (review finding 5). ``held`` is incremented only after a
+    successful ``acquire()`` and decremented on every ``release()`` -- which
+    every caller here reaches through a ``finally`` (explicit acquire/release
+    in ``convert_pdf``, ``async with`` in ``convert_image``, and this same
+    instance directly in tests), following the ``_in_flight`` pattern:
+    touched only on the event loop thread, so a plain int is safe.
+    """
+
+    def __init__(self, value: int = 1) -> None:
+        super().__init__(value)
+        self.held = 0
+
+    async def acquire(self) -> bool:
+        result = await super().acquire()
+        self.held += 1
+        return result
+
+    def release(self) -> None:
+        self.held -= 1
+        super().release()
+
+
+_convert_slots = _CountingSemaphore(MAX_CONCURRENT)
 # A slot holder whose client has gone is cancelled by the next request that
 # finds every slot taken, once it has held its slot this long. Backstop for a
 # disconnect the poller below missed (Tailscale / kube-proxy can hide one).
@@ -99,17 +126,19 @@ ORPHAN_GRACE_S = float(os.environ.get("DOCLING_ORPHAN_GRACE_S", "30"))
 #: How often a /convert/pdf request checks its client and its X-Deadline.
 CLIENT_POLL_S = 2.0
 
-# Sized from this container's cgroup limits, not from env: the node type
-# varies with what Hetzner has in stock, and the pod's limits follow the node
-# (docling-node.sh up). The plan assumes the one-at-a-time admission above.
-# A single-pass PDF runs in this process on every CPU; set
-# before torch is first imported, which reads OMP_NUM_THREADS once.
+import capacity  # noqa: E402  (services/docling-service/capacity.py)
+
 from pageindex_mcp.converters.docling_resources import (  # noqa: E402
     available_cpus,
     available_memory_bytes,
     plan_docling,
 )
 
+# Sized from this container's cgroup limits, not from env: the node type
+# varies with what Hetzner has in stock, and the pod's limits follow the node
+# (docling-node.sh up). The plan assumes the one-at-a-time admission above.
+# A single-pass PDF runs in this process on every CPU; set
+# before torch is first imported, which reads OMP_NUM_THREADS once.
 CPUS = available_cpus()
 os.environ["DOCLING_NUM_THREADS"] = str(CPUS)
 os.environ["OMP_NUM_THREADS"] = str(CPUS)
@@ -164,6 +193,23 @@ class PdfConvertRequest(BaseModel):
     tableformer_mode: Literal["accurate", "fast"] | None = None
     pageclass_chunking: bool | None = None
     do_ocr_policy: Literal["page_class", "force_on", "force_off"] | None = None
+    # RFC-052 R5 AC3: convert only pages page_start..page_end -- 0-based and
+    # INCLUSIVE, the same convention as the docling_chunk record's
+    # page_start/page_end and the page_classes ranges. Both or neither;
+    # neither is today's whole-document path. page_classes and
+    # pages_with_tables stay document-level; the service rebases them to the
+    # slice. The response's picture pages are the slice's own: the caller
+    # adds page_start when it merges shards.
+    page_start: int | None = Field(default=None, ge=0)
+    page_end: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _page_range_is_whole(self):
+        if (self.page_start is None) != (self.page_end is None):
+            raise ValueError("page_start and page_end go together")
+        if self.page_start is not None and self.page_end < self.page_start:  # type: ignore[operator]
+            raise ValueError("page_end must be >= page_start")
+        return self
 
 
 class ImageConvertRequest(BaseModel):
@@ -321,9 +367,11 @@ async def lifespan(app: FastAPI):
     # double-memory problem for the PDF path's benefit alone.
     warmup_stop = threading.Event()
     warmup_task = asyncio.create_task(_run_warmup(warmup_stop))
+    spp_filter = capacity.install_spp_filter(_spp_tracker)
     try:
         yield
     finally:
+        capacity.uninstall_spp_filter(spp_filter)
         warmup_stop.set()
         warmup_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -456,6 +504,47 @@ async def _download_to_temp(url: str, suffix: str = ".pdf") -> str:
         tmp.close()
         os.unlink(tmp.name)
         raise
+
+
+class _PageRangeError(ValueError):
+    """page_start/page_end fall outside the downloaded PDF (422)."""
+
+
+def _slice_pdf(path: str, page_start: int, page_end: int) -> str:
+    """Pages ``page_start..page_end`` (0-based, inclusive) of ``path`` as a
+    new temporary PDF -- the chunked route's own fitz splitter."""
+    import fitz  # PyMuPDF; already this service's page counter and splitter
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)  # noqa: SIM115
+    tmp.close()
+    try:
+        with fitz.open(path) as src, fitz.open() as writer:
+            writer.insert_pdf(src, from_page=page_start, to_page=page_end)
+            writer.save(tmp.name)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp.name)
+        raise
+    return tmp.name
+
+
+def _slice_page_classes(classes, page_count: int, page_start: int, page_end: int):
+    """The document's page classes rebased to the slice; None stays None.
+
+    A list that does not cover the document page for page is dropped (with
+    a WARNING) rather than sliced into a list that happens to fit: R2 AC7,
+    every model stays on.
+    """
+    if classes is None:
+        return None
+    if len(classes) != page_count:
+        logger.warning(
+            "ignoring page_classes for %d pages on a %d-page PDF; every model stays on",
+            len(classes),
+            page_count,
+        )
+        return None
+    return classes[page_start : page_end + 1]
 
 
 def _serialize_picture_result(pr: dict) -> dict:
@@ -649,6 +738,33 @@ async def cancel_job(job_id: str):
     return {"cancelled": True, "job_id": job_id}
 
 
+#: RFC-052 R5 AC1: seconds per page per process, fed by the docling_chunk
+#: records (installed on the converter's logger in ``lifespan``).
+_spp_tracker = capacity.SppTracker(prior=capacity.spp_prior())
+
+
+def _busy_slots() -> int:
+    """Conversion slots held right now (``/convert/pdf`` and ``/convert/image``)."""
+    return _convert_slots.held
+
+
+@app.get("/capacity", dependencies=[Depends(_verify_token)])
+async def capacity_endpoint():
+    """What this backend can take on now (RFC-052 R5 AC1; design ``/capacity``).
+
+    ``build_sha`` is the same ``BUILD_SHA`` as ``/version``'s ``commit_sha``.
+    No document data (HR3). Readers shell out on macOS, so off the loop.
+    """
+    return await asyncio.to_thread(
+        capacity.capacity_snapshot,
+        busy_slots=_busy_slots(),
+        max_slots=MAX_CONCURRENT,
+        tracker=_spp_tracker,
+        backend=capacity.docling_backend_name(),
+        build_sha=os.environ.get("BUILD_SHA", "unknown"),
+    )
+
+
 @app.get("/version")
 async def version():
     from pageindex_mcp.config import CURRENT_PIPELINE_VERSION
@@ -736,6 +852,7 @@ async def convert_pdf(  # noqa: PLR0915
     _conversions.add(conv)
     watcher = asyncio.create_task(_watch_client(conv))
     tmp_path: str | None = None
+    slice_path: str | None = None
     try:
         tmp_path = await _download_to_temp(req.presigned_url, suffix=".pdf")
         if conv.cancel_event.is_set():
@@ -750,9 +867,29 @@ async def convert_pdf(  # noqa: PLR0915
         )
 
         page_count = await asyncio.to_thread(_pdf_page_count, tmp_path)
-        plan = plan_docling(page_count)
-        logger.info("docling plan: %s", plan)
         page_classes = _request_page_classes(req)
+        convert_path = tmp_path
+        pages_with_tables = req.pages_with_tables
+        page_range = None
+        if req.page_start is not None and req.page_end is not None:
+            # RFC-052 R5 AC3: from here on the slice IS the document.
+            if req.page_end >= page_count:
+                raise _PageRangeError(
+                    f"page range {req.page_start}-{req.page_end} is outside a "
+                    f"{page_count}-page PDF (0-based, inclusive)"
+                )
+            page_range = [req.page_start, req.page_end]
+            slice_path = await asyncio.to_thread(_slice_pdf, tmp_path, *page_range)
+            convert_path = slice_path
+            page_classes = _slice_page_classes(page_classes, page_count, *page_range)
+            if pages_with_tables is not None:
+                pages_with_tables = [
+                    p - req.page_start
+                    for p in pages_with_tables
+                    if req.page_start <= p <= req.page_end
+                ]
+            page_count = req.page_end - req.page_start + 1
+            logger.info("page range %d-%d: converting %d pages", *page_range, page_count)
         # RFC-052 P2 finding 1/3: the ONE place that decides validity, so the
         # echoed "applied" state can never disagree with what the converter
         # actually did (absent, kill switch, length mismatch or a parse
@@ -760,20 +897,6 @@ async def convert_pdf(  # noqa: PLR0915
         page_classes_active = _page_classes_active(page_classes, page_count, req.pageclass_chunking)
         request_ocr_policy = _request_ocr_policy(req, page_classes, page_count)
         resolved_ocr_policy = request_ocr_policy or _ocr_policy()
-        route = "direct" if page_count <= plan.pages_per_chunk else "chunked"
-        # Cheap: pure page-range arithmetic (the same call the converter
-        # itself makes), no PDF re-read.
-        chunk_count = (
-            1
-            if route == "direct"
-            else len(
-                _plan_chunks(
-                    page_count,
-                    plan.pages_per_chunk,
-                    page_classes if page_classes_active else None,
-                )
-            )
-        )
         # A single check right before queuing only catches an orphan that is
         # already stale at that instant. _preempt_while_queued keeps
         # re-checking (every CLIENT_POLL_S, including the holder's own
@@ -789,11 +912,32 @@ async def convert_pdf(  # noqa: PLR0915
             if conv.cancel_event.is_set():
                 raise DoclingCancelled("cancelled while queued for a conversion slot")
             conv.started_at = time.time()
-            _pages_set = set(req.pages_with_tables) if req.pages_with_tables is not None else None
+            # RFC-052 R5 AC2: planned once the slot is held, so the
+            # free-memory clamp sees the memory the previous conversion's
+            # processes gave back, not what they held while this one queued.
+            # Off the event loop: it reads free memory, which on macOS is a
+            # vm_stat subprocess with up to a 5 s timeout.
+            plan = await asyncio.to_thread(plan_docling, page_count)
+            logger.info("docling plan: %s", plan)
+            route = "direct" if page_count <= plan.pages_per_chunk else "chunked"
+            # Cheap: pure page-range arithmetic (the same call the converter
+            # itself makes), no PDF re-read.
+            chunk_count = (
+                1
+                if route == "direct"
+                else len(
+                    _plan_chunks(
+                        page_count,
+                        plan.pages_per_chunk,
+                        page_classes if page_classes_active else None,
+                    )
+                )
+            )
+            _pages_set = set(pages_with_tables) if pages_with_tables is not None else None
             md, pic_results, _extraction_stages = await _await_conversion(
                 asyncio.to_thread(
                     pdf_to_markdown_docling,
-                    tmp_path,
+                    convert_path,
                     force_full_page_ocr=req.force_full_page_ocr,
                     ocr_lang_override=req.ocr_lang_override,
                     max_pages=plan.pages_per_chunk,
@@ -827,11 +971,16 @@ async def convert_pdf(  # noqa: PLR0915
             "route": route,
             "chunk_count": chunk_count,
         }
+        if page_range is not None:
+            applied["page_range"] = page_range
         return PdfConvertResponse(
             markdown=md,
             picture_results=[PictureResultOut(**p) for p in serialized_pics],
             applied=applied,
         )
+    except _PageRangeError as exc:
+        logger.warning("refusing page range: %s", exc)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except DoclingCancelled as exc:
         logger.info("PDF conversion cancelled (%s): %s", conv.cancel_reason, exc)
         # 499 (client closed request): usually nobody is left to read it.
@@ -844,9 +993,10 @@ async def convert_pdf(  # noqa: PLR0915
     finally:
         watcher.cancel()
         _conversions.discard(conv)
-        if tmp_path is not None:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_path)
+        for path in (tmp_path, slice_path):
+            if path is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(path)
 
 
 @app.post(

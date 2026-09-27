@@ -858,6 +858,24 @@ class TestVersionSkewDetection:
         assert _skew_count("pipeline_version") == before + 1
         assert any(r.levelno == logging.ERROR for r in caplog.records)
 
+        # F2 (repair cycle 1, RFC-052 R5 AC8): _check_remote_docling_version
+        # now shares _build_sha_mismatch's prefix rule with the /capacity
+        # check, so a 12-hex Mac SHA and a 40-hex CI SHA sharing that prefix
+        # must NOT warn (an exact-string compare would have false-warned).
+        from pageindex_mcp.config import CURRENT_PIPELINE_VERSION
+
+        caplog.clear()
+        monkeypatch.setattr(_remote, "_remote_docling_version", None)
+        monkeypatch.setattr(_remote, "_CLIENT_BUILD_SHA", "abcdef123456" + "7890" * 7)
+        before = _skew_count("commit_sha")
+        client = _make_httpx_client(
+            {"commit_sha": "abcdef123456", "pipeline_version": CURRENT_PIPELINE_VERSION}
+        )
+        with caplog.at_level(logging.WARNING, logger="pageindex_mcp.client"):
+            await _remote._check_remote_docling_version(client)
+        assert _skew_count("commit_sha") == before, "shared prefix must not count as skew"
+        assert not any("SHA" in r.message for r in caplog.records)
+
 
 def _resolve_build_sha(env: dict) -> str:
     """Re-runs the exact expression client.py's module-level

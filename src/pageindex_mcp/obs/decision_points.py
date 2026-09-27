@@ -1953,6 +1953,31 @@ _REMOTE_POINTS: tuple[DecisionPoint, ...] = (
         always_emits=False,
         note="last_error is an exception CLASS name or http_<status>, never str(exc).",
     ),
+    _p(
+        event="docling_capacity_snapshot",
+        phase=Phase.CONVERT,
+        module=_C_REMOTE,
+        function="_log_capacity_snapshot",
+        choices=("logged",),
+        attrs=(
+            "backend",
+            "build_sha",
+            "effective_cpus",
+            "free_mem_bytes",
+            "safe_procs",
+            "busy_slots",
+            "max_slots",
+            "spp_ewma",
+            "spp_sample_count",
+        ),
+        always_emits=False,
+        note="RFC-052 R5 AC1: one best-effort GET /capacity per conversion job. "
+        "A 404 (older service), a timeout or any network error returns before "
+        "this call, so nothing is emitted -- always_emits=False. Only capacity "
+        "numbers and the backend/build_sha identifiers; never document content "
+        "(HR3). The build-skew WARNING (R5 AC8) is a plain logger.warning, not "
+        "a decision record, deduped per (backend, service_sha) per process.",
+    ),
 )
 
 

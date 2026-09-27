@@ -84,11 +84,11 @@ Infra manifests live in `/root/hetzner-deployment-service` and ship as a compani
   - Status 2026-09-27: P0 (#30, #32), P1 (#34) and P2 (#36) merged; `make test` on master + the 5.6 decision: 1000 passed, 9 skipped.
 
 - [ ] 7. P3: Capacity reporting (`ICR-97-rfc52-capacity-split`). Scope cut 2026-09-27: docling-local dropped; the split moves to P5.
-  - [ ] 7.1 docling-service `GET /capacity`: free memory on Linux and macOS, `safe_procs`, slots, the `spp_ewma` tracker, `build_sha`. _R5 AC1_
-  - [ ] 7.2 The planner clamps its worker count by free-memory `safe_procs`. _R5 AC2_
-  - [ ] 7.3 Add `page_start`/`page_end` to `PdfConvertRequest`: slice, rebase pictures and page classes. _R5 AC3_
-  - [ ] 7.4 Build-skew check: the worker compares the active remote's `build_sha` and logs a WARNING on mismatch. _R5 AC8_
-  - [ ] 7.5 Infra companion: delete the `docling-service-local` Deployment and the `docling-node.sh local on` path. _R5 AC5, NG7_
+  - [x] 7.1 docling-service `GET /capacity`: free memory on Linux and macOS, `safe_procs`, slots, the `spp_ewma` tracker, `build_sha`. _R5 AC1_
+  - [x] 7.2 The planner clamps its worker count by free-memory `safe_procs`. _R5 AC2_
+  - [x] 7.3 Add `page_start`/`page_end` to `PdfConvertRequest`: slice, rebase page classes (pictures are rebased by the P5 merge). _R5 AC3_
+  - [x] 7.4 Build-skew check: the worker compares the active remote's `build_sha` and logs a WARNING on mismatch. _R5 AC8_
+  - [x] 7.5 Infra companion: delete the `docling-service-local` Deployment and the `docling-node.sh local on` path. _R5 AC5, NG7_ Infra branch `rfc52-drop-docling-local`; the deploy workflow deletes the orphaned Deployment.
   - [ ] 7.6 Forced-low-memory run on the active remote: the planner clamps, no OOM events. _Test strategy_
 - [ ] 8. Checkpoint P3: `make test`, open the PR, and ask the user.
 

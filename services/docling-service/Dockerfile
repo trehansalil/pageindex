@@ -63,6 +63,8 @@ COPY --from=builder /opt/docling-models /opt/docling-models
 
 # Copy the service application.
 COPY services/docling-service/app.py ./app.py
+# RFC-052 R5 AC1: GET /capacity (app.py imports it as a top-level module).
+COPY services/docling-service/capacity.py ./capacity.py
 
 ARG BUILD_SHA="unknown"
 ARG BUILD_TIMESTAMP="unknown"
