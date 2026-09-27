@@ -157,6 +157,7 @@ chunks = [c for r in runs for c in split(r, max=plan.pages_per_chunk)]
 - Runs each arm twice; reports medians, verdict, garble and table-cell diff.
 - Writes the audit markdown.
 - Never runs on portfolio.
+- Result 2026-09-27 (`audit/RFC052_CONVERSION_BENCH_2026-09-27.md`): FAST fails R4 AC4; the defaults stay page-class chunking on, `DOCLING_DO_OCR=0`, and TableFormer `accurate` (RFC R4 AC4 amendment).
 
 ## Split Coordinator
 
