@@ -91,4 +91,9 @@
 #                  docling-service cancel, orphan pre-emption and killable
 #                  direct-route tests, already collapsed into parametrized
 #                  tables. Measured with `bash scripts/gates/test_budget.sh`.
-1004
+# 2026-09-27  1009 ICR-97 RFC-052 P2 page-class chunking: +5.
+#                  TestPageClassChunking (chunker properties P1/P2 on the
+#                  real pocketbook layout, per-chunk switches, direct/service
+#                  page-class threading, force_full_page_ocr override, kill
+#                  switch). Measured with `bash scripts/gates/test_budget.sh`.
+1009

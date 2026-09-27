@@ -303,7 +303,7 @@ All configuration is env-var driven. Copy `.env.example` to `.env` and fill in r
 |----------|---------|-------------|
 | `PDF_CONVERTER` | `docling` | Primary PDF→markdown converter: `docling` (MIT) or `pymupdf4llm` (AGPL) |
 | `FLAT_DOC_ROUTING` | `true` | Allow flat-but-clean documents to succeed via FLAT route |
-| `DOCLING_DO_OCR` | `0` | Enable Docling's built-in OCR (`1`/`0`) |
+| `DOCLING_DO_OCR` | `0` | OCR policy: `0`/unset = page-class driven (forced on when a request has no usable page classes -- absent, kill switch, page-count mismatch, or parse failure); `1`/`true`/`yes` = force on; anything else (e.g. `off`) = force off |
 | `DOCLING_NUM_THREADS` | `1` | Intra-op parallelism for Docling |
 | `DOCLING_ARTIFACTS_PATH` | — | Pre-downloaded Docling model weights for offline use |
 

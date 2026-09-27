@@ -210,7 +210,7 @@ services:
     environment:
       DOCLING_ARTIFACTS_PATH: /opt/docling-models
       TESSDATA_PREFIX: /opt/tessdata
-      DOCLING_DO_OCR: "1"
+      DOCLING_DO_OCR: "0"
       DOCLING_SERVICE_BEARER_TOKEN: ${DOCLING_SERVICE_BEARER_TOKEN:-}
       # The service refuses to start without a token. Set the token above, or
       # opt in to anonymous access for this local container only.

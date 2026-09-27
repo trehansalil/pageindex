@@ -1,6 +1,7 @@
 """Application configuration: env loading, path setup, settings dataclass."""
 
 import dataclasses
+import logging
 import os
 from dataclasses import dataclass
 
@@ -17,6 +18,37 @@ CATEGORY_BC_PROMOTION_THRESHOLD: float = 0.17
 # RFC-027 D7: page-count threshold above which pdf_to_markdown_docling routes
 # to the chunked-Docling path instead of a single direct conversion call.
 MAX_DOCLING_PAGES: int = int(os.environ.get("MAX_DOCLING_PAGES", "150"))
+
+# RFC-052 R3 AC6 / R4 AC1: the page-class chunking kill switch and the
+# TableFormer mode. Read per call, not frozen at import, like the other
+# DOCLING_* knobs the converter cache keys on: a request can override either,
+# and a long-lived docling-service must see an env change without a restart.
+TABLEFORMER_MODES: tuple[str, ...] = ("accurate", "fast")
+
+
+def pageclass_chunking_enabled(override: bool | None = None) -> bool:
+    """``PAGECLASS_CHUNKING`` (default on). ``0`` restores today's uniform
+    chunks with the table flag only; ``override`` (a request field) wins."""
+    if override is not None:
+        return override
+    return os.environ.get("PAGECLASS_CHUNKING", "1").strip() != "0"
+
+
+def docling_tableformer_mode(override: str | None = None) -> str:
+    """``DOCLING_TABLEFORMER_MODE`` (``accurate`` | ``fast``, default ``accurate``).
+
+    ``override`` (a request field) wins. Anything else logs a WARNING and runs
+    ``accurate``: FAST is opt-in until the R4 benchmark clears it (UD4, D7).
+    """
+    raw = override if override is not None else os.environ.get("DOCLING_TABLEFORMER_MODE", "")
+    mode = raw.strip().lower() or "accurate"
+    if mode not in TABLEFORMER_MODES:
+        logging.getLogger(__name__).warning(
+            "unknown DOCLING_TABLEFORMER_MODE %r; running 'accurate'", raw
+        )
+        return "accurate"
+    return mode
+
 
 # Zone-7: BUILD_SHA is the convention services/docling-service's CI/Dockerfile
 # already use; CLIENT_BUILD_SHA was a never-wired legacy name that left this
