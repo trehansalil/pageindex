@@ -31,8 +31,8 @@ from .docling_conv import (
     _peak_rss_bytes,
     _repair_docling_tables,
     _resolve_do_ocr,
-    _run_docling_chunk_with_timeout,
     _resolve_force_ocr,
+    _run_docling_chunk_with_timeout,
     emit_docling_chunk,
 )
 from .headings import (

@@ -1124,7 +1124,7 @@ def _plan_chunks(page_count: int, max_pages: int, page_classes: list | None) -> 
     ]
 
 
-def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915
+def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915, C901
     pdf_path: str,
     page_count: int,
     max_pages: int,
