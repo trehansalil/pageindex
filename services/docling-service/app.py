@@ -128,6 +128,12 @@ class PdfConvertRequest(BaseModel):
     force_full_page_ocr: bool = False
     ocr_lang_override: list[str] | None = None
     pages_with_tables: list[int] | None = None
+    # RFC-052 R2 AC6: run-length page classes, [[start, end, "T-t"], ...]
+    # (0-based, inclusive). Absent (an older worker) means "no page classes":
+    # every model stays on, exactly as before this field existed. Typed
+    # loosely on purpose: a malformed value must degrade to "no page classes"
+    # (WARNING) rather than 422 the whole conversion.
+    page_classes: list | None = None
 
 
 class ImageConvertRequest(BaseModel):
@@ -338,6 +344,37 @@ async def version():
     }
 
 
+def _request_page_classes(req: PdfConvertRequest):
+    """The request's page classes as ``list[PageClass]``, or ``None``.
+
+    ``None`` when the field is absent or malformed (malformed logs WARNING):
+    both mean every model stays on (RFC-052 R2 AC7). P1 only validates and
+    logs them; page-class chunking consumes them in P2.
+    """
+    if req.page_classes is None:
+        return None
+    from pageindex_mcp.converters.preclassify import page_classes_from_ranges
+
+    try:
+        classes = page_classes_from_ranges(req.page_classes)
+    except (ValueError, TypeError):
+        logger.warning(
+            "ignoring malformed page_classes (%d ranges); every model stays on",
+            len(req.page_classes),
+            exc_info=True,
+        )
+        return None
+    if classes is not None:
+        logger.info(
+            "page classes: %d pages in %d ranges, %d need tables, %d need OCR",
+            len(classes),
+            len(req.page_classes),
+            sum(pc.needs_tables for pc in classes),
+            sum(pc.needs_ocr for pc in classes),
+        )
+    return classes
+
+
 @app.post("/convert/pdf", response_model=PdfConvertResponse, dependencies=[Depends(_verify_token)])
 async def convert_pdf(req: PdfConvertRequest):
     tmp_path = await _download_to_temp(req.presigned_url, suffix=".pdf")
@@ -346,6 +383,7 @@ async def convert_pdf(req: PdfConvertRequest):
 
         plan = plan_docling(await asyncio.to_thread(_pdf_page_count, tmp_path))
         logger.info("docling plan: %s", plan)
+        _request_page_classes(req)
         async with _convert_slots:
             _pages_set = set(req.pages_with_tables) if req.pages_with_tables is not None else None
             md, pic_results, _extraction_stages = await asyncio.to_thread(

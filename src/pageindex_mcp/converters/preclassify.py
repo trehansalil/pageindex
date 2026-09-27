@@ -34,6 +34,126 @@ _MAX_JUNK_RATIO = 0.40
 
 _AR_DETECT_THRESHOLD = 0.05
 
+# RFC-052 R2 AC4/AC5 defaults; overridable via the env vars of the same name.
+_PAGECLASS_TEXT_MIN_CHARS = 50
+_PAGECLASS_IMAGE_AREA_MIN = 0.02  # fraction of the page area (2%)
+
+
+def _garble_ratios(text: str) -> tuple[float, float]:
+    """``(alpha_ratio, junk_ratio)`` of *text*: the garble screen shared by the
+    document-level language probe and the per-page text-layer signal."""
+    text_len = len(text.strip())
+    if text_len == 0:
+        return 0.0, 0.0
+    alpha_chars = len(_ARABIC_RANGE.findall(text)) + len(_LATIN_RANGE.findall(text))
+    junk = sum(
+        1
+        for c in text
+        if unicodedata.category(c).startswith(("C", "Z", "S", "P")) or c in "·;><{}[]\\|"
+    )
+    return alpha_chars / text_len, junk / text_len
+
+
+def _is_garbled(alpha_ratio: float, junk_ratio: float) -> bool:
+    return alpha_ratio < _MIN_ALPHA_RATIO or junk_ratio > _MAX_JUNK_RATIO
+
+
+def _env_number(name: str, default: float) -> float:
+    import os
+
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("%s=%r is not a number; using the default %s", name, raw, default)
+        return default
+
+
+@dataclass(frozen=True)
+class PageClass:
+    """What one page needs (RFC-052 R2): text layer, raster images, tables.
+
+    Wire flags (``flags`` / ``from_flags``): ``T``/``-`` text layer,
+    ``i``/``-`` images, ``t``/``-`` tables -- e.g. ``"T-t"``.
+    """
+
+    has_text_layer: bool
+    has_images: bool
+    has_tables: bool
+
+    @property
+    def needs_tables(self) -> bool:
+        return self.has_tables
+
+    @property
+    def needs_ocr(self) -> bool:
+        # UD2: a page with a text layer, no images and no tables gets no OCR.
+        return (not self.has_text_layer) or self.has_images or self.has_tables
+
+    @property
+    def flags(self) -> str:
+        return (
+            ("T" if self.has_text_layer else "-")
+            + ("i" if self.has_images else "-")
+            + ("t" if self.has_tables else "-")
+        )
+
+    @classmethod
+    def from_flags(cls, flags: str) -> PageClass:
+        if (
+            not isinstance(flags, str)
+            or len(flags) != 3
+            or flags[0] not in "T-"
+            or flags[1] not in "i-"
+            or flags[2] not in "t-"
+        ):
+            raise ValueError(f"bad page-class flags {flags!r}")
+        return cls(flags[0] == "T", flags[1] == "i", flags[2] == "t")
+
+
+# The safe default for a page whose classification failed (R2 AC7): every
+# model on -- no trusted text layer (so OCR runs), images and tables assumed.
+PAGE_CLASS_ALL_ON = PageClass(has_text_layer=False, has_images=True, has_tables=True)
+
+
+def page_classes_to_ranges(classes) -> list[list]:
+    """``[PageClass, ...]`` -> run-length wire form ``[[start, end, flags], ...]``
+    with 0-based, inclusive page indices (RFC-052 design, "Wire format")."""
+    ranges: list[list] = []
+    for idx, pc in enumerate(classes):
+        flags = pc.flags
+        if ranges and ranges[-1][2] == flags:
+            ranges[-1][1] = idx
+        else:
+            ranges.append([idx, idx, flags])
+    return ranges
+
+
+def page_classes_from_ranges(ranges) -> list[PageClass] | None:
+    """Inverse of ``page_classes_to_ranges``. ``None`` means "no page classes"
+    (an older client or a detection that did not run). Anything that is not a
+    gap-free, in-order cover of ``[0, N)`` raises ``ValueError``: a partial
+    list would silently leave pages without a class."""
+    if ranges is None:
+        return None
+    classes: list[PageClass] = []
+    for entry in ranges:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 3:
+            raise ValueError(f"bad page-class range {entry!r}")
+        start, end, flags = entry
+        if (
+            not isinstance(start, int)
+            or not isinstance(end, int)
+            or start != len(classes)
+            or end < start
+        ):
+            raise ValueError(f"page-class range {entry!r} does not continue at page {len(classes)}")
+        pc = PageClass.from_flags(flags)
+        classes.extend([pc] * (end - start + 1))
+    return classes
+
 
 @dataclass
 class PreClassification:
@@ -67,6 +187,9 @@ class PreClassification:
     pages_with_tables: set[int] | None = None
     detection_method: str | None = None
 
+    # --- per-page classes (RFC-052 R2 AC6); None = detection did not run ---
+    page_classes: list[PageClass] | None = None
+
     elapsed_ms: float = 0.0
 
     def to_dict(self) -> dict:
@@ -97,6 +220,8 @@ class PreClassification:
             d["pages_with_tables"] = sorted(self.pages_with_tables)
         if self.detection_method is not None:
             d["detection_method"] = self.detection_method
+        if self.page_classes is not None:
+            d["page_classes"] = page_classes_to_ranges(self.page_classes)
         d["elapsed_ms"] = round(self.elapsed_ms, 1)
         return d
 
@@ -121,8 +246,19 @@ class PreClassification:
             ocr_langs=d.get("ocr_langs", ["eng"]),
             pages_with_tables=set(d["pages_with_tables"]) if "pages_with_tables" in d else None,
             detection_method=d.get("detection_method"),
+            page_classes=_page_classes_from_handshake(d.get("page_classes")),
             elapsed_ms=d.get("elapsed_ms", 0.0),
         )
+
+
+def _page_classes_from_handshake(ranges) -> list[PageClass] | None:
+    """Malformed page classes in a handshake degrade to ``None`` (every model
+    on, R2 AC7) with a WARNING instead of failing the conversion."""
+    try:
+        return page_classes_from_ranges(ranges)
+    except (ValueError, TypeError):
+        logger.warning("ignoring malformed page_classes %r; every model stays on", ranges)
+        return None
 
 
 def _classify_langs_from_filename(filename: str) -> list[str]:
@@ -204,17 +340,9 @@ def detect_lang_from_text_layer(  # noqa: PLR0915
 
     ar_count = len(_ARABIC_RANGE.findall(text))
     la_count = len(_LATIN_RANGE.findall(text))
-    alpha_chars = ar_count + la_count
-    alpha_ratio = alpha_chars / text_len if text_len > 0 else 0.0
+    alpha_ratio, junk_ratio = _garble_ratios(text)
 
-    control_and_special = sum(
-        1
-        for c in text
-        if unicodedata.category(c).startswith(("C", "Z", "S", "P")) or c in "·;><{}[]\\|"
-    )
-    junk_ratio = control_and_special / text_len if text_len > 0 else 0.0
-
-    if alpha_ratio < _MIN_ALPHA_RATIO or junk_ratio > _MAX_JUNK_RATIO:
+    if _is_garbled(alpha_ratio, junk_ratio):
         result = PreClassification(
             lang_source="garbled_text_layer",
             text_layer_chars=text_len,
@@ -409,21 +537,53 @@ def _page_has_ruled_table(page, *, min_h: int = 3, min_v: int = 3) -> bool:
     return False
 
 
-def _page_has_column_alignment(
-    page, *, min_columns: int = 2, min_blocks_per_col: int = 3, quantize_px: int = 12
+def _page_has_column_alignment(  # noqa: PLR0913
+    page=None,
+    *,
+    lines: list[tuple[float, float, float, float]] | None = None,
+    min_columns: int = 3,
+    min_lines_per_col: int = 4,
+    min_rows: int = 3,
+    quantize_px: int = 12,
+    row_quantize_px: int = 3,
 ) -> bool:
-    """Detect table-like column alignment from text-block x-coordinates."""
-    blocks = page.get_text("blocks")
-    if not blocks:
-        return False
-    from collections import Counter
+    """Strict table-like column alignment from text-LINE boxes (RFC-052 R2 AC3).
 
-    x_bins: Counter[int] = Counter()
-    for b in blocks:
-        x0 = round(b[0] / quantize_px) * quantize_px
-        x_bins[x0] += 1
-    aligned_cols = sum(1 for cnt in x_bins.values() if cnt >= min_blocks_per_col)
-    return aligned_cols >= min_columns
+    A page qualifies when >= *min_columns* x-positions (bins of *quantize_px*)
+    each start >= *min_lines_per_col* lines, AND >= *min_rows* rows (y-centre
+    bins of *row_quantize_px*) have a line in >= *min_columns* of those columns.
+
+    The old test (2 x-positions x 3 blocks) fired on 14 of 16 pages of a prose
+    T&C and 15 of 58 pages of a statute, i.e. on ordinary indented text; this
+    one fires on 1 and 2, and on 263 pocketbook pages against 262 for
+    ``find_tables()``. *lines* are ``(x0, y0, x1, y1)`` boxes; when omitted they
+    are read from *page*.
+    """
+    from collections import Counter, defaultdict
+
+    if lines is None:
+        lines = _page_text_lines(page.get_text("dict"))
+    columns: defaultdict[int, list[float]] = defaultdict(list)
+    for x0, y0, _x1, y1 in lines:
+        columns[round(x0 / quantize_px)].append((y0 + y1) / 2)
+    aligned = [ys for ys in columns.values() if len(ys) >= min_lines_per_col]
+    if len(aligned) < min_columns:
+        return False
+    rows: Counter[int] = Counter()
+    for ys in aligned:
+        for row in {round(y / row_quantize_px) for y in ys}:
+            rows[row] += 1
+    return sum(1 for n in rows.values() if n >= min_columns) >= min_rows
+
+
+def _page_text_lines(page_dict: dict) -> list[tuple[float, float, float, float]]:
+    """Line boxes of the text blocks of a ``page.get_text("dict")`` result."""
+    return [
+        tuple(line["bbox"])
+        for block in page_dict.get("blocks", ())
+        if block.get("type") == 0
+        for line in block.get("lines", ())
+    ]
 
 
 def _add_neighbor_padding(pages: set[int], page_count: int) -> set[int]:
@@ -440,87 +600,230 @@ def _add_neighbor_padding(pages: set[int], page_count: int) -> set[int]:
     return padded
 
 
-def detect_pages_with_tables(
-    pdf_path: str,
-) -> tuple[set[int] | None, str | None]:
-    """Pre-extraction table detection via vector geometry + column alignment.
+def _page_text(page_dict: dict) -> str:
+    return "\n".join(
+        "".join(span.get("text", "") for span in line.get("spans", ()))
+        for block in page_dict.get("blocks", ())
+        if block.get("type") == 0
+        for line in block.get("lines", ())
+    )
 
-    Returns ``(pages, detection_method)`` where *pages* is the set of
-    0-indexed page numbers likely containing tables (or ``None`` when
-    detection is unavailable) and *detection_method* summarises which
-    signals fired: ``"vector"``, ``"column_alignment"``,
-    ``"vector+column_alignment"``, or ``None``.
+
+def _page_image_fraction(page_dict: dict) -> float:
+    """Summed raster-image area / page area (overlaps are not deduplicated)."""
+    page_area = float(page_dict.get("width", 0)) * float(page_dict.get("height", 0))
+    if page_area <= 0:
+        return 0.0
+    covered = 0.0
+    for block in page_dict.get("blocks", ()):
+        if block.get("type") == 1:
+            x0, y0, x1, y1 = block["bbox"]
+            covered += abs(x1 - x0) * abs(y1 - y0)
+    return covered / page_area
+
+
+def _classify_page(
+    page, *, text_min_chars: int, image_area_min: float, where: str
+) -> tuple[PageClass, str | None]:
+    """One page's class plus the table signal that fired.
+
+    Each signal has its own ``try``; a failed signal takes its safe value --
+    no text layer, images present, table present -- and logs WARNING (R2 AC7,
+    design "Page Classifier"). One ``get_text("dict")`` parse feeds the text,
+    image and column signals; ``get_cdrawings()`` is only read when the column
+    signal did not already fire, which keeps a table-heavy document to about
+    one content-stream parse per page.
+
+    Table signal values: ``"column_alignment"``, ``"vector"``,
+    ``"no_text_layer"`` (text-derived signals cannot see a table on a page
+    without text, so it stays on), ``"error"``, or ``None``.
     """
+
+    def _failed(signal: str) -> None:
+        logger.warning(
+            "page-class %s signal failed on %s; using the safe default",
+            signal,
+            where,
+            exc_info=True,
+        )
+
+    try:
+        page_dict = page.get_text("dict")
+    except Exception:
+        _failed("text/image/column")
+        return PAGE_CLASS_ALL_ON, "error"
+
+    has_text = False
+    text_chars = 0
+    try:
+        text = _page_text(page_dict)
+        text_chars = len(text.strip())
+        has_text = text_chars >= text_min_chars and not _is_garbled(*_garble_ratios(text))
+    except Exception:
+        _failed("text-layer")
+
+    try:
+        has_images = _page_image_fraction(page_dict) >= image_area_min
+    except Exception:
+        _failed("image")
+        has_images = True
+
+    if text_chars < text_min_chars:
+        return PageClass(has_text, has_images, True), "no_text_layer"
+
+    try:
+        if _page_has_column_alignment(lines=_page_text_lines(page_dict)):
+            return PageClass(has_text, has_images, True), "column_alignment"
+    except Exception:
+        _failed("column-alignment")
+        return PageClass(has_text, has_images, True), "error"
+
+    try:
+        if _page_has_ruled_table(page):
+            return PageClass(has_text, has_images, True), "vector"
+    except Exception:
+        _failed("ruled-table")
+        return PageClass(has_text, has_images, True), "error"
+    return PageClass(has_text, has_images, False), None
+
+
+def _classify_document_pages(doc, *, label: str) -> list[tuple[PageClass, str | None]]:
+    """Unpadded ``(PageClass, table_signal)`` for every page of an open fitz
+    document. A page that cannot even be loaded is ``PAGE_CLASS_ALL_ON``."""
+    text_min_chars = int(_env_number("PAGECLASS_TEXT_MIN_CHARS", _PAGECLASS_TEXT_MIN_CHARS))
+    image_area_min = _env_number("PAGECLASS_IMAGE_AREA_MIN", _PAGECLASS_IMAGE_AREA_MIN)
+    results: list[tuple[PageClass, str | None]] = []
+    for page_idx in range(len(doc)):
+        where = f"page {page_idx} of {label}"
+        try:
+            results.append(
+                _classify_page(
+                    doc[page_idx],
+                    text_min_chars=text_min_chars,
+                    image_area_min=image_area_min,
+                    where=where,
+                )
+            )
+        except Exception:
+            logger.warning(
+                "page classification failed on %s; every model stays on for it",
+                where,
+                exc_info=True,
+            )
+            results.append((PAGE_CLASS_ALL_ON, "error"))
+    return results
+
+
+def _confirm_tables_with_find_tables(
+    doc, results: list[tuple[PageClass, str | None]], *, label: str
+) -> list[tuple[PageClass, str | None]]:
+    """Narrow cheap table positives with PyMuPDF ``find_tables()`` (RFC-052 D4).
+
+    Only pages whose ``"column_alignment"``/``"vector"`` signal fired are
+    checked; ``"no_text_layer"`` and ``"error"`` pages stay on, and a
+    ``find_tables()`` failure keeps the page positive. ``find_tables()`` costs
+    ~0.8 s/page on portfolio, so the worker does not call this (see
+    ``classify_pages``); the census script does.
+    """
+    confirmed: list[tuple[PageClass, str | None]] = []
+    for page_idx, (pc, signal) in enumerate(results):
+        if signal in ("column_alignment", "vector"):
+            try:
+                if not doc[page_idx].find_tables().tables:
+                    pc, signal = PageClass(pc.has_text_layer, pc.has_images, False), None
+            except Exception:
+                logger.warning(
+                    "find_tables() failed on page %d of %s; page stays a table page",
+                    page_idx,
+                    label,
+                    exc_info=True,
+                )
+        confirmed.append((pc, signal))
+    return confirmed
+
+
+_SIGNAL_ORDER = ("vector", "column_alignment", "no_text_layer", "error")
+
+
+def classify_pages(
+    pdf_path: str, *, confirm_tables: bool = False
+) -> tuple[list[PageClass] | None, str | None]:
+    """Per-page classes for *pdf_path* (RFC-052 R2), tables padded by +/-1 page.
+
+    Returns ``(classes, detection_method)``; ``(None, None)`` when PyMuPDF is
+    missing or the document cannot be read (every model stays on, WARNING).
+    *detection_method* joins the table signals that fired, e.g.
+    ``"vector+column_alignment"`` (``+find_tables`` when *confirm_tables*).
+
+    The worker runs with ``confirm_tables=False``: on the 292-page pocketbook
+    the cheap signals take ~15 s and mark 263 pages against 262 for
+    ``find_tables()``, while confirming them with ``find_tables()`` would take
+    ~210 s -- far over the design's 30 s budget, whose stated fallback is to
+    move ``find_tables()`` into the backend.
+    """
+    try:
+        import fitz
+    except ImportError:
+        logger.warning(
+            "classify_pages: fitz (PyMuPDF) not importable; no page classes for %s, "
+            "every model stays on",
+            pdf_path,
+        )
+        return None, None
+
+    try:
+        with fitz.open(pdf_path) as doc:
+            results = _classify_document_pages(doc, label=pdf_path)
+            if confirm_tables:
+                results = _confirm_tables_with_find_tables(doc, results, label=pdf_path)
+    except Exception:
+        logger.warning(
+            "classify_pages failed for %s; every model stays on for every page",
+            pdf_path,
+            exc_info=True,
+        )
+        return None, None
+
+    table_pages = {i for i, (pc, _sig) in enumerate(results) if pc.has_tables}
+    padded = _add_neighbor_padding(table_pages, len(results))
+    classes = [
+        PageClass(pc.has_text_layer, pc.has_images, True)
+        if i in padded and not pc.has_tables
+        else pc
+        for i, (pc, _sig) in enumerate(results)
+    ]
+    fired = {sig for _pc, sig in results if sig}
+    method_parts = [s for s in _SIGNAL_ORDER if s in fired]
+    if confirm_tables and method_parts:
+        method_parts.append("find_tables")
+    return classes, "+".join(method_parts) or None
+
+
+def detect_page_classes(pdf_path: str) -> tuple[list[PageClass] | None, str | None]:
+    """``classify_pages`` behind the existing gates: the AGPL gate (PyMuPDF is
+    AGPL, HR4) and the ``TABLEFORMER_SKIP_ENABLED=0`` kill switch. Either one
+    returns ``(None, None)`` -- today's "every model on" behaviour."""
     import os
 
     from ..config import pipeline_config as _pc
 
     if not _pc.allow_agpl_fallback:
         return None, None
-
     kill = os.getenv("TABLEFORMER_SKIP_ENABLED", "1").strip().lower()
     if kill in ("0", "false", "no"):
         return None, None
+    return classify_pages(pdf_path)
 
-    try:
-        import fitz
-    except ImportError:
-        logger.warning(
-            "detect_pages_with_tables: fitz (PyMuPDF) not importable; "
-            "table detection skipped for %s, TableFormer stays on for every page",
-            pdf_path,
-        )
+
+def detect_pages_with_tables(
+    pdf_path: str,
+) -> tuple[set[int] | None, str | None]:
+    """0-indexed pages that need TableFormer (``+/-1`` padded), or ``None``
+    when detection is off or failed. Derived from ``detect_page_classes``."""
+    classes, method = detect_page_classes(pdf_path)
+    if classes is None:
         return None, None
-
-    result: set[int] = set()
-    page_count = 0
-    saw_vector = False
-    saw_column = False
-    try:
-        with fitz.open(pdf_path) as doc:
-            page_count = len(doc)
-            for page_idx in range(page_count):
-                # RFC-052 R2 AC2: every page-level signal sits inside the
-                # per-page try. One bad page is marked positive (the safe
-                # default: TableFormer stays on for it) and logged at
-                # WARNING; it never aborts detection for the other pages.
-                try:
-                    page = doc[page_idx]
-                    if _page_has_ruled_table(page):
-                        result.add(page_idx)
-                        saw_vector = True
-                        continue
-                    if _page_has_column_alignment(page):
-                        result.add(page_idx)
-                        saw_column = True
-                except Exception:
-                    result.add(page_idx)
-                    logger.warning(
-                        "table detection failed on page %d of %s; page marked as a table page",
-                        page_idx,
-                        pdf_path,
-                        exc_info=True,
-                    )
-    except Exception:
-        logger.warning(
-            "detect_pages_with_tables failed for %s; TableFormer stays on for every page",
-            pdf_path,
-            exc_info=True,
-        )
-        return None, None
-
-    result = _add_neighbor_padding(result, page_count)
-
-    if saw_vector and saw_column:
-        method = "vector+column_alignment"
-    elif saw_vector:
-        method = "vector"
-    elif saw_column:
-        method = "column_alignment"
-    else:
-        method = None
-
-    return result, method
+    return {i for i, pc in enumerate(classes) if pc.has_tables}, method
 
 
 # ---------------------------------------------------------------------------
@@ -556,15 +859,31 @@ def _log_page_set_summary(  # noqa: PLR0913
     pages_with_tables: set[int] | None,
     detection_method: str | None,
     pages_needing_ocr: list[int],
+    page_classes: list[PageClass] | None = None,
 ) -> None:
     """One INFO line summarising the page sets that drive TableFormer/OCR
     (RFC-052 R1 AC8). ``pages_with_tables=None`` means detection did not run
-    or failed, so TableFormer stays on for every page -- logged as ``"all"``."""
+    or failed, so TableFormer stays on for every page -- logged as ``"all"``.
+    With *page_classes*, it also carries the count per class flag string and
+    the page-class OCR set (UD2) as compact ranges."""
+    from collections import Counter
+
     tables = _compact_ranges(pages_with_tables)
     ocr = _compact_ranges(pages_needing_ocr)
     table_count = len(pages_with_tables) if pages_with_tables is not None else None
+    class_counts = (
+        dict(sorted(Counter(pc.flags for pc in page_classes).items()))
+        if page_classes is not None
+        else None
+    )
+    pageclass_ocr = (
+        _compact_ranges(i for i, pc in enumerate(page_classes) if pc.needs_ocr)
+        if page_classes is not None
+        else None
+    )
     logger.info(
-        "preclassify page sets for %s: pdf_type=%s pages=%d tables=%s (%s pages, method=%s) ocr=%s",
+        "preclassify page sets for %s: pdf_type=%s pages=%d tables=%s (%s pages, method=%s) "
+        "ocr=%s classes=%s",
         filepath,
         pdf_type,
         page_count,
@@ -572,6 +891,7 @@ def _log_page_set_summary(  # noqa: PLR0913
         table_count if table_count is not None else "all",
         detection_method,
         ocr or "none",
+        class_counts if class_counts is not None else "none",
         extra={
             "attrs": {
                 "pdf_type": pdf_type,
@@ -581,28 +901,27 @@ def _log_page_set_summary(  # noqa: PLR0913
                 "detection_method": detection_method,
                 "pages_needing_ocr": ocr,
                 "pages_needing_ocr_count": len(pages_needing_ocr),
+                "page_class_counts": class_counts,
+                "pageclass_ocr_pages": pageclass_ocr,
             }
         },
     )
 
 
-def _detect_tables_if_text_based(
-    filepath: str, pdf_type: str | None
-) -> tuple[set[int] | None, str | None]:
-    """Ruled-table pages for a text-based PDF, else ``(None, None)``.
-    Detection failure is also ``(None, None)``: every page keeps TableFormer.
+def _detect_page_classes_safe(filepath: str) -> tuple[list[PageClass] | None, str | None]:
+    """Page classes for a PDF, or ``(None, None)`` (every model on).
 
-    RFC-052 R2 AC7: a failure is logged at WARNING, not debug -- a silent
-    "everything on" fallback is exactly what hid the detector's breakage.
+    RFC-052 design: the classifier no longer needs ``pdf_type == "text_based"``
+    -- a page without a text layer simply classifies as needing OCR (and
+    keeps TableFormer) -- so a missing pdf_inspector no longer switches
+    detection off. R2 AC7: a failure is logged at WARNING, never debug.
     """
-    if pdf_type != "text_based":
-        return None, None
     try:
-        return detect_pages_with_tables(filepath)
+        return detect_page_classes(filepath)
     except Exception:
         logger.warning(
-            "preclassify_document: table detection failed for %s; "
-            "TableFormer stays on for every page",
+            "preclassify_document: page classification failed for %s; "
+            "every model stays on for every page",
             filepath,
             exc_info=True,
         )
@@ -682,18 +1001,18 @@ def preclassify_document(  # noqa: PLR0915
                 pages_needing_ocr = inspector_result.get("pages_needing_ocr", [])
                 has_encoding_issues = inspector_result.get("has_encoding_issues", False)
             else:
-                # RFC-052 R2 AC7: pdf_type stays None, so table detection
-                # never runs and TableFormer stays on for every page. Say so.
+                # RFC-052 R2 AC7: pdf_type stays None. Page classification no
+                # longer depends on it, but the missing extra is still a defect.
                 logger.warning(
-                    "preclassify_document: pdf_inspector %s for %s; pdf_type unknown, "
-                    "table detection skipped (TableFormer on for every page)",
+                    "preclassify_document: pdf_inspector %s for %s; pdf_type unknown "
+                    "(per-page classification still runs)",
                     "not installed" if not _pdf_inspector_available else "returned no result",
                     filepath,
                 )
         except Exception:
             logger.warning(
-                "preclassify_document: pdf_inspector failed for %s; pdf_type unknown, "
-                "table detection skipped (TableFormer on for every page)",
+                "preclassify_document: pdf_inspector failed for %s; pdf_type unknown "
+                "(per-page classification still runs)",
                 filepath,
                 exc_info=True,
             )
@@ -717,8 +1036,14 @@ def preclassify_document(  # noqa: PLR0915
     except Exception:
         pass
 
-    # 5. selective TableFormer: detect pages with ruled tables (RFC-050 D8)
-    pages_with_tables, detection_method = _detect_tables_if_text_based(filepath, pdf_type)
+    # 5. per-page classes (RFC-052 R2); the table set drives selective
+    #    TableFormer (RFC-050 D8). No longer gated on pdf_type.
+    page_classes, detection_method = _detect_page_classes_safe(filepath)
+    pages_with_tables = (
+        {i for i, pc in enumerate(page_classes) if pc.has_tables}
+        if page_classes is not None
+        else None
+    )
     _log_page_set_summary(
         filepath,
         pdf_type=pdf_type,
@@ -726,6 +1051,7 @@ def preclassify_document(  # noqa: PLR0915
         pages_with_tables=pages_with_tables,
         detection_method=detection_method,
         pages_needing_ocr=pages_needing_ocr,
+        page_classes=page_classes,
     )
 
     elapsed_ms = (time.monotonic() - t0) * 1000
@@ -750,6 +1076,7 @@ def preclassify_document(  # noqa: PLR0915
         ocr_langs=ocr_langs,
         pages_with_tables=pages_with_tables,
         detection_method=detection_method,
+        page_classes=page_classes,
         elapsed_ms=elapsed_ms,
     )
 

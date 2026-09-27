@@ -140,6 +140,7 @@ async def _remote_pdf_to_markdown(
     expected_script: str | None = None,
     pages_with_tables: list[int] | None = None,
     page_count: int | None = None,
+    page_classes: list[list] | None = None,
 ) -> tuple[str, list]:
     """Call the external Docling service to convert a PDF.
 
@@ -156,6 +157,11 @@ async def _remote_pdf_to_markdown(
 
     ``page_count`` (when known) only shapes the ``X-Shard`` correlation header;
     it never changes the payload. See ``_correlation_headers``.
+
+    ``page_classes`` is the run-length wire form from the preclassify
+    handshake (``[[start, end, "T-t"], ...]``, RFC-052 R2 AC6), forwarded
+    verbatim. Like ``expected_script`` it is safe against an older service:
+    its request model ignores unknown keys.
     """
     import base64
 
@@ -177,6 +183,7 @@ async def _remote_pdf_to_markdown(
         "ocr_lang_override": ocr_lang_override,
         "expected_script": expected_script,
         "pages_with_tables": pages_with_tables,
+        "page_classes": page_classes,
     }
     headers: dict[str, str] = _correlation_headers(page_count)
     if settings.docling_service_bearer_token:
