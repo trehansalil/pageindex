@@ -54,30 +54,80 @@ def _fake_page_with_blocks(blocks: list[tuple[float, float, float, float]]):
 # ---------------------------------------------------------------------------
 
 
+def _ruled_pdf_page(h_lines: int, v_lines: int, *, rects: bool = False):
+    """A REAL fitz page (saved + reopened) with *h_lines* horizontal and
+    *v_lines* vertical rules, drawn as lines or as thin filled rects.
+
+    RFC-052 R2 AC2: the old fakes handed ``_page_has_ruled_table`` Point/Rect
+    objects, so the suite stayed green while every real ``get_cdrawings()``
+    item -- a plain tuple -- raised AttributeError in production.
+    """
+    fitz = pytest.importorskip("fitz")
+    doc = fitz.open()
+    page = doc.new_page()
+    for i in range(h_lines):
+        y = 100 + i * 20
+        if rects:
+            page.draw_rect(fitz.Rect(50, y, 300, y + 1), fill=(0, 0, 0))
+        else:
+            page.draw_line((50, y), (300, y))
+    for i in range(v_lines):
+        x = 50 + i * 100
+        if rects:
+            page.draw_rect(fitz.Rect(x, 100, x + 1, 160), fill=(0, 0, 0))
+        else:
+            page.draw_line((x, 100), (x, 160))
+    reopened = fitz.open("pdf", doc.tobytes())
+    return reopened, reopened[0]
+
+
 class TestPageHasRuledTable:
-    def test_returns_false_below_thresholds(self):
+    @pytest.mark.parametrize(
+        ("h_lines", "v_lines", "rects", "expected"),
+        [(2, 2, False, False), (3, 3, False, True), (3, 3, True, True)],
+        ids=["below-threshold", "line-items", "rect-items"],
+    )
+    def test_real_cdrawings_tuple_items(self, h_lines, v_lines, rects, expected):
         from pageindex_mcp.converters.preclassify import _page_has_ruled_table
 
-        page = _fake_page(h_lines=2, v_lines=2)
-        assert _page_has_ruled_table(page) is False
+        doc, page = _ruled_pdf_page(h_lines, v_lines, rects=rects)
+        with doc:
+            items = [it for d in page.get_cdrawings() for it in d["items"]]
+            # The fixture must exercise the tuple form, or it proves nothing.
+            assert items and all(isinstance(it[1], tuple) for it in items)
+            assert _page_has_ruled_table(page) is expected
 
-    def test_returns_true_at_thresholds(self):
-        from pageindex_mcp.converters.preclassify import _page_has_ruled_table
+    def test_one_failing_page_is_marked_positive_alone(self, tmp_path, monkeypatch, caplog):
+        """R2 AC2: a raise on one page marks only that page (safe default),
+        logs WARNING, and detection still classifies every other page."""
+        import logging
 
-        page = _fake_page(h_lines=3, v_lines=3)
-        assert _page_has_ruled_table(page) is True
+        fitz = pytest.importorskip("fitz")
+        from pageindex_mcp.converters import preclassify
 
-    def test_rect_items_count_as_lines(self):
-        from pageindex_mcp.converters.preclassify import _page_has_ruled_table
+        cfg = MagicMock()
+        cfg.allow_agpl_fallback = True
+        monkeypatch.setattr("pageindex_mcp.config.pipeline_config", cfg)
+        monkeypatch.setenv("TABLEFORMER_SKIP_ENABLED", "1")
+        doc = fitz.open()
+        for _ in range(7):
+            doc.new_page().insert_text((72, 72), "Plain prose on a page without any table. " * 3)
+        path = str(tmp_path / "seven.pdf")
+        doc.save(path)
+        doc.close()
 
-        page = MagicMock()
-        items = []
-        for _ in range(3):
-            items.append(("re", types.SimpleNamespace(width=100.0, height=2.0)))
-        for _ in range(3):
-            items.append(("re", types.SimpleNamespace(width=2.0, height=100.0)))
-        page.get_cdrawings.return_value = [{"items": items}]
-        assert _page_has_ruled_table(page) is True
+        real = preclassify._page_has_ruled_table
+
+        def flaky(page, **kw):
+            if page.number == 3:
+                raise AttributeError("'tuple' object has no attribute 'x'")
+            return real(page, **kw)
+
+        monkeypatch.setattr(preclassify, "_page_has_ruled_table", flaky)
+        caplog.set_level(logging.WARNING, logger=preclassify.logger.name)
+        pages, _method = preclassify.detect_pages_with_tables(path)
+        assert pages == {2, 3, 4}  # page 3 plus its +/-1 padding, nothing else
+        assert any("page 3" in r.getMessage() for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

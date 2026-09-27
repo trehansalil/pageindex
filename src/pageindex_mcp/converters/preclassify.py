@@ -361,34 +361,52 @@ def _iso_to_tess(iso_langs: list[str]) -> list[str]:
     return [_ISO_TO_TESS.get(lang, lang) for lang in iso_langs]
 
 
+def _xy(point) -> tuple[float, float]:
+    """``(x, y)`` of a drawing point: ``get_cdrawings()`` yields plain tuples,
+    ``get_drawings()`` yields ``fitz.Point`` objects. Accept both."""
+    if hasattr(point, "x"):
+        return float(point.x), float(point.y)
+    return float(point[0]), float(point[1])
+
+
+def _wh(rect) -> tuple[float, float]:
+    """``(width, height)`` of a drawing rect: a 4-tuple ``(x0, y0, x1, y1)``
+    from ``get_cdrawings()``, or a ``fitz.Rect`` from ``get_drawings()``."""
+    if hasattr(rect, "width"):
+        return abs(float(rect.width)), abs(float(rect.height))
+    x0, y0, x1, y1 = rect[:4]
+    return abs(float(x1) - float(x0)), abs(float(y1) - float(y0))
+
+
 def _page_has_ruled_table(page, *, min_h: int = 3, min_v: int = 3) -> bool:
-    """Detect ruled tables via vector geometry from ``page.get_cdrawings()``."""
+    """Detect ruled tables via vector geometry from ``page.get_cdrawings()``.
+
+    RFC-052 R2 AC2: on PyMuPDF >= 1.24 ``get_cdrawings()`` items are plain
+    tuples -- ``("l", (x0, y0), (x1, y1))`` and ``("re", (x0, y0, x1, y1), orient)``
+    -- not ``Point``/``Rect`` objects. Attribute access on them raised
+    ``AttributeError`` on 289 of 292 pocketbook pages. Callers still wrap this
+    per page: a raise here marks only that page positive.
+    """
     h_count = 0
     v_count = 0
     for drawing in page.get_cdrawings():
-        for item in drawing.get("items", []):
+        for item in drawing.get("items", ()):
             kind = item[0]
             if kind == "l":
-                # line item: ("l", Point(x0,y0), Point(x1,y1))
-                p1, p2 = item[1], item[2]
-                dx = abs(p2.x - p1.x)
-                dy = abs(p2.y - p1.y)
-                if dx > 20 and dy < 3:
-                    h_count += 1
-                elif dy > 20 and dx < 3:
-                    v_count += 1
+                (x0, y0), (x1, y1) = _xy(item[1]), _xy(item[2])
+                dx, dy, thin = abs(x1 - x0), abs(y1 - y0), 3
             elif kind == "re":
-                # rect item: ("re", Rect)
-                rect = item[1]
-                w = abs(rect.width)
-                h = abs(rect.height)
-                if w > 20 and h < 5:
-                    h_count += 1
-                elif h > 20 and w < 5:
-                    v_count += 1
+                dx, dy = _wh(item[1])
+                thin = 5
+            else:
+                continue
+            if dx > 20 and dy < thin:
+                h_count += 1
+            elif dy > 20 and dx < thin:
+                v_count += 1
         if h_count >= min_h and v_count >= min_v:
             return True
-    return h_count >= min_h and v_count >= min_v
+    return False
 
 
 def _page_has_column_alignment(
@@ -462,18 +480,23 @@ def detect_pages_with_tables(
         with fitz.open(pdf_path) as doc:
             page_count = len(doc)
             for page_idx in range(page_count):
-                page = doc[page_idx]
-                if _page_has_ruled_table(page):
-                    result.add(page_idx)
-                    saw_vector = True
-                    continue
+                # RFC-052 R2 AC2: every page-level signal sits inside the
+                # per-page try. One bad page is marked positive (the safe
+                # default: TableFormer stays on for it) and logged at
+                # WARNING; it never aborts detection for the other pages.
                 try:
+                    page = doc[page_idx]
+                    if _page_has_ruled_table(page):
+                        result.add(page_idx)
+                        saw_vector = True
+                        continue
                     if _page_has_column_alignment(page):
                         result.add(page_idx)
                         saw_column = True
                 except Exception:
+                    result.add(page_idx)
                     logger.warning(
-                        "column-alignment detection failed on page %d of %s",
+                        "table detection failed on page %d of %s; page marked as a table page",
                         page_idx,
                         pdf_path,
                         exc_info=True,
