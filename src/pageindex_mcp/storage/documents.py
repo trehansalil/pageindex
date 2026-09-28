@@ -585,13 +585,25 @@ def _erase_processed_flat_json(ctx: ErasureContext) -> bool:
 
 
 def _erase_processed_tables_json(ctx: ErasureContext) -> bool:
-    """Step 2b: processed/<doc_id>.tables.json (RFC-052 9.2 table sidecar)."""
-    return _remove_object_idempotent(
+    """Step 2b: processed/<doc_id>.tables.json (RFC-052 9.2 table sidecar).
+
+    Also removes ``processed/<doc_id>.tables.meta.json``: nothing writes it now,
+    but the registry reconcile used to heal the table sidecar into one (see
+    ``processed_keys``), and it names the doc_id, so it goes with the doc (HR2).
+    """
+    meta_ok = _remove_object_idempotent(
+        ctx,
+        f"processed/{ctx.doc_id}.tables.meta.json",
+        "processed.tables.meta.json",
+        "ERASE %s step2b: removed %s",
+    )
+    tables_ok = _remove_object_idempotent(
         ctx,
         f"processed/{ctx.doc_id}.tables.json",
         "processed.tables.json",
         "ERASE %s step2b: removed %s",
     )
+    return meta_ok and tables_ok
 
 
 def _erase_figures(ctx: ErasureContext) -> bool:

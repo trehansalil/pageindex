@@ -18,6 +18,7 @@ from ..metrics import (
     MINIO_OPS,
 )
 from . import minio_ops as _minio_ops
+from .processed_keys import is_table_sidecar
 
 logger = logging.getLogger(__name__)
 
@@ -272,6 +273,8 @@ def list_processed_docs() -> list[dict]:
         meta_keys: dict[str, str] = {}  # doc_id -> object_name (prefer .meta.json)
         for obj in mc.list_objects(settings.minio_bucket, prefix="processed/", recursive=True):
             name = obj.object_name
+            if is_table_sidecar(name):
+                continue
             if name.endswith(".meta.json"):
                 doc_id = Path(name).stem.removesuffix(".meta")
                 meta_keys[doc_id] = name

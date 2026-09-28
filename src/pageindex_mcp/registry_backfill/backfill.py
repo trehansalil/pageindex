@@ -21,6 +21,7 @@ from ..storage import (
     get_minio,
     read_registry_fields,
 )
+from ..storage.processed_keys import is_table_sidecar
 
 logger = logging.getLogger("registry_backfill")
 
@@ -36,6 +37,8 @@ def _list_meta_keys() -> list[str]:
     keys: list[str] = []
     for obj in mc.list_objects(settings.minio_bucket, prefix="processed/", recursive=True):
         name = obj.object_name or ""
+        if is_table_sidecar(name):
+            continue
         if name.endswith(".meta.json"):
             keys.append(name)
     return keys
@@ -63,6 +66,8 @@ def _list_meta_entries() -> tuple[list[tuple[str, str, str]], dict[str, str | No
     flat_ids: dict[str, str | None] = {}
     for obj in mc.list_objects(settings.minio_bucket, prefix="processed/", recursive=True):
         name = obj.object_name or ""
+        if is_table_sidecar(name):
+            continue
         if name.endswith(".meta.json"):
             doc_id = Path(name).stem.removesuffix(".meta")
             etag = (getattr(obj, "etag", None) or "").strip('"')
