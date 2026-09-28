@@ -251,7 +251,7 @@ Defects:
    - A shard whose backend reports `busy_slots == max_slots` SHALL NOT be queued behind it.
 7. **HR3:** a backend is eligible for a document only if its routing policy allows it.
    - The Mac is **never** eligible when `PII_CORPUS=true`.
-   - docling-1 (in-cluster) SHALL be eligible for PII documents, replacing today's blanket block at `client/remote.py:126-131`.
+   - docling-1 (in-cluster) SHALL be eligible for PII documents, replacing today's blanket block (the HR3 gate in `_remote_pdf_to_markdown`; the old `:126-131` citation drifted).
 8. **Build skew:** a backend whose `build_sha` differs from the coordinator's expected SHA SHALL be excluded, with a WARNING.
 9. *Removed 2026-09-27 (docling-local dropped, NG7).*
 10. Kill switch: `DOCLING_SPLIT_ENABLED=0` (default for the first deploy) sends the whole document to `docling-active`, as today.
@@ -266,7 +266,7 @@ Defects:
 2. The node count SHALL stay within ±3%, and heading-level changes SHALL be limited to shard joins, each counted and logged.
 3. `validate_tree()` still runs before `save_doc` (HR5). A split never bypasses it.
 
-### Requirement 7: Parallel table capture on portfolio, persisted, never discarded (proposed 2026-09-27, P4)
+### Requirement 7: Parallel table capture on portfolio, persisted, never discarded (accepted 2026-09-27, P4)
 
 **User story:** As the owner of the corpus, I want every table PyMuPDF finds to be kept as searchable data, found using the cores the worker actually has, without risking an OOM.
 
@@ -282,7 +282,7 @@ Measured on 2026-09-27:
 2. Pool size SHALL be `min(cgroup CPU quota, floor((cgroup free − TABLES_RESERVE_BYTES) / TABLES_PROC_BYTES), ceil(pages / TABLES_MIN_PAGES_PER_PROC))`. The size is re-computed per document and is ≥ 1.
    - `TABLES_PROC_BYTES` defaults to 256 MiB (about 3× the measured peak).
    - A process that exceeds it is killed. Its pages are marked `capture_failed`, and the document still converts.
-3. Capture SHALL run **concurrently with remote conversion**, not ahead of it. Only the veto set (cheap-signal positives, P1) blocks dispatch, and only when R9's bypasses are on. The job's wall time SHALL NOT grow by more than 5% on the pocketbook.
+3. Capture SHALL run **concurrently with remote conversion**, not ahead of it, and SHALL NOT block dispatch. **Amended 2026-09-27 (user):** R9's signals are computed by docling-service per chunk, so the veto set is empty. The job's median wall time SHALL NOT grow by more than 5% on the pocketbook.
 4. Every table SHALL be persisted to `processed/<doc_id>.tables.json` with these fields:
    - `table_id`, `page`, `bbox`, `rows`, `cols`;
    - `header`, `cells` (text per cell), `markdown`;
@@ -295,7 +295,7 @@ Measured on 2026-09-27:
 7. **HR4:** the tables are the output of AGPL PyMuPDF. **User decision, 2026-09-27:** they are served through search and the MCP surface now; the legal review is deferred and tracked as an open item, not a gate.
 8. Persisted table cells SHALL be usable directly by retrieval answers (RAG), so a table question is answered from stored cells without re-extracting the page at query time.
 
-### Requirement 8: Tables are part of search (proposed 2026-09-27, P4)
+### Requirement 8: Tables are part of search (accepted 2026-09-27, P4)
 
 **User story:** As an MCP client, I want a question answered by a table to find that table the same way a question answered by a section finds the tree node.
 
@@ -307,7 +307,7 @@ Measured on 2026-09-27:
 4. The page-content tool SHALL return a table's `markdown` when a search selects it.
 5. A table-backed question set (at least 10 pocketbook questions) SHALL not answer worse than without table nodes.
 
-### Requirement 9: Signal-driven TableFormer and OCR bypass (proposed 2026-09-27, P4)
+### Requirement 9: Signal-driven TableFormer and OCR bypass (accepted 2026-09-27, P4)
 
 **User story:** As the pipeline, I want the tables and text I have already extracted to switch off TableFormer, OCR or both on pages where they add nothing.
 
@@ -318,7 +318,8 @@ Measured on 2026-09-27:
 3. **Replace TableFormer with the `find_tables()` grid** on a page only when the table is ruled (`lines` strategy), its `coverage` is ≥ `TABLES_TRUST_COVERAGE` and the page has no unruled column-alignment region outside it. This bypass is off by default (`TABLES_TRUST_BYPASS=0`). It is switched on only if R4's benchmark shows a changed-cell ratio ≤ 2% against TableFormer on the pages it would cover.
 4. **Skip both** OCR and TableFormer when AC1 and AC2, or AC1 and AC3, hold for a whole R3 chunk.
 5. Each bypass SHALL be logged per chunk in the `docling_chunk` record (`bypass: ocr|tableformer|both`), and each SHALL have its own kill switch.
-6. `force_full_page_ocr` (HR5 recovery) SHALL override every bypass.
+6. `force_full_page_ocr` (HR5 recovery) SHALL override the OCR bypass (AC1) and grid replacement (AC3). **Amended 2026-09-27 (user):** it does not re-enable R3's no-table TableFormer skip (AC2).
+7. Every forced conversion SHALL record its recovery context: the document, why force was set, and the first pass's per-chunk OCR/TableFormer decisions and TableFormer pages. The recovery request carries the prior pass. The cases SHALL be measured and tabulated before any policy acts on that context (user, 2026-09-27).
 
 ## Decision Summary
 
@@ -336,9 +337,9 @@ Measured on 2026-09-27:
 | D10 | No Docling on portfolio; `docling-local` dropped (2026-09-27) | Portfolio has 4 cores and about 2 GB free, and would get zero chunks almost always; the gating it needed was the RFC's main OOM risk. |
 | D11 | One remote at a time until P5; Mac + docling-1 together in P5 | UD1; the N-backend algorithm makes P5 a configuration change on top of P3. |
 | D12 | Stacked PRs `ICR-97-rfc52-<slug>` | UD3; matches RFC-050/051. |
-| D13 (proposed) | Keep every `find_tables()` result as searchable data; run it in a memory-sized process pool in the worker, overlapped with remote conversion | User, 2026-09-27: extracted table data must not be discarded. Processes because PyMuPDF is not thread-safe; overlap because conversion (about 800 s) dwarfs capture (about 125 s with 2 processes). |
-| D14 (proposed) | Tables become child nodes of the search tree, with short descriptions and a token budget | Reuses the one-call tree search and adds no second index; the budget protects search latency (about 96k tokens today). |
-| D15 (proposed) | OCR and TableFormer bypass from `find_tables()` signals; grid replacement off until benchmarked | TableFormer is about 93% of conversion time (28.7 of 28.9 s/page, 1 thread); the `lines` strategy missed the unruled pocketbook tables, so replacing TableFormer needs evidence. |
+| D13 (accepted 2026-09-27) | Keep every `find_tables()` result as searchable data; run it in a memory-sized process pool in the worker, overlapped with remote conversion | User, 2026-09-27: extracted table data must not be discarded. Processes because PyMuPDF is not thread-safe; overlap because conversion (about 800 s) dwarfs capture (about 125 s with 2 processes). |
+| D14 (accepted 2026-09-27) | Tables become child nodes of the search tree, with short descriptions and a token budget | Reuses the one-call tree search and adds no second index; the budget protects search latency (about 96k tokens today). |
+| D15 (accepted 2026-09-27) | OCR and TableFormer bypass from `find_tables()` signals; grid replacement off until benchmarked | TableFormer is about 93% of conversion time (28.7 of 28.9 s/page, 1 thread); the `lines` strategy missed the unruled pocketbook tables, so replacing TableFormer needs evidence. |
 
 ## Implementation Plan
 
@@ -350,7 +351,7 @@ Measured on 2026-09-27:
 | P1 | `ICR-97-rfc52-page-class-detection` | R2: detector repair, `find_tables()`, image and text-layer signals, census script, images get the extra | P0 (to observe it) |
 | P2 | `ICR-97-rfc52-page-class-chunking` | R3 plus R4: run-length chunking, OCR by page class, TableFormer mode config, benchmark | P1 |
 | P3 | `ICR-97-rfc52-capacity-split` | R5 AC1–3, 5, 8: `/capacity`, free-memory clamp, page-range API, build-skew check, docling-local removal (infra) | P2 |
-| P4 (proposed) | `ICR-97-rfc52-table-capture` | R7 + R8 + R9: parallel table capture, `tables.json` persistence and erasure, table nodes in search, signal-driven bypasses | P2 (benchmark harness), P1 |
+| P4 | `ICR-97-rfc52-table-capture` | R7 + R8 + R9: parallel table capture, `tables.json` persistence and erasure, table nodes in search, signal-driven bypasses | P2 (benchmark harness), P1 |
 | P5 (later) | `ICR-97-rfc52-mac-docling1-split` | R5 AC4, 6, 7, 10 plus R6: Mac + docling-1 together, coordinator, tail stealing, retry and re-route, HR3 eligibility, parity check | P3 |
 
 P0 ships first because every later acceptance criterion is verified through its logs. P3 ships with `DOCLING_SPLIT_ENABLED=0` and is switched on only after the R6 parity run.

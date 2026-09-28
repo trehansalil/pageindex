@@ -46,6 +46,25 @@ os.environ["PAGEINDEX_WORKER_MAX_JOBS"] = ""
 
 
 @pytest.fixture(autouse=True)
+def _no_table_capture():
+    """RFC-052 R7: ``index()`` on the remote PDF route starts a real
+    multi-process PyMuPDF table capture and later writes tables.json to
+    MinIO. Tests that drive ``index()`` must do neither; a test of that
+    wiring re-patches ``indexer._start_table_capture`` itself. Patched only
+    when the module is already imported, so no test's import order changes.
+    Deliberately not built on ``monkeypatch``: requesting it here would move
+    its teardown after the other autouse resets and leak test env into them."""
+    import sys
+
+    mod = sys.modules.get("pageindex_mcp.client.indexer")
+    if mod is None or not hasattr(mod, "_start_table_capture"):
+        yield
+        return
+    with patch.object(mod, "_start_table_capture", lambda *a, **k: None):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _instant_memory_gate():
     """Make the worker's admission gate return immediately during tests."""
 

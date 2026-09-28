@@ -1987,9 +1987,11 @@ class TestRecoverImageDominantOcrKeepBest:
             splice_label,
             use_keep_best,
             metric_fail_label,
+            recovery_trigger=None,
         ):
             # Verify use_keep_best is True for image-dominant
             assert use_keep_best is True, "_recover_image_dominant_ocr must pass use_keep_best=True"
+            assert recovery_trigger == "hr5_image_dominant"  # RFC-052 R9 AC7
 
         mixin = RecoveryMixin()
         # Set the attributes that the mixin method checks

@@ -298,6 +298,49 @@ mappings:
       - test_script.py
       - test_selective_tableformer.py
 
+  converters/table_bypass.py:
+    tests:
+      - test_selective_tableformer.py     # RFC-052 R9: decide_bypass, P17-P20, force recovery record
+
+  converters/table_results.py:
+    tests:
+      - test_converters.py                # RFC-052 9.2: table_results / heading_pages from a DoclingDocument
+
+  tables/__init__.py:
+    tests:
+      - test_docling_capacity.py          # RFC-052 R7: table capture package
+
+  tables/schema.py:
+    tests:
+      - test_docling_capacity.py          # tables.json v1 round-trip, links, title (P14)
+
+  tables/settings.py:
+    tests:
+      - test_docling_capacity.py          # TABLES_* readers, TABLES_CAPTURE kill switch
+
+  tables/capture.py:
+    tests:
+      - test_docling_capacity.py          # P6 start, P7 pool bound, P8 RSS kill, P9 partition
+
+  tables/_capture_child.py:
+    tests:
+      - test_docling_capacity.py          # real 2-process capture of a ruled table, per-page error
+
+  tables/anchor.py:
+    tests:
+      - test_docling_capacity.py          # 9.2 node_id (P13), tree insertion (P11), garbled_pages, PendingTables
+      - test_inspector.py                 # P6 start/join order, post-gate insertion, save order
+      - test_recovery.py                  # R9 AC7 prior_pass + garbled_pages on the HR5 recovery request
+      - test_client.py                    # P10/P12 tables.json persisted then erased by delete_doc
+
+  tables/describe.py:
+    tests:
+      - test_helpers_combined.py          # R8 AC1-2: batching, cap by coverage, twin copy, fallback, P16 HR3
+
+  tables/search_view.py:
+    tests:
+      - test_helpers_combined.py          # R8 AC1/AC3 P15: table entries, budget drop order, off = _strip_text
+
   converters/page_class_chunker.py:
     tests:
       - test_selective_tableformer.py   # primary: chunker properties P1/P2
@@ -571,6 +614,7 @@ mappings:
   obs/decision_points.py:
     tests:
       - test_obs_logging.py primary
+      - test_selective_tableformer.py     # docling_force_recovery record (RFC-052 R9 AC7)
       - test_recovery.py
       - test_flat.py
       - test_garble.py

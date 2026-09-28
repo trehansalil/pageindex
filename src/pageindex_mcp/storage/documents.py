@@ -236,11 +236,66 @@ def save_flat_doc(doc_id: str, data: dict) -> None:
         MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
 
 
+# ---------------------------------------------------------------------------
+# Table sidecar  (MinIO: processed/<doc_id>.tables.json)  — RFC-052 9.2
+# ---------------------------------------------------------------------------
+
+
+def save_tables(doc_id: str, payload: dict) -> None:
+    """Persist the ``tables.json`` v1 payload to processed/<doc_id>.tables.json.
+
+    Written only by ``_persist_tree_result`` after ``save_doc`` (never under
+    ``quarantine/``, HR5); erased by the ``processed_tables_json`` step (HR2).
+    """
+    MINIO_OPS.labels(operation="put").inc()
+    start = time.monotonic()
+    mc = _minio_ops.get_minio()
+    try:
+        content = json.dumps(payload, ensure_ascii=False).encode()
+        key = f"processed/{doc_id}.tables.json"
+        mc.put_object(
+            settings.minio_bucket,
+            key,
+            BytesIO(content),
+            len(content),
+            content_type="application/json",
+        )
+        _minio_ops._confirm_write_visible(mc, settings.minio_bucket, key)
+        logger.debug("Saved tables for %s to MinIO (%d bytes)", doc_id, len(content))
+    finally:
+        MINIO_DURATION.labels(operation="put").observe(time.monotonic() - start)
+
+
+def load_tables(doc_id: str) -> dict | None:
+    """processed/<doc_id>.tables.json as a dict, or ``None`` when the document
+    has none (``TABLES_CAPTURE=0``, flat route, or written before RFC-052)."""
+    MINIO_OPS.labels(operation="get").inc()
+    start = time.monotonic()
+    mc = _minio_ops.get_minio()
+    response = None
+    try:
+        response = mc.get_object(settings.minio_bucket, f"processed/{doc_id}.tables.json")
+        return json.loads(response.read())
+    except S3Error as e:
+        if e.code == "NoSuchKey":
+            return None
+        logger.error("MinIO error loading tables for %s: %s", doc_id, e)
+        raise
+    finally:
+        MINIO_DURATION.labels(operation="get").observe(time.monotonic() - start)
+        if response is not None:
+            try:
+                response.close()
+                response.release_conn()
+            except Exception:
+                pass
+
+
 async def delete_doc(doc_id: str) -> dict:
     """HR2 right-to-erasure cascade (ERASE-01), driven by ``_ERASURE_MANIFEST``.
 
     Observable/logged order (one manifest entry per store):
-       1. uploads/<doc_id>/*  2. processed/<doc_id>.json  2b. .flat.json
+       1. uploads/<doc_id>/*  2. processed/<doc_id>.json  2b. .flat.json, .tables.json
        2c. figures/<doc_id>/*  2d. verdicts/<sha256>.json (RFC-037 D2)
        3. processed/<doc_id>.meta.json  4. Redis pageindex:doc:<doc_id>
        4b. reconcile-etag map entry  5. hash-cache entry for the filename
@@ -529,6 +584,16 @@ def _erase_processed_flat_json(ctx: ErasureContext) -> bool:
     )
 
 
+def _erase_processed_tables_json(ctx: ErasureContext) -> bool:
+    """Step 2b: processed/<doc_id>.tables.json (RFC-052 9.2 table sidecar)."""
+    return _remove_object_idempotent(
+        ctx,
+        f"processed/{ctx.doc_id}.tables.json",
+        "processed.tables.json",
+        "ERASE %s step2b: removed %s",
+    )
+
+
 def _erase_figures(ctx: ErasureContext) -> bool:
     """Step 2c: figures/<doc_id>/* image crops."""
     try:
@@ -794,6 +859,13 @@ _ERASURE_MANIFEST: tuple[ErasureStep, ...] = (
         required=False,  # tree-only docs never have one
     ),
     ErasureStep(
+        name="processed_tables_json",
+        step=2,
+        description="Table sidecar at processed/<doc_id>.tables.json (RFC-052)",
+        execute=_erase_processed_tables_json,
+        required=False,  # flat docs, TABLES_CAPTURE=0 and pre-RFC-052 docs have none
+    ),
+    ErasureStep(
         name="figures",
         step=2,
         description="Figure crops at figures/<doc_id>/*",
@@ -883,7 +955,12 @@ _ERASURE_MANIFEST: tuple[ErasureStep, ...] = (
 # no MinIO write-path registration.
 _PREFIX_TO_ERASURE_STEPS: dict[str, tuple[str, ...]] = {
     "uploads/": ("uploads",),
-    "processed/": ("processed_json", "processed_flat_json", "meta_json"),
+    "processed/": (
+        "processed_json",
+        "processed_flat_json",
+        "processed_tables_json",
+        "meta_json",
+    ),
     "figures/": ("figures",),
     "verdicts/": ("verdicts",),
     "preloaded/": ("preloaded",),

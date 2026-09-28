@@ -198,6 +198,11 @@ RAW_UPLOAD_FAILURES = Counter(
     "save_raw failures after save_doc/save_flat_doc already succeeded (RFC-007 D7). "
     "The processed tree remains valid and queryable; the raw upload can be re-staged.",
 )
+TABLES_PERSIST_FAILURES = Counter(
+    "pageindex_tables_persist_failures_total",
+    "RFC-052 9.2: processed/<doc_id>.tables.json build or write failures. The tree "
+    "is persisted regardless; only the table sidecar is missing.",
+)
 STAGING_DELETE_FAILURES = Counter(
     "pageindex_staging_delete_failures_total",
     "delete_staging S3Error failures (RFC-007 D9). Previously swallowed silently; "

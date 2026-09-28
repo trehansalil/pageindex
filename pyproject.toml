@@ -66,6 +66,11 @@ dependencies = [
     # Python implementation with a compiled Rust/PyO3 extension, which the RFC-015 D7
     # "no C extension" requirement rules out.
     "python-bidi>=0.4.2,<0.5",
+    # RFC-052 R8 AC3: o200k_base token counting for the tables search budget
+    # (tables/search_view.py). MIT-licensed (HR4-clean); already present
+    # transitively via litellm, pinned direct so the budget never silently
+    # degrades to the chars/4 estimate.
+    "tiktoken>=0.12.0",
 ]
 
 [project.optional-dependencies]

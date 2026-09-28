@@ -1580,9 +1580,9 @@ class TestGateAgplStructuralPolicy:
                 patch.object(indexer_mod, "CONVERTER_TRANSIENT_RETRY_COUNT", 2),
                 patch.object(indexer_mod, "_retry_sleep", AsyncMock()),
                 patch.object(indexer_mod, "wait_for_docling_ready", gate),
-                patch.object(indexer_mod, "_remote_pdf_to_markdown", remote),
+                patch.object(indexer_mod, "_remote_pdf_convert", remote),
                 patch.object(remote_mod, "wait_for_docling_ready", gate),
-                patch.object(remote_mod, "_remote_pdf_to_markdown", remote),
+                patch.object(remote_mod, "_remote_pdf_convert", remote),
                 patch.object(recovery_mod, "ensure_tessdata", lambda langs: ["deu"]),
                 patch.object(indexer_mod, "decision", MagicMock()) as decision_mock,
             ):
@@ -1656,6 +1656,63 @@ def test_bbox_to_fitz_rect_handles_both_coord_origins():
     )
     rect = _bbox_to_fitz_rect(bottomleft, 800.0, fitz)
     assert (rect.y0, rect.y1) == (100, 200)
+
+    # RFC-052 9.2: docling-service's table_results / heading_pages, built from
+    # a REAL DoclingDocument (docling-core only, no conversion): the same
+    # BOTTOMLEFT flip to a top-left bbox, 0-based pages, row-major cells, and
+    # per-chunk rebasing on the chunk start like pic["page"].
+    pytest.importorskip("docling_core")
+    from docling_core.types.doc import (
+        BoundingBox,
+        CoordOrigin,
+        DoclingDocument,
+        ProvenanceItem,
+        Size,
+        TableCell,
+        TableData,
+    )
+
+    from pageindex_mcp.converters.table_results import (
+        build_heading_pages,
+        build_table_results,
+        rebase_pages,
+    )
+
+    def prov(page_no, t, b):
+        box = BoundingBox(l=10, t=t, r=110, b=b, coord_origin=CoordOrigin.BOTTOMLEFT)
+        return ProvenanceItem(page_no=page_no, bbox=box, charspan=(0, 0))
+
+    doc = DoclingDocument(name="t")
+    for page_no in (1, 2):
+        doc.add_page(page_no=page_no, size=Size(width=600, height=800))
+    doc.add_title(text="Report", prov=prov(1, 790, 770))
+    doc.add_heading(text="Indicators", level=1, prov=prov(2, 790, 770))
+    grid = [["Indicator", "2020"], ["GDP", ""]]
+    cells = [
+        TableCell(text=v, start_row_offset_idx=r, end_row_offset_idx=r + 1,
+                  start_col_offset_idx=c, end_col_offset_idx=c + 1)
+        for r, row in enumerate(grid) for c, v in enumerate(row)
+    ]  # fmt: skip
+    doc.add_table(data=TableData(num_rows=2, num_cols=2, table_cells=cells), prov=prov(2, 700, 600))
+    [table] = build_table_results(doc)
+    assert {k: table[k] for k in ("page", "bbox", "rows", "cols", "cells")} == {
+        "page": 1, "bbox": [10.0, 100.0, 110.0, 200.0], "rows": 2, "cols": 2, "cells": grid,
+    }  # fmt: skip
+    assert "GDP" in table["markdown"]
+
+    # P4 table-results contamination finding 2: a table on a page with no
+    # registered size (page 3 was never added) has no reliable top-left
+    # origin conversion -- it must be skipped, never emitted with a silent
+    # bottom-left bbox mixed into an otherwise top-left-origin list.
+    bad_cell = TableCell(text="x", start_row_offset_idx=0, end_row_offset_idx=1,
+                         start_col_offset_idx=0, end_col_offset_idx=1)  # fmt: skip
+    doc.add_table(data=TableData(num_rows=1, num_cols=1, table_cells=[bad_cell]),
+                  prov=prov(3, 700, 600))  # fmt: skip
+    assert len(build_table_results(doc)) == 1
+
+    assert build_heading_pages(doc) == [["Report", 0], ["Indicators", 1]]
+    tables, headings = rebase_pages([table], build_heading_pages(doc), 40)
+    assert ([t["page"] for t in tables], headings) == ([41], [["Report", 40], ["Indicators", 41]])
 
 
 def test_splice_figure_markers_replaces_markers_and_appends_chart_text():
@@ -3287,19 +3344,21 @@ def test_chunked_docling_runs_chunks_in_parallel_in_page_order(tmp_path, monkeyp
     doc.close()
 
     lock = threading.Lock()
-    running = {"now": 0, "peak": 0}
     seen_threads = []
+    # P4-8 deflake: prove concurrency deterministically. All 3 chunks must
+    # reach the barrier while the others are still in flight, or this raises
+    # BrokenBarrierError after 5s -- a hard, deterministic failure instead of
+    # inferring "ran concurrently" from sleep timing that can flake under
+    # CI/host load (the old peak-counter-plus-sleep approach).
+    barrier = threading.Barrier(3, timeout=5)
 
     def fake_chunk(chunk_path, *, num_threads, **_kw):
         with fitz.open(chunk_path) as chunk:
             n = chunk.page_count
         with lock:
-            running["now"] += 1
-            running["peak"] = max(running["peak"], running["now"])
             seen_threads.append(num_threads)
-        time.sleep(0.2 if n == 10 else 0.0)  # full chunks finish after the short last one
-        with lock:
-            running["now"] -= 1
+        barrier.wait()
+        time.sleep(0.05 if n == 10 else 0.0)  # full chunks finish after the short last one
         return f"<{n}>", [{"page": 1}], {}
 
     monkeypatch.setattr(docling_conv, "_run_docling_chunk_with_timeout", fake_chunk)
@@ -3308,7 +3367,7 @@ def test_chunked_docling_runs_chunks_in_parallel_in_page_order(tmp_path, monkeyp
     )
     assert md == "<10>\n\n<10>\n\n<5>"
     assert [p["page"] for p in pics] == [1, 11, 21]
-    assert running["peak"] == 3 and seen_threads == [2, 2, 2]
+    assert seen_threads == [2, 2, 2]
 
     # The fake above skips the child; the child's own call must fit the real
     # pipeline signature (it once passed a kwarg that only failed on a Mac run).
@@ -3329,8 +3388,13 @@ def test_chunked_docling_runs_chunks_in_parallel_in_page_order(tmp_path, monkeyp
     for on in (True, False):
         q = queue.Queue()
         docling_conv._docling_chunk_worker(q, path, False, None, do_table_structure=on)
-        status, payload, peak_rss = q.get_nowait()
-        assert (status, payload) == ("ok", ("md", [], {}))
+        # RFC-052 R9: the child reports its bypass decision BEFORE converting
+        # (so a timed-out chunk's record still carries it), then the result
+        # with the chunk's table_results/heading_pages as a fourth element.
+        kind, bypass = q.get_nowait()
+        assert (kind, bypass["bypass"]) == ("bypass", "none" if on else "tableformer")
+        status, payload, peak_rss, extras = q.get_nowait()
+        assert (status, payload, extras) == ("ok", ("md", [], {}), {})
         assert isinstance(peak_rss, int) and peak_rss > 0  # the child's own ru_maxrss
     assert tables == [None, set()]
     assert docling_conv._IN_CHUNK_CHILD is False  # reset once the child is done
@@ -3388,20 +3452,22 @@ def test_docling_chunk_record_per_chunk_carries_context_and_outcome(tmp_path, mo
     chunk_fields = {
         "event", "job_id", "shard", "chunk", "page_start", "page_end", "backend",
         "do_table_structure", "do_ocr", "tableformer_mode", "duration_s",
-        "peak_rss_bytes", "outcome",
+        "peak_rss_bytes", "outcome", "bypass", "bypass_reasons",
     }  # fmt: skip
     for a in attrs:
         assert chunk_fields <= set(a), chunk_fields - set(a)
         assert (a["kind"], a["event"], a["attrs"]) == ("decision", "docling_chunk", {})
     rows = [
         (a["chunk"], a["page_start"], a["page_end"], a["do_table_structure"], a["outcome"],
-         a["peak_rss_bytes"])
+         a["peak_rss_bytes"], a["bypass"])
         for a in attrs
     ]  # fmt: skip
+    # RFC-052 R9 AC5 / P20: every record carries bypass -- the timed-out chunk
+    # (no child report) too, labelled from the P3 decision.
     assert rows == [
-        ("1/3", 0, 9, True, "ok", 1_450_000_000),
-        ("2/3", 10, 19, False, "ok", 1_450_000_000),
-        ("3/3", 20, 24, False, "timeout", None),
+        ("1/3", 0, 9, True, "ok", 1_450_000_000, "none"),
+        ("2/3", 10, 19, False, "ok", 1_450_000_000, "tableformer"),
+        ("3/3", 20, 24, False, "timeout", None, "tableformer"),
     ]
     for a in attrs:
         assert (a["job_id"], a["shard"], a["backend"]) == ("j-7", "1/3:0-24", "mac")

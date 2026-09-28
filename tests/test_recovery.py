@@ -154,6 +154,29 @@ def _make_low_content_state(
     )
 
 
+def _make_image_dominant_state() -> ExtractionState:
+    """>50% non-empty lines are image markers, so the image-line ratio gate
+    in ``_recover_image_dominant_ocr`` passes (RFC-052 9.2 amendment)."""
+    return ExtractionState(
+        result={"structure": [{"node_id": "1", "title": "R", "text": "x" * 10, "nodes": []}]},
+        ok=False,
+        reason="node_count<3",
+        gate_result=TreeGateResult(
+            ok=False,
+            defect=TreeDefect.NODE_COUNT_LOW,
+            all_defects=frozenset({TreeDefect.NODE_COUNT_LOW}),
+        ),
+        first_defect=TreeDefect.NODE_COUNT_LOW,
+        route=Route.FLAT,
+        md_content="<!-- image -->\n<!-- image -->\n<!-- image -->\nsome text",
+        tmp_md_path=None,
+        pic_results=[],
+        used_converter="docling",
+        total_chars=10,
+        extraction_stages_captured=[],
+    )
+
+
 # ===========================================================================
 # GATES table: recovery wiring, policy, severity ordering, eligibility
 # ===========================================================================
@@ -1097,13 +1120,30 @@ class TestReEntryGuardEnforcement:
     _METHODS = (
         ("_recover_garble_ocr", _make_garble_state),
         ("_recover_low_content_ocr", _make_low_content_state),
+        ("_recover_image_dominant_ocr", _make_image_dominant_state),
     )
 
     @pytest.mark.asyncio
-    async def test_guard_blocks_retry_exactly_when_flag_is_set(self):
+    async def test_guard_blocks_retry_exactly_when_flag_is_set(self, monkeypatch):
         """Table over (method, flag) -> whether _execute_ocr_retry fires.
         Flag True must block; flag False must still fire (no D1 regression)."""
+        from pageindex_mcp.client import recovery as rec_mod
         from pageindex_mcp.client.recovery import RecoveryMixin
+        from pageindex_mcp.config import pipeline_config as _orig_cfg
+        from pageindex_mcp.config import settings as _orig_settings
+
+        # _recover_image_dominant_ocr additionally gates on these two flags;
+        # pin them so the table below is deterministic regardless of env.
+        monkeypatch.setattr(
+            rec_mod,
+            "pipeline_config",
+            dataclasses.replace(_orig_cfg, image_dominant_ocr_escalation_enabled=True),
+        )
+        monkeypatch.setattr(
+            rec_mod,
+            "settings",
+            dataclasses.replace(_orig_settings, flat_doc_routing=True),
+        )
 
         failures: list[str] = []
         for method_name, make_state in self._METHODS:
@@ -1120,6 +1160,115 @@ class TestReEntryGuardEnforcement:
                         f"expected {expected_calls} retries, got {got}"
                     )
         assert not failures, "re-entry guard failures:\n  " + "\n  ".join(failures)
+
+        # RFC-052 R9 AC7: each HR5 path passes its closed-vocabulary trigger.
+        triggers = {}
+        for method_name, make_state in self._METHODS:
+            mixin = RecoveryMixin()
+            mixin._execute_ocr_retry = AsyncMock(return_value=False)
+            await getattr(mixin, method_name)(make_state(), "/f.pdf", "f.pdf", ".pdf", None)
+            triggers[method_name] = mixin._execute_ocr_retry.await_args.kwargs["recovery_trigger"]
+        assert triggers == {
+            "_recover_garble_ocr": "hr5_garble",
+            "_recover_low_content_ocr": "hr5_low_content",
+            "_recover_image_dominant_ocr": "hr5_image_dominant",
+        }
+
+        # ...and _execute_ocr_retry forwards it with prior_pass: the first
+        # pass's chunks, plus (hr5_garble) the flagged nodes' pages via
+        # heading_pages, filtered per chunk; None -- never [] -- without chunks.
+        from pageindex_mcp.client import remote as remote_mod
+        from pageindex_mcp.client.remote import RemoteConvertResult
+
+        state = _make_garble_state()
+        state.use_remote = True
+        state.pdf_page_count = 6
+        state.result = {
+            "structure": [
+                {"node_id": "1", "title": "R", "text": "x", "nodes": []},
+                {"node_id": "2", "title": "S", "text": "y", "nodes": []},
+            ]
+        }
+        state.heading_pages = [("R", 0), ("S", 3)]
+        first = [{"page_start": 0, "page_end": 2}, {"page_start": 3, "page_end": 5}]
+        state.first_pass_chunks = [dict(c) for c in first]
+        convert = AsyncMock(
+            return_value=RemoteConvertResult(
+                "# Recovered\n\nbody", [], heading_pages=[("Recovered", 0)], table_results=[{}]
+            )
+        )
+        mixin = RecoveryMixin()
+        mixin._staging_key = "uploads/f.pdf"
+        mixin._reconvert_and_revalidate = AsyncMock()
+        retry_kw = {
+            "reason_label": "Garbling",
+            "splice_label": "garble_escalation",
+            "use_keep_best": False,
+            "metric_fail_label": "still_garbled",
+        }
+        with (
+            patch.object(remote_mod, "_remote_pdf_convert", convert),
+            patch.object(remote_mod, "wait_for_docling_ready", AsyncMock()),
+            patch.object(rec_mod, "ensure_tessdata", lambda langs: ["deu"]),
+            patch.object(rec_mod, "_garble_check_nodes", lambda n, **kw: n[0]["title"] == "S"),
+        ):
+            args = (state, "/f.pdf", "f.pdf", ".pdf", None)
+            assert await mixin._execute_ocr_retry(*args, **retry_kw, recovery_trigger="hr5_garble")
+            sent = convert.await_args.kwargs
+            assert sent["recovery_trigger"] == "hr5_garble"
+            assert sent["prior_pass"] == [
+                {"page_start": 0, "page_end": 2, "garbled_pages": []},
+                {"page_start": 3, "page_end": 5, "garbled_pages": [3, 4, 5]},
+            ]
+            assert state.first_pass_chunks == first  # the retained first pass is untouched
+            # The kept retry's headings/TableFormer tables now anchor the tables.
+            assert (state.heading_pages, state.tableformer_results) == ([("Recovered", 0)], [{}])
+            state.first_pass_chunks = None
+            await mixin._execute_ocr_retry(*args, **retry_kw, recovery_trigger="hr5_low_content")
+            assert convert.await_args.kwargs["prior_pass"] is None
+
+        # Reverted branch (RFC-052 9.2 amendment): when keep-best decides the
+        # retry loses, _ocr_applied is False and heading_pages/
+        # tableformer_results are never overwritten by _recovery_extras --
+        # they stay the first pass's values even though the remote call
+        # itself returned new ones.
+        revert_state = _make_garble_state()
+        revert_state.use_remote = True
+        revert_state.pdf_page_count = 6
+        revert_state.heading_pages = [("First", 0)]
+        revert_state.tableformer_results = [{"pass": "first"}]
+        revert_convert = AsyncMock(
+            return_value=RemoteConvertResult(
+                "short",
+                [],
+                heading_pages=[("Recovered", 0)],
+                table_results=[{"pass": "retry"}],
+            )
+        )
+        revert_mixin = RecoveryMixin()
+        revert_mixin._staging_key = "uploads/f.pdf"
+        revert_mixin._reconvert_and_revalidate = AsyncMock()
+        with (
+            patch.object(remote_mod, "_remote_pdf_convert", revert_convert),
+            patch.object(remote_mod, "wait_for_docling_ready", AsyncMock()),
+            patch.object(rec_mod, "ensure_tessdata", lambda langs: ["deu"]),
+            patch.object(rec_mod, "_keep_best_wins", lambda **kw: False),
+        ):
+            applied = await revert_mixin._execute_ocr_retry(
+                revert_state,
+                "/f.pdf",
+                "f.pdf",
+                ".pdf",
+                None,
+                reason_label="Image-dominant",
+                splice_label="image_dominant_escalation",
+                use_keep_best=True,
+                metric_fail_label="still_image_only",
+                recovery_trigger="hr5_image_dominant",
+            )
+        assert applied is False
+        assert revert_state.heading_pages == [("First", 0)]
+        assert revert_state.tableformer_results == [{"pass": "first"}]
 
     @pytest.mark.asyncio
     async def test_guard_cascades_to_prevent_triple_ocr(self):

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -244,6 +244,16 @@ class ExtractionState:
     # clean extraction even when the tree built from it still fails.
     pre_rebuild_md_chars: int | None = None
     pre_rebuild_md_garbled: bool | None = None
+    # RFC-052 R9 AC7: the FIRST remote pass's applied.chunks, rebased to
+    # whole-document pages; None (never []) when that pass reported none.
+    first_pass_chunks: list | None = None
+    # RFC-052 9.2: [(title, page0), ...] and TableFormer table_results of the
+    # pass whose markdown the tree was built from (whole-document pages).
+    heading_pages: list = field(default_factory=list)
+    tableformer_results: list = field(default_factory=list)
+    # RFC-052 R7: tables.anchor.PendingTables while a capture is in flight;
+    # consumed only by _persist_tree_result (HR5: never on reject/flat).
+    pending_tables: object | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "_init_complete", True)

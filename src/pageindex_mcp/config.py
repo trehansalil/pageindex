@@ -3,6 +3,7 @@
 import dataclasses
 import logging
 import os
+import re
 from dataclasses import dataclass
 
 from dotenv import load_dotenv
@@ -26,12 +27,89 @@ MAX_DOCLING_PAGES: int = int(os.environ.get("MAX_DOCLING_PAGES", "150"))
 TABLEFORMER_MODES: tuple[str, ...] = ("accurate", "fast")
 
 
+#: RFC-052 P4-8 / 9.8: the ``recovery_trigger`` label's bound -- a short,
+#: log-safe reason tag (e.g. "hr5_garble"), never free text (HR3).
+RECOVERY_TRIGGER_MAX_LEN = 40
+
+
+def sanitize_recovery_trigger(value) -> str | None:
+    """Coerce an arbitrary ``recovery_trigger`` value to a bounded
+    ``[a-z0-9_]`` label of at most :data:`RECOVERY_TRIGGER_MAX_LEN` chars, or
+    ``None`` when nothing usable survives. Never raises -- shared by
+    ``PdfConvertRequest`` (docling-service) and ``emit_force_recovery``
+    (worker) so the label can never drift between where it is set and where
+    it is logged."""
+    if not isinstance(value, str):
+        return None
+    candidate = re.sub(r"[^a-z0-9_]", "", value.strip().lower())[:RECOVERY_TRIGGER_MAX_LEN]
+    return candidate or None
+
+
 def pageclass_chunking_enabled(override: bool | None = None) -> bool:
     """``PAGECLASS_CHUNKING`` (default on). ``0`` restores today's uniform
     chunks with the table flag only; ``override`` (a request field) wins."""
     if override is not None:
         return override
     return os.environ.get("PAGECLASS_CHUNKING", "1").strip() != "0"
+
+
+# RFC-052 R9 (P4, design "Signal-driven Bypass" -> Kill switches): service-env
+# readers for the per-chunk bypass. Read per call like the knobs above, so a
+# long-lived docling-service sees an env change without a restart. Every
+# switch defaults OFF: with all of them off each chunk's (do_ocr,
+# do_table_structure) equals the P3 decision (design P19).
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_unit_float(name: str, default: float) -> float:
+    """A ``[0, 1]`` share; anything unparsable or out of range logs a WARNING
+    and keeps the default rather than silently loosening a safety floor."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        value = -1.0
+    if not 0.0 <= value <= 1.0:
+        logging.getLogger(__name__).warning("invalid %s=%r; using %s", name, raw, default)
+        return default
+    return value
+
+
+def tables_ocr_bypass_enabled() -> bool:
+    """``TABLES_OCR_BYPASS`` (default ``0``): R9 AC1, skip OCR on clean
+    text-layer (table) pages."""
+    return _env_flag("TABLES_OCR_BYPASS")
+
+
+def tables_trust_bypass_enabled() -> bool:
+    """``TABLES_TRUST_BYPASS`` (default ``0``): R9 AC3, replace TableFormer
+    with the ``find_tables()`` grid on trusted ruled pages. ``1`` only on the
+    9.7 gate."""
+    return _env_flag("TABLES_TRUST_BYPASS")
+
+
+def tables_trust_coverage() -> float:
+    """``TABLES_TRUST_COVERAGE`` (default ``0.5``): R9 AC3 coverage floor."""
+    return _env_unit_float("TABLES_TRUST_COVERAGE", 0.5)
+
+
+def tables_ocr_bypass_min_filled() -> float:
+    """``TABLES_OCR_BYPASS_MIN_FILLED`` (default ``0.5``): R9 AC1 share of
+    non-empty ``find_tables()`` cells a table needs before its page may skip OCR."""
+    return _env_unit_float("TABLES_OCR_BYPASS_MIN_FILLED", 0.5)
+
+
+def tableformer_skip_enabled() -> bool:
+    """``TABLEFORMER_SKIP_ENABLED`` (existing, default on): R9 AC2's switch,
+    the R3 no-table TableFormer skip."""
+    return os.environ.get("TABLEFORMER_SKIP_ENABLED", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+    )
 
 
 def docling_tableformer_mode(override: str | None = None) -> str:

@@ -24,7 +24,7 @@ import time
 import urllib.parse
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -197,11 +197,48 @@ class PdfConvertRequest(BaseModel):
     # INCLUSIVE, the same convention as the docling_chunk record's
     # page_start/page_end and the page_classes ranges. Both or neither;
     # neither is today's whole-document path. page_classes and
-    # pages_with_tables stay document-level; the service rebases them to the
-    # slice. The response's picture pages are the slice's own: the caller
-    # adds page_start when it merges shards.
+    # pages_with_tables are SLICE-relative to page_start..page_end (0-based
+    # from the slice's own first page), not document-level, when a slice is
+    # requested -- the caller (the worker) is the one that rebases onto the
+    # whole document. The response's picture pages are the slice's own: the
+    # caller adds page_start when it merges shards.
     page_start: int | None = Field(default=None, ge=0)
     page_end: int | None = Field(default=None, ge=0)
+    # RFC-052 R9 AC7 (P4-4, corrected P4-9 repair cycle 2): the HR5 recovery
+    # request's first-pass context, [{page_start, page_end, do_ocr,
+    # do_table_structure, grid_replace, bypass, bypass_reasons,
+    # tableformer_pages, garbled_pages?}, ...]. These pages are 0-based
+    # WHOLE-DOCUMENT pages, NOT slice-relative -- an HR5 recovery request is
+    # itself unsliced (no page_start/page_end of its own), so there is no
+    # slice for them to be relative to. Each entry is the worker's verbatim
+    # forward of one first-pass applied.chunks[*] record, which WAS
+    # shard-relative to that earlier (possibly sliced) request -- the worker
+    # is the one that rebases those pages by that shard's own page_start
+    # before assembling this prior_pass. garbled_pages (P4-8/9), when
+    # present, is the worker's 0-based whole-document pages it maps from the
+    # first-pass tree nodes helpers/garble.py flags via heading_pages
+    # (tables/anchor.py garbled_pages, design "garbled_pages source");
+    # omitted means unknown -- either no flagged node, or the flagged node(s)
+    # could not be anchored to a heading_pages entry -- never zero. ONLY
+    # recorded in the docling_force_recovery decision, never acted
+    # on. Typed as `Any` on purpose (rule 4): a malformed value -- wrong
+    # shape, not even a list -- must never 422 and so weaken a forced
+    # recovery conversion (HR5); it is normalized to None or has non-dict
+    # entries dropped instead.
+    prior_pass: Any | None = None
+    # RFC-052 P4-8/9.8, closed vocabulary (P4-9 repair cycle 2): a label
+    # naming WHY this is a forced recovery pass, one of "hr5_garble",
+    # "hr5_low_content", "hr5_image_dominant" -- one per client/recovery.py
+    # HR5 escalation path (_recover_garble_ocr, _recover_low_content_ocr,
+    # _recover_image_dominant_ocr respectively). Typed loosely here (never
+    # 422 -- HR3): sanitized to config.RECOVERY_TRIGGER_MAX_LEN chars of
+    # [a-z0-9_], and any value outside the closed set above is dropped to
+    # None by emit_force_recovery rather than passed through. A recognised
+    # trigger sets the docling_force_recovery record's choice/force_reason to
+    # the closed "hr5_recovery" category (never to the label itself, which
+    # lives only in the record's own recovery_trigger attr). Optional so an
+    # older client keeps working unchanged.
+    recovery_trigger: str | None = None
 
     @model_validator(mode="after")
     def _page_range_is_whole(self):
@@ -227,6 +264,19 @@ class PictureResultOut(BaseModel):
     decorative: bool = False
 
 
+class TableResultOut(BaseModel):
+    """One TableFormer table (RFC-052 9.2): 0-based ``page``, ``bbox``
+    ``[l, t, r, b]`` in PDF points with a top-left origin, row-major
+    ``cells`` text, and the table's markdown."""
+
+    page: int
+    bbox: list[float]
+    rows: int
+    cols: int
+    cells: list[list[str]]
+    markdown: str
+
+
 class PdfConvertResponse(BaseModel):
     markdown: str
     picture_results: list[PictureResultOut]
@@ -235,6 +285,12 @@ class PdfConvertResponse(BaseModel):
     # its settings were applied rather than silently falling back to the
     # env default on an older build that ignores the request fields.
     applied: dict | None = None
+    # RFC-052 9.2 (design "TableFormer source"): TableFormer's tables and the
+    # [heading, page] pairs, 0-based pages. With a page_start slice they are
+    # the slice's own pages, like picture_results: the caller adds
+    # page_start. Empty by default, so an older client is unaffected.
+    table_results: list[TableResultOut] = Field(default_factory=list)
+    heading_pages: list[tuple[str, int]] = Field(default_factory=list)
 
 
 class ImageConvertResponse(BaseModel):
@@ -834,6 +890,17 @@ def _request_ocr_policy(req: PdfConvertRequest, page_classes, page_count: int) -
     return None
 
 
+def _request_prior_pass(req: PdfConvertRequest) -> list | None:
+    """The request's ``prior_pass`` with non-dict entries dropped; ``None``
+    when absent OR when it is not even a list (``prior_pass`` is typed
+    ``Any`` -- rule 4). Recorded only (R9 AC7), so a malformed value is
+    simply normalized away -- it must never fail the forced recovery
+    conversion (HR5)."""
+    if not isinstance(req.prior_pass, list):
+        return None
+    return [entry for entry in req.prior_pass if isinstance(entry, dict)]
+
+
 @app.post("/convert/pdf", response_model=PdfConvertResponse, dependencies=[Depends(_verify_token)])
 async def convert_pdf(  # noqa: PLR0915
     req: PdfConvertRequest,
@@ -934,6 +1001,9 @@ async def convert_pdf(  # noqa: PLR0915
                 )
             )
             _pages_set = set(pages_with_tables) if pages_with_tables is not None else None
+            # RFC-052 9.2 / R9: the converter fills table_results,
+            # heading_pages and the per-chunk bypass context in here.
+            conversion_extras: dict = {}
             md, pic_results, _extraction_stages = await _await_conversion(
                 asyncio.to_thread(
                     pdf_to_markdown_docling,
@@ -954,6 +1024,9 @@ async def convert_pdf(  # noqa: PLR0915
                     # request's own X-Deadline (None: bounded only by
                     # cancel_event, like the old inline path).
                     deadline=conv.deadline,
+                    extras=conversion_extras,
+                    prior_pass=_request_prior_pass(req),
+                    recovery_trigger=req.recovery_trigger,
                 ),
                 conv,
             )
@@ -971,12 +1044,23 @@ async def convert_pdf(  # noqa: PLR0915
             "route": route,
             "chunk_count": chunk_count,
         }
+        # RFC-052 R9 (design "Logging"): echo the bypass switch values and
+        # each chunk's effective decision (applied.chunks[*].bypass is what
+        # the 9.7 bench compares, and the worker keeps it as the first pass's
+        # recovery context).
+        from pageindex_mcp.converters.table_bypass import BypassSwitches
+
+        applied.update(BypassSwitches.from_env().as_applied())
+        applied["chunks"] = conversion_extras.get("chunks", [])
+        applied["prior_pass_received"] = req.prior_pass is not None
         if page_range is not None:
             applied["page_range"] = page_range
         return PdfConvertResponse(
             markdown=md,
             picture_results=[PictureResultOut(**p) for p in serialized_pics],
             applied=applied,
+            table_results=[TableResultOut(**t) for t in conversion_extras.get("table_results", [])],
+            heading_pages=[tuple(h) for h in conversion_extras.get("heading_pages", [])],
         )
     except _PageRangeError as exc:
         logger.warning("refusing page range: %s", exc)

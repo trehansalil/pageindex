@@ -362,6 +362,7 @@ pageindex/                              (bucket)
 ├── preloaded/<filename>                 # files synced from local doc_store/
 ├── processed/<doc_id>.json             # indexed tree (TREE route)
 ├── processed/<doc_id>.flat.json        # flat document (FLAT route)
+├── processed/<doc_id>.tables.json      # captured tables sidecar (TREE route, remote PDF + AGPL fallback only)
 ├── processed/<doc_id>.meta.json        # document metadata sidecar
 └── hashes/processed_hashes.json        # {filename: sha256} dedup cache
 ```
@@ -371,7 +372,7 @@ pageindex/                              (bucket)
 Deletion must cascade across **every** derived store, in this order:
 
 1. MinIO `uploads/<doc_id>/*`
-2. MinIO `processed/<doc_id>.json` / `.flat.json` / `.meta.json`
+2. MinIO `processed/<doc_id>.json` / `.flat.json` / `.tables.json` / `.meta.json`
 3. MinIO `hashes/processed_hashes.json` (remove entry)
 4. Redis cache key (`pageindex:doc:<doc_id>`)
 5. Postgres registry row

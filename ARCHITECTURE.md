@@ -417,6 +417,8 @@ preloaded/<filename>                   files synced from local doc_store/      [
 processed/<doc_id>.json                full indexed tree (title/desc/structure)[current]
 processed/<doc_id>.meta.json           lightweight sidecar for listing         [current]
 processed/<doc_id>.flat.json           flat-route blocks (prose/image/table)   [current]
+processed/<doc_id>.tables.json         captured tables (RFC-052 P4, tree route,
+                                        remote PDF + AGPL fallback only)        [current]
 figures/<doc_id>/<figure_id>.png       extracted figure images                 [current]
 verdicts/<doc_id>.json                 gate verdict + pipeline provenance      [current]
 quarantine/<sha256>.json               rejected tree payload (diagnosis only)  [current]
@@ -503,6 +505,8 @@ and invalidates the cache — but it does **not** purge the filename→sha256 en
 ```
 erase_document(doc_id):
    ✓ MinIO  processed/<doc_id>.json                 delete
+   ✓ MinIO  processed/<doc_id>.flat.json            delete (flat-route docs only)
+   ✓ MinIO  processed/<doc_id>.tables.json          delete (RFC-052 P4; docs with a captured-tables sidecar only)
    ✓ MinIO  processed/<doc_id>.meta.json            delete
    ✓ MinIO  uploads/<doc_id>/*                      delete (all objects)
    ✓ MinIO  quarantine/<sha256>.json + .meta.json   delete via ctx.sha256 (RFC-049 D2-C)
@@ -657,6 +661,46 @@ MinIO, Redis, and server binding variables are documented in `.env.example` and 
 | `POSTGRES_DSN` | — | asyncpg DSN, e.g. `postgresql://user:pass@host:5432/dbname`. When unset, registry is bypassed entirely and `list_processed_docs()` MinIO scanning is used. |
 | `REGISTRY_ENABLED` | `true` | Master switch. Set to `false` to disable all registry reads/writes without removing Postgres from the deployment. |
 | `PAGEINDEX_CATALOG_TOPK` | `200` | Stage B BM25 cut-off — top-K docs returned by `ts_rank`/GIN before the LLM prefilter. Tune by measured recall (RFC-006 F8). |
+
+### Table capture (RFC-052 P4)
+
+Worker (`tables/settings.py capture_settings()` / `describe_settings()`; capture starts only on the
+remote PDF route with `ALLOW_AGPL_FALLBACK` on — HR4):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `TABLES_CAPTURE` | `1` (true) | Master switch for PyMuPDF table capture; `0` = today's behaviour, no `.tables.json` |
+| `TABLES_PROC_BYTES` | `268435456` (256 MiB) | RSS kill limit per capture process |
+| `TABLES_RESERVE_BYTES` | `536870912` (512 MiB) | Cgroup headroom reserved ahead of the capture pool's memory sizing |
+| `TABLES_MIN_PAGES_PER_PROC` | `30` | Minimum pages per capture process (bounds the pool alongside cpu/mem/slots) |
+| `TABLES_POD_SLOTS` | `floor(available_cpus())` | Pod-wide capture-process slot ceiling across concurrent jobs (`fcntl` lock files) |
+| `TABLES_RSS_POLL_S` | `0.25` | RSS watchdog poll period |
+| `TABLES_JOIN_GRACE_S` | `30` | Max additional wait for capture to finish after conversion returns |
+| `TABLES_STRATEGIES` | `lines,text` | Enabled capture strategies (`text` only fires on column-alignment pages) |
+| `TABLES_LINK_MIN_OVERLAP` | `0.5` | Containment threshold for linking a PyMuPDF record to a TableFormer record |
+| `TABLES_DESC_ENABLED` | `1` (true) | Master switch for LLM table descriptions |
+| `TABLES_DESC_MODEL` | `PAGEINDEX_FILTER_MODEL` | Model used for table descriptions |
+| `TABLES_DESC_BATCH` | `25` | Tables per description LLM call |
+| `TABLES_DESC_CONCURRENCY` | `4` | Concurrent description calls in flight |
+| `TABLES_DESC_MAX_PER_DOC` | `600` | Cap on LLM-described tables per document; the rest get the deterministic fallback |
+| `TABLES_DESC_DEADLINE_S` | `60` | Upper bound on `PendingTables.finalize`'s wait for descriptions (further capped by the caller's own job deadline, minus a safety margin, when one is known); on timeout every record gets a fallback description |
+
+Server (`tables/settings.py search_settings()`):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `TABLES_IN_SEARCH` | `1` (true) | Table nodes render as `{node_id, type: "table", title, description}` in the search view; `0` = today's `_strip_text` view |
+| `TABLES_SEARCH_TOKEN_BUDGET` | `8000` | Max tokens the table-enriched search view may add over the `tables_on=False` baseline |
+
+docling-service (`config.py`; R9 signal-driven bypass):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `TABLES_OCR_BYPASS` | `0` (false) | R9 AC1: skip OCR on a chunk whose text layer and any table are already clean |
+| `TABLES_TRUST_BYPASS` | `0` (false) | R9 AC3: replace TableFormer's grid on a page with `find_tables()`'s markdown when it is trusted |
+| `TABLES_TRUST_COVERAGE` | `0.5` | R9 AC3 minimum page coverage for a `find_tables()` result to be trusted |
+| `TABLES_OCR_BYPASS_MIN_FILLED` | `0.5` | R9 AC1 minimum share of non-empty cells a table needs to count toward the OCR-clean decision |
+| `TABLEFORMER_SKIP_ENABLED` | `1` (true) | R9 AC2's switch: skip TableFormer entirely on a page with no detected tables |
 
 ---
 

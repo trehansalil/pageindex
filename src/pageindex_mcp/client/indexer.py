@@ -94,6 +94,7 @@ from ..metrics import (
     REMOTE_MD_RENORMALIZED,
     VLM_FALLBACK_TOTAL,
 )
+from ..metrics.definitions import TABLES_PERSIST_FAILURES
 from ..obs import bind_log_context
 from ..obs.decisions import decision
 from ..picture_plane import OcrEngine, strip_unresolved_image_markers
@@ -109,6 +110,10 @@ from ..storage import (
     save_quarantine,
     save_raw,
 )
+from ..storage.documents import save_tables
+from ..tables.anchor import start_pending as _start_table_capture
+from ..tables.settings import capture_settings as _tables_capture_settings
+from ..tables.settings import describe_settings as _tables_describe_settings
 from ..worker.constants import INSPECTOR_CONFIDENCE_THRESHOLD
 
 logger = logging.getLogger(__name__)
@@ -501,7 +506,7 @@ from .recovery import RecoveryMixin  # noqa: E402
 from .remote import (  # noqa: E402
     DoclingUnavailable,
     _converter_contract,
-    _remote_pdf_to_markdown,
+    _remote_pdf_convert,
     child_deadline_monotonic,
     wait_for_docling_ready,
 )
@@ -948,6 +953,28 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 pre_classification.get("page_classes") if pre_classification else None
             )
 
+            # RFC-052 R7 (P6): table capture runs beside the remote conversion.
+            # Started before the readiness wait and joined only after the
+            # conversion returned -- it never gates dispatch and never fails
+            # the job. No page count means no PyMuPDF probe (ALLOW_AGPL_FALLBACK
+            # off, or an unreadable PDF), so no capture either. HR4: the
+            # ``allow_agpl_fallback`` check is also spelled out explicitly here
+            # rather than relying solely on its pdf_page_count coupling --
+            # PyMuPDF (AGPL-3.0) records must never be produced when the
+            # AGPL fallback is disallowed, even if pdf_page_count is set.
+            if (
+                state.use_remote
+                and chain
+                and state.pdf_page_count
+                and pipeline_config.allow_agpl_fallback
+            ):
+                state.pending_tables = _start_table_capture(
+                    file_path,
+                    page_count=state.pdf_page_count,
+                    page_class_ranges=_page_classes,
+                    deadline_monotonic=child_deadline_monotonic(),
+                )
+
             if state.use_remote:
                 # Coldstart Q5 item 2: never send the first remote request into
                 # a backend that is down or still starting (a SYN blackhole).
@@ -985,7 +1012,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                             },
                         )
                         if force_full_page:
-                            md_content, state.pic_results = await _remote_pdf_to_markdown(
+                            _conv = await _remote_pdf_convert(
                                 self._staging_key,
                                 force_full_page_ocr=True,
                                 ocr_lang_override=_ocr_lang_override,
@@ -1001,13 +1028,19 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                                     "active; deferring to Fix-3 retry path",
                                     filename,
                                 )
-                            md_content, state.pic_results = await _remote_pdf_to_markdown(
+                            _conv = await _remote_pdf_convert(
                                 self._staging_key,
                                 expected_script=expected_script,
                                 pages_with_tables=_pages_with_tables,
                                 page_count=state.pdf_page_count,
                                 page_classes=_page_classes,
                             )
+                        md_content, state.pic_results = _conv.markdown, _conv.pictures
+                        # RFC-052 9.2 / R9 AC7: keep the first pass's
+                        # per-chunk context and table/heading extras.
+                        state.first_pass_chunks = list(_conv.applied_chunks) or None
+                        state.heading_pages = list(_conv.heading_pages)
+                        state.tableformer_results = list(_conv.table_results)
                     elif force_full_page and _conv_supports_ocr:
                         decision(
                             event="pdf_converter_dispatch_mode",
@@ -1318,6 +1351,18 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                             conv_name,
                             chain[next_idx].name if next_idx < len(chain) else "<none>",
                         )
+            if state.pending_tables is not None:
+                # RFC-052 R7: join after the conversion returned; descriptions
+                # then run in the background, overlapping the tree build.
+                try:
+                    _dcfg = _tables_describe_settings()
+                    await state.pending_tables.collect(
+                        _tables_capture_settings().join_grace_s,
+                        describe=_dcfg.enabled,
+                        model=_dcfg.model,
+                    )
+                except Exception:
+                    logger.warning("table capture join failed for %s", filename, exc_info=True)
             if md_content is not None:
                 _fallback_from_primary = (
                     primary_name is not None and state.used_converter != primary_name
@@ -2565,6 +2610,28 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
             _, _, mlr = _tree_max_leaf_ratio(structure)
             _verdict_computed_at = datetime.now(UTC).isoformat()
 
+            # RFC-052 9.2: tables are anchored and inserted only here -- after
+            # validate_tree/compute_verdict (HR5) -- into a COPY of the tree,
+            # so node_count/total_tree_chars below stay pre-insertion (P11).
+            _saved_structure = structure
+            _tables_doc = None
+            if state.pending_tables is not None:
+                try:
+                    _saved_structure, _tables_doc = await state.pending_tables.finalize(
+                        doc_id=doc_id,
+                        structure=structure,
+                        heading_pages=state.heading_pages,
+                        tableformer_results=state.tableformer_results,
+                        job_deadline_monotonic=child_deadline_monotonic(),
+                    )
+                except Exception:
+                    TABLES_PERSIST_FAILURES.inc()
+                    logger.warning(
+                        "tables.json build failed for doc_id=%s; the tree persists without it",
+                        doc_id,
+                        exc_info=True,
+                    )
+
             # Zone-5: verdict fields stripped from artifact body; sidecar
             # (.meta.json via save_doc_meta) is the sole authoritative verdict
             # store.  read_registry_fields falls back to sidecar for new
@@ -2579,9 +2646,19 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                     "processed_at": processed_at,
                     "sha256": sha256,
                     "doc_description": state.result.get("doc_description", ""),
-                    "structure": structure,
+                    "structure": _saved_structure,
                 },
             )
+            if _tables_doc is not None:
+                try:
+                    await asyncio.to_thread(save_tables, doc_id, _tables_doc.to_dict())
+                except Exception:
+                    TABLES_PERSIST_FAILURES.inc()
+                    logger.warning(
+                        "save_tables failed for doc_id=%s; the tree persists without it",
+                        doc_id,
+                        exc_info=True,
+                    )
 
             # Zone-5: single save_doc_meta call carries both verdict and
             # non-verdict metadata -- no separate write_verdict path.
@@ -3097,6 +3174,11 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                 # timings are still published.
                 self._stage_open(None)
                 self._emit_stage_timings()
+                # RFC-052 R7: a document that never reached
+                # _persist_tree_result (reject, flat, raise) drops its capture
+                # and pending descriptions -- nothing table-related persists.
+                if state.pending_tables is not None and not state.pending_tables.finalized:
+                    await state.pending_tables.aclose()
                 if state.tmp_lo_dir:
                     shutil.rmtree(state.tmp_lo_dir, ignore_errors=True)
                 if state.tmp_md_path and os.path.exists(state.tmp_md_path):

@@ -122,12 +122,14 @@ _C_INDEXER = "pageindex_mcp.client.indexer"
 _C_RECOVERY = "pageindex_mcp.client.recovery"
 _X_PICTURES = "pageindex_mcp.converters.pictures"
 _X_PIPELINE = "pageindex_mcp.converters.pipeline"
+_X_DOCLING_CONV = "pageindex_mcp.converters.docling_conv"
 _X_OCRLANGS = "pageindex_mcp.converters.ocr_langs"
 _X_PRECLASSIFY = "pageindex_mcp.converters.preclassify"
 _S_DOCUMENTS = "pageindex_mcp.storage.documents"
 _W_SUBPROC = "pageindex_mcp.worker.subprocess_mgr"
 _W_JOB = "pageindex_mcp.worker.job"
 _C_REMOTE = "pageindex_mcp.client.remote"
+_T_SEARCH_VIEW = "pageindex_mcp.tables.search_view"
 
 
 # ---------------------------------------------------------------------------
@@ -1798,6 +1800,79 @@ _PIPELINE_POINTS: tuple[DecisionPoint, ...] = (
         note=(
             "RFC-027 D7. page_count_guard_failed must be present or a reader "
             "misreads a failed probe as a genuinely short document."
+        ),
+    ),
+    _p(
+        event="docling_force_recovery",
+        phase=Phase.CONVERT,
+        module=_X_DOCLING_CONV,
+        function="emit_force_recovery",
+        choices=("request", "env", "hr5_recovery"),
+        attrs=(
+            "doc_sha8",
+            "route",
+            "force_reason",
+            "recovery_trigger",
+            "prior_pass_chunk_count",
+            "prior_ocr_bypass_count",
+            "prior_tableformer_bypass_count",
+            "garbled_pages_known",
+            "garbled_tableformer_overlap",
+            "prior_pass",
+        ),
+        always_emits=False,
+        note=(
+            "RFC-052 R9 AC7 / P4-4 / P4-8 / P4-9 (repair cycle 2): one record "
+            "per conversion with forced full-page OCR, never from a chunk "
+            "child. prior_pass is the first pass's per-chunk context "
+            "(page_start, page_end, do_ocr, do_table_structure, grid_replace, "
+            "bypass, bypass_reasons, tableformer_pages, optional "
+            "garbled_pages) -- numbers and labels only (HR3, sanitized: "
+            "unknown bypass/reason tags and non-numeric page fields are "
+            "dropped). recovery_trigger is a CLOSED vocabulary "
+            "(_KNOWN_RECOVERY_TRIGGERS: hr5_garble, hr5_low_content, "
+            "hr5_image_dominant, one per client/recovery.py HR5 path); any "
+            "other value is dropped to None. choice/force_reason stay the "
+            "closed inferred category (request/env/hr5_recovery) -- a valid "
+            "recovery_trigger sets choice to hr5_recovery, but the label "
+            "itself lives only in the recovery_trigger attr, never in "
+            "choice. garbled_pages_known is False (and "
+            "garbled_tableformer_overlap is None) unless at least one "
+            "prior_pass entry actually carried a garbled_pages key -- "
+            "omitted is not the same as zero overlap. garbled_tableformer_"
+            "overlap otherwise counts pages that are in both a prior chunk's "
+            "garbled_pages and its tableformer_pages. No doc_id: the service "
+            "has none, so this point identifies documents by doc_sha8 + "
+            "job_id. Recorded, never acted on; task 9.8 tabulates these from "
+            "Loki before any policy may use them."
+        ),
+    ),
+    _p(
+        event="tables_search_budget",
+        phase=Phase.PERSIST,
+        module=_T_SEARCH_VIEW,
+        function="build_search_view",
+        choices=("dropped",),
+        attrs=(
+            "doc_id",
+            "table_entry_count",
+            "enriched_count",
+            "dropped_table_count",
+            "dropped_enriched_count",
+            "added_token_count",
+            "budget_token_count",
+            "counter",
+        ),
+        always_emits=False,
+        note=(
+            "RFC-052 R8 AC3 / P15: query-time, not an ingest phase (Phase has "
+            "no query member; PERSIST is the nearest -- the view is built "
+            "from the persisted tree). Emitted once per _search_one_doc call "
+            "only when table entries were dropped from the slim search view "
+            "to keep the added tokens within TABLES_SEARCH_TOKEN_BUDGET: new "
+            "_t<k> entries lowest coverage first, then the added type/"
+            "description of enriched _seg nodes. Storage is never changed. "
+            "counter is tiktoken_o200k_base or chars4. Counts only (HR3)."
         ),
     ),
     _p(
