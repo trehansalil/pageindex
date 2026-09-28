@@ -24,6 +24,8 @@ from ..picture_plane import OcrEngine, strip_unresolved_image_markers
 from ..script import RtlDecision
 from .docling_conv import (
     DoclingCancelled,
+    _chunk_context,
+    _decide_chunk_bypass,
     _docling_converter,
     _page_classes_active,
     _patch_hierarchical_infer,
@@ -34,6 +36,7 @@ from .docling_conv import (
     _resolve_force_ocr,
     _run_docling_chunk_with_timeout,
     emit_docling_chunk,
+    emit_force_recovery,
 )
 from .headings import (
     _VERDICT_RANK,
@@ -60,6 +63,7 @@ from .pictures import (
     _recover_picture_results,
     _tag_landscape_pages_for_fallback,
 )
+from .table_results import build_heading_pages, build_table_results
 from .types import Candidate, PictureResult, StageRecord
 
 logger = logging.getLogger(__name__)
@@ -316,8 +320,31 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
     tableformer_mode: str | None = None,
     pageclass_chunking: bool | None = None,
     do_ocr_policy: str | None = None,
+    grid_replace: bool = False,
+    extras: dict | None = None,
+    prior_pass: list | None = None,
+    recovery_trigger: str | None = None,
 ) -> tuple[str, list[PictureResult], dict[str, dict]]:
     """MIT-licensed layout-aware PDF route (RFC-003 D3 / HR4 AGPL escape).
+
+    RFC-052 R9 / 9.2 (P4):
+    * The direct route takes the same per-chunk bypass decision as a chunk
+      child (``_decide_chunk_bypass``), the document being one chunk. A chunk
+      child arrives with it already applied (``do_ocr`` resolved, and
+      ``grid_replace`` for AC3).
+    * ``extras`` (when given) receives ``table_results`` / ``heading_pages``
+      (0-based pages; see ``converters/table_results.py``) and, at top level,
+      ``chunks`` (one first-pass context record per chunk).
+    * ``prior_pass`` (the HR5 recovery request's first-pass context) is only
+      recorded, in the ``docling_force_recovery`` decision, never acted on.
+    * ``recovery_trigger`` (P4-8, closed vocabulary -- repair cycle 2 finding
+      5), when given, is a short sanitized label from a closed set (e.g.
+      ``hr5_garble``) that names WHY this is a forced recovery pass; an
+      unrecognised label is dropped to ``None``. A recognised trigger sets
+      that record's ``choice``/``force_reason`` to the closed ``hr5_recovery``
+      category (same as ``prior_pass`` presence already did), never to the
+      label itself, which is echoed only in its own ``recovery_trigger`` attr
+      for the 9.8 census.
 
     Returns ``(markdown, pic_results, extraction_stages)``. The markdown keeps
     bare ``<!-- image -->`` markers (no figure references — audit finding 6);
@@ -419,6 +446,14 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
         _cancel_kw: dict = {} if cancel_event is None else {"cancel_event": cancel_event}
         if progress is not None:
             _cancel_kw["progress"] = progress
+        if extras is not None:
+            _cancel_kw["extras"] = extras
+        emit_force_recovery(
+            force_full_page_ocr=force_full_page_ocr,
+            route="chunked",
+            prior_pass=prior_pass,
+            recovery_trigger=recovery_trigger,
+        )
         return _pdf_to_markdown_docling_chunked(
             pdf_path,
             page_count=page_count,
@@ -448,7 +483,17 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
             },
         )
 
+    emit_force_recovery(
+        force_full_page_ocr=force_full_page_ocr,
+        route="direct",
+        prior_pass=prior_pass,
+        recovery_trigger=recovery_trigger,
+    )
     _do_table_structure = pages_with_tables is None or bool(pages_with_tables)
+    # A chunk child arrives with do_ocr resolved and its bypass applied; only
+    # a top-level direct call decides the bypass here (R9, P4-1).
+    _top_level = do_ocr is None
+    _direct_classes: list | None = None
     if do_ocr is None:
         # RFC-052 R3: the single pass is one chunk -- the union of its pages'
         # needs. A chunk child arrives with do_ocr resolved and no classes.
@@ -457,6 +502,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
         _pc_on = _page_classes_active(page_classes, page_count, pageclass_chunking)
         if _pc_on:
             _do_table_structure = any(pc.needs_tables for pc in _classes) or bool(pages_with_tables)
+            _direct_classes = list(_classes)
         # R2 AC7: inactive page classes (absent, kill switch, length mismatch,
         # parse failure) must degrade to "every model stays on" -- the same
         # posture TableFormer already keeps above via the unrestricted
@@ -508,10 +554,28 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
                 cancel_event=cancel_event,
                 do_ocr=do_ocr,
                 tableformer_mode=tableformer_mode,
+                page_classes=_direct_classes,
+                do_ocr_policy=do_ocr_policy,
             )
             _direct_outcome = "ok"
             if progress is not None:
                 progress["done"] = 1
+            if extras is not None:
+                _child_extras = _direct_stats.get("extras") or {}
+                _tables = _child_extras.get("table_results") or []
+                extras.update(
+                    table_results=_tables,
+                    heading_pages=_child_extras.get("heading_pages") or [],
+                    chunks=[
+                        _chunk_context(
+                            0,
+                            max(page_count - 1, 0),
+                            _direct_stats.get("bypass")
+                            or {"do_ocr": do_ocr, "do_table_structure": _direct_do_table_structure},
+                            _tables,
+                        )
+                    ],
+                )
             return direct_result
         except DoclingCancelled:
             _direct_outcome = "cancelled"
@@ -520,18 +584,46 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
             _direct_outcome = "timeout"
             raise
         finally:
+            _bp = _direct_stats.get("bypass") or {}
             emit_docling_chunk(
                 chunk="1/1",
                 page_start=0 if page_count > 0 else None,
                 page_end=page_count - 1 if page_count > 0 else None,
-                do_table_structure=_direct_do_table_structure,
-                do_ocr=do_ocr,
+                do_table_structure=_bp.get("do_table_structure", _direct_do_table_structure),
+                do_ocr=_bp.get("do_ocr", do_ocr),
                 duration_s=time.monotonic() - _direct_started,
                 peak_rss_bytes=_direct_stats.get("peak_rss_bytes"),
                 outcome=_direct_outcome,
                 page_count=page_count,
                 single_shot=True,
+                bypass=_bp.get(
+                    "bypass", "tableformer" if not _direct_do_table_structure else "none"
+                ),
+                bypass_reasons=_bp.get("bypass_reasons", ()),
             )
+
+    # RFC-052 R9 (P4-1): the in-process direct route is one chunk -- decide its
+    # bypass here, exactly as a chunk child does, below force (P4-4).
+    _bypass_record: dict = {
+        "do_ocr": do_ocr,
+        "do_table_structure": _do_table_structure,
+        "grid_replace": grid_replace,
+        "bypass": "tableformer" if not _do_table_structure else "none",
+        "bypass_reasons": [],
+    }
+    if _top_level:
+        _effective = _decide_chunk_bypass(
+            pdf_path,
+            _direct_classes,
+            force_full_page_ocr=force_full_page_ocr,
+            do_ocr=do_ocr,
+            do_table_structure=_do_table_structure,
+            policy=do_ocr_policy,
+        )
+        do_ocr = bool(_effective.do_ocr)
+        _do_table_structure = _effective.do_table_structure
+        grid_replace = _effective.grid_replace
+        _bypass_record = _effective.as_record()
 
     # Reuse the process-cached converter (see _docling_converter): a fresh
     # DocumentConverter per call leaks ~250 MB/doc that torch never frees.
@@ -583,7 +675,30 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
             page_count=page_count,
             single_shot=True,
             tableformer_mode=tableformer_mode,
+            bypass=_bypass_record["bypass"],
+            bypass_reasons=_bypass_record["bypass_reasons"],
         )
+
+    # RFC-052 R9 AC3: only reached with TABLES_TRUST_BYPASS=1 and never under
+    # force (P4-4). TableFormer did not run; Docling's layout tables get the
+    # overlapping find_tables() grid instead.
+    if grid_replace and not _resolve_force_ocr(force_full_page_ocr):
+        from .table_bypass import apply_grid_replacement
+
+        apply_grid_replacement(result.document, pdf_path)
+    # RFC-052 9.2: TableFormer's tables, before the add-on touches the document.
+    # P4 table-results contamination finding 2: only when TableFormer actually
+    # ran -- never after AC3 grid replacement and never on an AC2/force
+    # bypass, both of which imply _do_table_structure is False here (grid
+    # replacement requires tableformer_off by construction in decide_bypass).
+    if extras is not None:
+        extras["table_results"] = (
+            build_table_results(result.document) if _do_table_structure else []
+        )
+        if _top_level:
+            extras["chunks"] = [
+                _chunk_context(0, max(page_count - 1, 0), _bypass_record, extras["table_results"])
+            ]
 
     # RFC-035 D2 Phase 2 trigger: for pages tagged landscape above, compare the
     # primary extraction's char count against LANDSCAPE_CHAR_THRESHOLD. Detection
@@ -650,6 +765,8 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
     except Exception as exc:
         logger.warning("could not collect raw heading pages for %s (%s)", pdf_path, exc)
         heading_pages_raw = {}
+    # RFC-052 9.2: the matching [[heading, page], ...] list for each candidate.
+    _heading_list_raw = build_heading_pages(result.document) if extras is not None else []
 
     # docling-hierarchical-pdf (krrome) rebuilds heading SELECTION from the PDF
     # outline/numbering, dropping the font-size false positives Docling otherwise
@@ -796,6 +913,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
     except Exception as exc:
         logger.warning("could not collect post-add-on heading pages for %s (%s)", pdf_path, exc)
         heading_pages_post = {}
+    _heading_list_post = build_heading_pages(result.document) if extras is not None else []
 
     # Build immutable Candidate pairs (md + heading_pages) via the unified
     # _candidate_from_document entry point so the two values never drift.
@@ -880,6 +998,10 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
 
     md = selected.md
     heading_pages_for_md = selected.heading_pages
+    if extras is not None:
+        extras["heading_pages"] = (
+            _heading_list_raw if selected is raw_candidate else _heading_list_post
+        )
 
     # Pre-fallback stage: normalize indented headings.
     _pre_fallback_stages: list[tuple[str, Callable[[str], str]]] = [

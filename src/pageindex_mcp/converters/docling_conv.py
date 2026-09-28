@@ -93,20 +93,31 @@ def _ocr_policy(override: str | None = None) -> str:
 
 
 def _resolve_do_ocr(
-    force_full_page_ocr: bool, needs_ocr: bool = False, policy: str | None = None
+    force_full_page_ocr: bool,
+    needs_ocr: bool = False,
+    policy: str | None = None,
+    bypass_ocr: bool = False,
 ) -> bool:
     """The ``do_ocr`` Docling will actually run with.
 
     Forced full-page OCR (the recovery / HR5 escalation) always wins (R3 AC4);
-    then the policy (``_ocr_policy``), which under ``page_class`` defers to the
-    chunk's ``needs_ocr``. Shared by the pipeline options and the
-    ``docling_chunk`` record, so the logged value can never drift from the
-    effective one.
+    then an explicit operator policy of ``force_on`` (P4 orchestrator
+    decision: a human-set ``DOCLING_DO_OCR=1``/``do_ocr_policy="force_on"``
+    kill-switch outranks the R9 AC1 signal-driven OCR bypass -- the operator
+    override must not be silently defeated by a heuristic); then the R9 AC1
+    OCR bypass (``bypass_ocr``); then the rest of the policy
+    (``_ocr_policy``), which under ``page_class`` defers to the chunk's
+    ``needs_ocr``. Shared by the pipeline options and the ``docling_chunk``
+    record, so the logged value can never drift from the effective one.
     """
     if _resolve_force_ocr(force_full_page_ocr):
         return True
     policy = _ocr_policy(policy)
-    return policy == "force_on" or (policy == "page_class" and needs_ocr)
+    if policy == "force_on":
+        return True
+    if bypass_ocr:
+        return False
+    return policy == "page_class" and needs_ocr
 
 
 def _page_classes_active(
@@ -727,8 +738,15 @@ def emit_docling_chunk(  # noqa: PLR0913
     page_count: int | None = None,
     single_shot: bool = False,
     tableformer_mode: str | None = None,
+    bypass: str = "none",
+    bypass_reasons: tuple | list = (),
 ) -> None:
     """Write one ``docling_chunk`` record (``kind=decision``) -- RFC-052 R1 AC7.
+
+    RFC-052 R9 AC5 (design P20): ``bypass`` (``none|ocr|tableformer|both``)
+    and ``bypass_reasons`` (rule tags) are the chunk child's decision,
+    returned to the parent; ``do_ocr``/``do_table_structure`` are the
+    effective switches after it.
 
     The chunk fields are FLAT top-level keys of the obs envelope (via
     ``FLAT_FIELDS_ATTR``), not nested under ``attrs``, matching the design's
@@ -777,8 +795,311 @@ def emit_docling_chunk(  # noqa: PLR0913
                     "duration_s": round(duration_s, 3),
                     "peak_rss_bytes": peak_rss_bytes,
                     "outcome": outcome,
+                    "bypass": bypass,
+                    "bypass_reasons": list(bypass_reasons),
                 },
             },
+        )
+    except Exception:  # pragma: no cover - a log record must never fail a conversion
+        pass
+
+
+def _apply_chunk_bypass(
+    decided,
+    *,
+    force_full_page_ocr: bool,
+    do_ocr: bool | None,
+    do_table_structure: bool,
+    policy: str | None = None,
+):
+    """The effective ``ChunkBypass``: the P3 decision combined with R9's.
+
+    * OCR: ``_resolve_do_ocr`` takes the bypass as ``bypass_ocr`` below force
+      (P4-4), so force still wins; ``None`` (a caller that let the pipeline
+      resolve it) stays ``None`` unless the bypass switches OCR off. ``policy``
+      (repair cycle 2, QA finding 1) is the resolved request ``do_ocr_policy``
+      override, or ``None`` to defer to the env -- forwarded so an explicit
+      per-request ``force_on`` still outranks the bypass here, not just at the
+      call site that first computed ``do_ocr`` (P4-8 precedence).
+    * TableFormer: only AC3's grid replacement can turn it off beyond the P3
+      decision; AC2 is R3's own skip, already in ``do_table_structure``. So
+      with every R9 switch off this is the P3 decision exactly (design P19).
+    * ``bypass`` labels what the chunk actually skips: ``ocr`` only when the
+      bypass removed OCR the P3 decision would have run, ``tableformer``
+      whenever TableFormer is off (R3's AC2 skip or AC3). Every production
+      caller resolves ``do_ocr`` to a bool before it reaches here (a
+      top-level call resolves it inline; a chunk child receives it already
+      resolved by its parent) -- ``do_ocr=None`` only happens when a test
+      calls this (or ``_docling_chunk_worker``) directly. With no
+      ``needs_ocr`` in scope at this level, the P3 baseline for that case is
+      genuinely unknown, so a ``None`` baseline is never counted as "OCR was
+      removed" -- only a caller that arrives with OCR already resolved True
+      can be labelled ``ocr`` here.
+    """
+    from .table_bypass import ChunkBypass, bypass_label
+
+    effective_ocr = do_ocr
+    ocr_bypassed = False
+    if not decided.do_ocr and do_ocr is not False:
+        effective_ocr = _resolve_do_ocr(force_full_page_ocr, policy=policy, bypass_ocr=True)
+        # do_ocr is True or None here (checked "is not False" above). Only a
+        # known True baseline proves OCR was removed by the bypass; None
+        # (unresolved, baseline unknowable) must not inflate "ocr".
+        ocr_bypassed = bool(do_ocr) and not effective_ocr
+    grid_replace = decided.grid_replace and not _resolve_force_ocr(force_full_page_ocr)
+    effective_tables = do_table_structure and not grid_replace
+    return ChunkBypass(
+        do_ocr=effective_ocr,  # type: ignore[arg-type]
+        do_table_structure=effective_tables,
+        grid_replace=grid_replace,
+        bypass=bypass_label(ocr_bypassed, not effective_tables),
+        reasons=decided.reasons,
+    )
+
+
+def _decide_chunk_bypass(  # noqa: PLR0913
+    pdf_path: str,
+    page_classes: list | None,
+    *,
+    force_full_page_ocr: bool,
+    do_ocr: bool | None,
+    do_table_structure: bool,
+    policy: str | None = None,
+):
+    """``decide_bypass`` over all of ``pdf_path`` (one chunk), then applied
+    below force. A failing decision bypasses nothing (the safe value).
+    ``policy`` (repair cycle 2, QA finding 1) is the resolved request
+    ``do_ocr_policy`` -- forwarded to ``_apply_chunk_bypass`` so a request's
+    explicit ``force_on`` still beats the bypass here."""
+    from .table_bypass import NO_BYPASS, BypassSwitches, decide_bypass
+
+    try:
+        decided = decide_bypass(
+            pdf_path,
+            range(len(page_classes or ())),
+            page_classes,
+            force_ocr=_resolve_force_ocr(force_full_page_ocr),
+            switches=BypassSwitches.from_env(),
+        )
+    except Exception:
+        logger.warning("bypass decision failed; nothing is bypassed", exc_info=True)
+        decided = NO_BYPASS
+    return _apply_chunk_bypass(
+        decided,
+        force_full_page_ocr=force_full_page_ocr,
+        do_ocr=do_ocr,
+        do_table_structure=do_table_structure,
+        policy=policy,
+    )
+
+
+def _no_bypass():
+    from .table_bypass import NO_BYPASS
+
+    return NO_BYPASS
+
+
+def _chunk_context(page_start: int, page_end: int, bypass_record: dict, tables: list) -> dict:
+    """One chunk's first-pass context (design "Recovery context"): the wire
+    shape of a ``prior_pass`` entry plus the bypass label. Pages are 0-based
+    and SLICE-relative -- relative to this request's own ``page_start``
+    slice (P3 R5 AC3) when one was given, not necessarily the whole
+    document. The caller (the worker) rebases them onto the whole document
+    before forwarding this record back as a future request's ``prior_pass``.
+    ``tableformer_pages`` is empty when TableFormer did not run on the chunk
+    (its tables are then layout-only)."""
+    return {
+        "page_start": page_start,
+        "page_end": page_end,
+        "do_ocr": bypass_record.get("do_ocr"),
+        "do_table_structure": bypass_record.get("do_table_structure"),
+        "grid_replace": bypass_record.get("grid_replace", False),
+        "bypass": bypass_record.get("bypass", "none"),
+        "bypass_reasons": list(bypass_record.get("bypass_reasons", ())),
+        "tableformer_pages": sorted({t["page"] for t in tables})
+        if bypass_record.get("do_table_structure")
+        else [],
+    }
+
+
+def _merge_chunk_extras(extras: dict, chunks: list, reports: dict[int, tuple[dict, dict]]) -> None:
+    """Fill ``extras`` from the per-chunk reports, rebasing every page on the
+    chunk start (as ``pic["page"]``), in page order."""
+    from .table_results import rebase_pages
+
+    tables: list[dict] = []
+    headings: list[list] = []
+    contexts: list[dict] = []
+    for index, chunk in enumerate(chunks):
+        bypass_record, chunk_extras = reports.get(index, (_no_bypass().as_record(), {}))
+        chunk_tables, chunk_headings = rebase_pages(
+            chunk_extras.get("table_results") or [],
+            chunk_extras.get("heading_pages") or [],
+            chunk.start,
+        )
+        tables.extend(chunk_tables)
+        headings.extend(chunk_headings)
+        contexts.append(_chunk_context(chunk.start, chunk.end, bypass_record, chunk_tables))
+    extras.update(table_results=tables, heading_pages=headings, chunks=contexts)
+
+
+#: RFC-052 P4-4/P4-8, HR3: bounds and known-tag whitelists for a
+#: ``docling_force_recovery`` record's sanitized ``prior_pass`` (see
+#: ``_sanitize_prior_pass_entry``). A page/chunk list beyond these is simply
+#: truncated -- this is a log record, never a source of truth.
+_FORCE_RECOVERY_MAX_CHUNKS = 512
+_FORCE_RECOVERY_MAX_PAGES = 2000
+_FORCE_RECOVERY_MAX_REASONS = 64
+
+#: RFC-052 P4-9 (repair cycle 2, QA finding 5): the closed vocabulary for
+#: ``recovery_trigger``, one per ``client/recovery.py`` HR5 escalation path
+#: (``_recover_garble_ocr``, ``_recover_low_content_ocr``,
+#: ``_recover_image_dominant_ocr``). Anything else is dropped to ``None``
+#: rather than passed through -- the record's ``choice`` stays the closed
+#: inferred category; the trigger label lives only in the ``recovery_trigger``
+#: attr.
+_KNOWN_RECOVERY_TRIGGERS = frozenset({"hr5_garble", "hr5_low_content", "hr5_image_dominant"})
+_FORCE_RECOVERY_KNOWN_REASONS = frozenset(
+    {
+        "force_full_page_ocr",
+        "no_page_classes",
+        "ac1_clean_text_layer",
+        "ac2_no_table",
+        "ac3_trusted_grid",
+    }
+)
+
+
+def _sanitize_prior_pass_page_list(value) -> list[int]:
+    """A ``prior_pass`` entry's page list (``tableformer_pages`` or
+    ``garbled_pages``), coerced to ``int`` with non-numeric entries dropped
+    and capped at ``_FORCE_RECOVERY_MAX_PAGES`` (HR3)."""
+    if not isinstance(value, list):
+        return []
+    out: list[int] = []
+    for v in value:
+        if isinstance(v, bool):
+            continue
+        try:
+            out.append(int(v))
+        except (TypeError, ValueError):
+            continue
+        if len(out) >= _FORCE_RECOVERY_MAX_PAGES:
+            break
+    return out
+
+
+def _sanitize_prior_pass_entry(entry: dict) -> dict:
+    """One ``prior_pass`` chunk entry, sanitized for the
+    ``docling_force_recovery`` record (HR3): page fields coerced to ``int``,
+    flags (including ``grid_replace`` -- repair cycle 2, QA finding 3) to
+    ``bool``, ``bypass`` kept only from the known set, reason tags only from
+    the known ``REASON_*`` constants, and both page lists (P4-8's
+    ``garbled_pages`` included) capped and int-coerced."""
+    from .table_bypass import BYPASS_VALUES
+
+    sanitized: dict = {}
+    for key in ("page_start", "page_end"):
+        val = entry.get(key)
+        if isinstance(val, bool) or val is None:
+            continue
+        try:
+            sanitized[key] = int(val)
+        except (TypeError, ValueError):
+            continue
+    for key in ("do_ocr", "do_table_structure", "grid_replace"):
+        val = entry.get(key)
+        if val is not None:
+            sanitized[key] = bool(val)
+    bypass = entry.get("bypass")
+    if bypass in BYPASS_VALUES:
+        sanitized["bypass"] = bypass
+    reasons = entry.get("bypass_reasons")
+    if isinstance(reasons, list):
+        sanitized["bypass_reasons"] = [
+            r for r in reasons if isinstance(r, str) and r in _FORCE_RECOVERY_KNOWN_REASONS
+        ][:_FORCE_RECOVERY_MAX_REASONS]
+    sanitized["tableformer_pages"] = _sanitize_prior_pass_page_list(entry.get("tableformer_pages"))
+    raw_garbled_pages = entry.get("garbled_pages")
+    if isinstance(raw_garbled_pages, list):
+        sanitized["garbled_pages"] = _sanitize_prior_pass_page_list(raw_garbled_pages)
+    return sanitized
+
+
+def emit_force_recovery(
+    *,
+    force_full_page_ocr: bool,
+    route: str,
+    prior_pass: list | None,
+    recovery_trigger: str | None = None,
+) -> None:
+    """Write the ``docling_force_recovery`` decision (RFC-052 R9 AC7, P4-4).
+
+    One record per document conversion with forced full-page OCR, never from
+    a chunk child. ``choice``/``force_reason``: the closed inferred category
+    -- ``env`` (``DOCLING_FORCE_FULL_PAGE_OCR`` without the flag),
+    ``hr5_recovery`` (the flag plus either the first pass's ``prior_pass`` or
+    a valid ``recovery_trigger`` -- P4-9, repair cycle 2), else ``request``.
+    ``recovery_trigger`` (P4-8) is a closed-vocabulary label (see
+    ``_KNOWN_RECOVERY_TRIGGERS``); an unrecognised value is dropped (``None``)
+    rather than passed through, and the label itself lives only in the
+    ``recovery_trigger`` attr, never in ``choice``. ``prior_pass`` is only
+    recorded here, never acted on (P4 scope); task 9.8 tabulates these
+    records from Loki, keyed by ``doc_sha8``/``job_id`` -- the service has no
+    ``doc_id``. Every value written here is sanitized (HR3,
+    ``_sanitize_prior_pass_entry``): unknown bypass/reason tags and
+    non-numeric page fields are dropped rather than logged verbatim. Numbers
+    and labels only. Never raises.
+    """
+    if _IN_CHUNK_CHILD or not _resolve_force_ocr(force_full_page_ocr):
+        return
+    try:
+        from ..config import sanitize_recovery_trigger
+        from ..obs import decision
+
+        trigger = sanitize_recovery_trigger(recovery_trigger)
+        if trigger not in _KNOWN_RECOVERY_TRIGGERS:
+            trigger = None
+        if force_full_page_ocr:
+            force_reason = (
+                "hr5_recovery" if (prior_pass is not None or trigger is not None) else "request"
+            )
+        else:
+            force_reason = "env"
+
+        raw_entries = [entry for entry in (prior_pass or []) if isinstance(entry, dict)][
+            :_FORCE_RECOVERY_MAX_CHUNKS
+        ]
+        chunks = [_sanitize_prior_pass_entry(entry) for entry in raw_entries]
+        garbled_pages_known = any(
+            isinstance(entry.get("garbled_pages"), list) for entry in raw_entries
+        )
+        garbled_pages = {p for c in chunks for p in c.get("garbled_pages", ())}
+        tableformer_pages = {p for c in chunks for p in c.get("tableformer_pages", ())}
+        ctx = current_context()
+        decision(
+            event="docling_force_recovery",
+            choice=force_reason,
+            reason=f"forced full-page OCR ({force_reason}) on the {route} route",
+            attrs={
+                "doc_sha8": ctx.get("doc_sha8"),
+                "route": route,
+                "force_reason": force_reason,
+                "recovery_trigger": trigger,
+                "prior_pass_chunk_count": len(chunks),
+                "prior_ocr_bypass_count": sum(
+                    1 for c in chunks if c.get("bypass") in ("ocr", "both")
+                ),
+                "prior_tableformer_bypass_count": sum(
+                    1 for c in chunks if c.get("bypass") in ("tableformer", "both")
+                ),
+                "garbled_pages_known": garbled_pages_known,
+                "garbled_tableformer_overlap": (
+                    len(garbled_pages & tableformer_pages) if garbled_pages_known else None
+                ),
+                "prior_pass": chunks if prior_pass is not None else None,
+            },
+            logger=logger,
         )
     except Exception:  # pragma: no cover - a log record must never fail a conversion
         pass
@@ -887,6 +1208,8 @@ def _docling_chunk_worker(  # noqa: PLR0913
     log_context: dict | None = None,
     do_ocr: bool | None = None,
     tableformer_mode: str | None = None,
+    page_classes: list | None = None,
+    do_ocr_policy: str | None = None,
 ) -> None:
     """Run ``pdf_to_markdown_docling`` in a child process (D0 fix).
 
@@ -907,6 +1230,20 @@ def _docling_chunk_worker(  # noqa: PLR0913
 
     RFC-052 R3 AC3: ``do_ocr`` / ``tableformer_mode`` are the chunk's own
     options, resolved by the parent from the chunk's page classes.
+
+    RFC-052 R9 (P4-1): ``page_classes`` are the chunk's own (index 0 = the
+    chunk file's first page). Before the pipeline is built the child runs
+    ``decide_bypass`` on them, applies it below force, and reports the
+    effective decision to the parent FIRST, as ``("bypass", record)`` -- so
+    the parent's ``docling_chunk`` record carries it even when the chunk
+    later times out. The final tuple's fourth element is the chunk's
+    ``{"table_results", "heading_pages"}`` (chunk-relative pages).
+
+    ``do_ocr_policy`` (repair cycle 2, QA finding 1) is the resolved request
+    ``do_ocr_policy`` (or ``None`` to defer to the env), forwarded to
+    ``_decide_chunk_bypass`` so a per-request ``force_on`` still outranks the
+    bypass this child decides for itself, not just the parent's own initial
+    ``do_ocr`` resolution.
     """
     global _IN_CHUNK_CHILD
 
@@ -940,8 +1277,18 @@ def _docling_chunk_worker(  # noqa: PLR0913
     # chunk, so the main thread's binding is unambiguous for them (same
     # argument as converters_cli). Enabled BEFORE the bind so it mirrors in.
     enable_main_thread_ambient()
+    extras: dict = {}
     try:
         with bind_log_context(**(log_context or {})):
+            chunk_bypass = _decide_chunk_bypass(
+                pdf_path,
+                page_classes,
+                force_full_page_ocr=force_full_page_ocr,
+                do_ocr=do_ocr,
+                do_table_structure=do_table_structure,
+                policy=do_ocr_policy,
+            )
+            result_queue.put(("bypass", chunk_bypass.as_record()))
             result = pdf_to_markdown_docling(
                 pdf_path,
                 force_full_page_ocr=force_full_page_ocr,
@@ -949,11 +1296,13 @@ def _docling_chunk_worker(  # noqa: PLR0913
                 expected_script=expected_script,
                 # An empty set turns TableFormer off for this chunk;
                 # None keeps it on for every page.
-                pages_with_tables=None if do_table_structure else set(),
-                do_ocr=do_ocr,
+                pages_with_tables=None if chunk_bypass.do_table_structure else set(),
+                do_ocr=chunk_bypass.do_ocr,
                 tableformer_mode=tableformer_mode,
+                grid_replace=chunk_bypass.grid_replace,
+                extras=extras,
             )
-        result_queue.put(("ok", result, _peak_rss_bytes()))
+        result_queue.put(("ok", result, _peak_rss_bytes(), extras))
     except Exception as exc:
         rss = _peak_rss_bytes()
         try:
@@ -980,7 +1329,7 @@ def _signal_chunk_process_group(proc, sig: int) -> None:
         os.killpg(os.getpgid(pid), sig)
 
 
-def _run_docling_chunk_with_timeout(  # noqa: PLR0913
+def _run_docling_chunk_with_timeout(  # noqa: PLR0913, PLR0915, C901
     pdf_path: str,
     *,
     force_full_page_ocr: bool,
@@ -994,8 +1343,16 @@ def _run_docling_chunk_with_timeout(  # noqa: PLR0913
     cancel_event: threading.Event | None = None,
     do_ocr: bool | None = None,
     tableformer_mode: str | None = None,
+    page_classes: list | None = None,
+    do_ocr_policy: str | None = None,
 ) -> tuple[str, list[PictureResult]]:
     """Run one Docling chunk conversion in a killable subprocess (D0 fix).
+
+    RFC-052 R9/9.2: ``page_classes`` (the chunk's own) go to the child for its
+    bypass decision. When ``stats`` is given it also receives
+    ``stats["bypass"]`` (the child's effective ``ChunkBypass`` record, sent
+    before conversion) and ``stats["extras"]`` (``table_results`` /
+    ``heading_pages``, chunk-relative).
 
     ``cancel_event`` (set by docling-service when its client goes away) is
     polled with the deadline; once set, the child is terminated exactly as on
@@ -1009,6 +1366,9 @@ def _run_docling_chunk_with_timeout(  # noqa: PLR0913
     ``log_context`` is forwarded to the child (RFC-052 R1 AC6). When ``stats``
     is given, ``stats["peak_rss_bytes"]`` is filled from the child's own
     report (left unset if the child timed out or died without one).
+
+    ``do_ocr_policy`` (repair cycle 2, QA finding 1) is forwarded to the
+    child's own bypass decision so a per-request ``force_on`` still beats it.
 
     Replaces the plain ``ThreadPoolExecutor`` used previously: a
     ``multiprocessing.Process`` can be ``terminate()``-d on timeout, which
@@ -1031,10 +1391,22 @@ def _run_docling_chunk_with_timeout(  # noqa: PLR0913
             log_context,
             do_ocr,
             tableformer_mode,
+            page_classes,
+            do_ocr_policy,
         ),
         daemon=True,
     )
     proc.start()
+
+    def _final(msg: tuple) -> tuple | None:
+        """The child's early ``("bypass", record)`` message is recorded and
+        consumed; anything else is the final outcome."""
+        if msg and msg[0] == "bypass":
+            if stats is not None:
+                stats["bypass"] = msg[1]
+            return None
+        return msg
+
     # Drain the queue BEFORE join()ing: a large result (markdown +
     # PictureResult png_bytes) exceeds the queue's pipe buffer, and the child
     # cannot exit until the parent reads it -- join-first would deadlock until
@@ -1046,7 +1418,9 @@ def _run_docling_chunk_with_timeout(  # noqa: PLR0913
     cancelled = False
     while outcome is None:
         try:
-            outcome = result_queue.get(timeout=1.0)
+            outcome = _final(result_queue.get(timeout=1.0))
+            if outcome is None:
+                continue
         except queue_mod.Empty:
             if cancel_event is not None and cancel_event.is_set():
                 cancelled = True
@@ -1058,7 +1432,8 @@ def _run_docling_chunk_with_timeout(  # noqa: PLR0913
                 # case the result landed between the Empty and the liveness
                 # check, then treat silence as a crash.
                 try:
-                    outcome = result_queue.get(timeout=1.0)
+                    while outcome is None:
+                        outcome = _final(result_queue.get(timeout=1.0))
                 except queue_mod.Empty:
                     break
     if outcome is None:
@@ -1082,9 +1457,11 @@ def _run_docling_chunk_with_timeout(  # noqa: PLR0913
         _signal_chunk_process_group(proc, signal.SIGKILL)
         proc.kill()
         proc.join()
-    status, payload, peak_rss = outcome
+    status, payload, peak_rss, *rest = outcome
     if stats is not None and peak_rss is not None:
         stats["peak_rss_bytes"] = peak_rss
+    if stats is not None and rest and isinstance(rest[0], dict):
+        stats["extras"] = rest[0]
     if status == "error":
         raise cast(Exception, payload)
     return cast("tuple[str, list[PictureResult], dict[str, dict]]", payload)
@@ -1140,8 +1517,15 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915, C901
     pageclass_chunking: bool | None = None,
     do_ocr_policy: str | None = None,
     tableformer_mode: str | None = None,
+    extras: dict | None = None,
 ) -> tuple[str, list[PictureResult], dict[str, dict]]:
     """RFC-027 D7 chunked-Docling route for PDFs exceeding MAX_DOCLING_PAGES.
+
+    RFC-052 R9 / 9.2: each chunk child gets the chunk's own page classes and
+    decides its bypass; ``extras`` (when given) receives the document-level
+    ``table_results`` / ``heading_pages`` (rebased on the chunk start like
+    ``pic["page"]``) and ``chunks``, one effective-decision record per chunk
+    with the pages TableFormer produced tables on.
 
     Once ``cancel_event`` is set, no further chunk starts and the running
     ones are terminated; the call raises ``DoclingCancelled``.
@@ -1211,6 +1595,8 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915, C901
     log_context = dict(current_context())
     policy = _ocr_policy(do_ocr_policy)
     mode = docling_tableformer_mode(tableformer_mode)
+    # Per chunk index: (effective bypass record, the child's extras).
+    chunk_reports: dict[int, tuple[dict, dict]] = {}
 
     def convert(index: int, path: str) -> tuple[str, list[PictureResult]]:
         chunk = chunks[index]
@@ -1234,17 +1620,32 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915, C901
         started = time.monotonic()
 
         def record(outcome: str) -> None:
+            # The child's effective decision; a child that died before
+            # reporting it bypassed nothing beyond the P3 decision.
+            bp = (
+                stats.get("bypass")
+                or _apply_chunk_bypass(
+                    _no_bypass(),
+                    force_full_page_ocr=force_full_page_ocr,
+                    do_ocr=do_ocr,
+                    do_table_structure=chunk_has_tables,
+                    policy=policy,
+                ).as_record()
+            )
+            chunk_reports[index] = (bp, stats.get("extras") or {})
             emit_docling_chunk(
                 chunk=f"{index + 1}/{chunk_count}",
                 page_start=start,
                 page_end=chunk_end - 1,
-                do_table_structure=chunk_has_tables,
-                do_ocr=do_ocr,
+                do_table_structure=bp["do_table_structure"],
+                do_ocr=bp["do_ocr"],
                 duration_s=time.monotonic() - started,
                 peak_rss_bytes=stats.get("peak_rss_bytes"),
                 outcome=outcome,
                 page_count=page_count,
                 tableformer_mode=mode,
+                bypass=bp["bypass"],
+                bypass_reasons=bp["bypass_reasons"],
             )
 
         try:
@@ -1263,6 +1664,8 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915, C901
                 cancel_event=cancel_event,
                 do_ocr=do_ocr,
                 tableformer_mode=mode,
+                page_classes=page_classes[start:chunk_end] if page_classes_on else None,
+                do_ocr_policy=policy,
             )
         except DoclingCancelled:
             record("cancelled")
@@ -1339,6 +1742,8 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915, C901
             if "page" in pic:
                 pic["page"] = pic["page"] + start
         pic_results.extend(chunk_pics)
+    if extras is not None:
+        _merge_chunk_extras(extras, chunks, chunk_reports)
     # Per-chunk stage tables are not merged -- out of scope for Zone 4 initial
     # landing. extraction_stages is empty for chunked/oversized PDFs.
     return "\n\n".join(md_parts), pic_results, {}

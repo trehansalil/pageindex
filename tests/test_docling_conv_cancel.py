@@ -185,7 +185,8 @@ def test_chunk_child_threads_inherit_job_id(monkeypatch):
     )
     q: queue.Queue = queue.Queue()
     docling_conv._docling_chunk_worker(q, "chunk.pdf", False, None, log_context={"job_id": "j-1"})
-    assert q.get_nowait()[0] == "ok"
+    # RFC-052 R9: the child reports its bypass decision before converting.
+    assert [q.get_nowait()[0] for _ in range(2)] == ["bypass", "ok"]
     assert library_thread_saw == [{"job_id": "j-1"}]
     assert not context._AMBIENT_ENABLED and read_in_thread() == {}
     assert safeguard_calls == [1]
