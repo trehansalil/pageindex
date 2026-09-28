@@ -1,6 +1,4 @@
 # ALLOW-NEW-TEST-FILE: consolidation target from ICR-97-rfc39 test reorganization
-from __future__ import annotations
-
 """Tree validation, structural hardening, reorder detection, and helper utilities.
 
 Consolidates the former ``test_rfc_reorder.py`` (RFC-015 reorder detection:
@@ -12,8 +10,11 @@ Table-driven tests loop internally and report *every* offending row, so one
 collected test carries the same coverage a parametrize table did.
 """
 
+from __future__ import annotations
+
 import asyncio
 import copy
+import json
 import socket
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -43,6 +44,8 @@ from pageindex_mcp.helpers.tree_validation import (
     _node_text_parts,
     _tree_max_leaf_ratio,
 )
+from pageindex_mcp.tables.schema import TableRecord
+from pageindex_mcp.tables.search_view import TABLE_PROMPT_LINE, build_search_view
 from tests._garble_compat import check_garble
 
 # ===========================================================================
@@ -418,6 +421,33 @@ def test_extract_page_hits_table():
         if got != expected_ids:
             failures.append(f"  [{name}] expected={sorted(expected_ids)}, got={sorted(got)}")
     assert not failures, "_extract_page_hits regressions:\n" + "\n".join(failures)
+
+    # RFC-052 R8 AC4: a table node (start_index = end_index = page + 1) is a hit
+    # for its page with text = its markdown, plus type/table_id; a non-table
+    # hit keeps today's exact key set.
+    with_table = [
+        {
+            **siblings[1],
+            "nodes": [
+                {
+                    "node_id": "n2_t0",
+                    "type": "table",
+                    "title": "Table 3",
+                    "description": "GDP by year",
+                    "table_id": "p0004-t0",
+                    "start_index": 5,
+                    "end_index": 5,
+                    "text": "| Indicator | 2020 |\n|---|---|\n| GDP | 20.1 |",
+                }
+            ],
+        }
+    ]
+    hits = {h["node_id"]: h for h in _extract_page_hits(with_table, "5")}
+    assert set(hits) == {"n2", "n2_t0"}
+    assert hits["n2_t0"]["text"].startswith("| Indicator")
+    assert (hits["n2_t0"]["type"], hits["n2_t0"]["table_id"]) == ("table", "p0004-t0")
+    assert set(hits["n2"]) == {"node_id", "title", "pages", "text"}
+    assert {h["node_id"] for h in _extract_page_hits(with_table, "6")} == {"n2"}
 
 
 # ===========================================================================
@@ -959,10 +989,55 @@ def _tree_doc():
     }
 
 
-async def test_flat_05_c1_flat_doc_bypasses_llm_node_selection():
+def _table_tree_doc():
+    """A tree doc after RFC-052 table insertion: one enriched ``_seg`` node and
+    one new ``_t`` entry whose text is the table markdown."""
+    return {
+        "doc_name": "tables.pdf",
+        "structure": [
+            {
+                "node_id": "0001",
+                "title": "Economy",
+                "summary": "economic indicators",
+                "text": "economy prose",
+                "nodes": [
+                    {
+                        "node_id": "0001_seg1",
+                        "title": "Economy (part 1)",
+                        "text": "| a | b |",
+                        "type": "table",
+                        "table_id": "p0003-f0",
+                        "description": "seg table",
+                    },
+                    {
+                        "node_id": "0001_t0",
+                        "type": "table",
+                        "title": "Table 3. Economic indicators",
+                        "description": "GDP and inflation 2019-2022",
+                        "table_id": "p0003-t0",
+                        "start_index": 4,
+                        "end_index": 4,
+                        "text": "| Indicator | 2020 |\n|---|---|\n| GDP (US$ bn) | 20.1 |",
+                    },
+                ],
+            }
+        ],
+    }
+
+
+async def test_flat_05_c1_node_selection_flat_bypass_tree_llm_and_table_nodes(monkeypatch):
     """FLAT-05-C1: a doc with a content_class and no usable structure[] is served
     by the flat adapter -- it returns the verbalized flat content as (doc_id, name,
-    text) without ever issuing the LLM tree-node-selection call."""
+    text) without ever issuing the LLM tree-node-selection call.
+
+    FLAT-05-C1 boundary: a normal tree doc (non-empty structure[]) takes the
+    UNCHANGED LLM node-selection path -- the adapter must not hijack it.
+
+    RFC-052 R8 AC1 / R7 AC8 (task 9.3/9.4): with TABLES_IN_SEARCH=1 a table
+    entry is in the slim tree as {node_id, type, title, description} (never its
+    text) with the one extra prompt line, and selecting it returns the stored
+    markdown; with TABLES_IN_SEARCH=0 the prompt is today's, byte for byte, for
+    the tree without its table additions."""
     _, blocks = route_and_extract_flat(_TABLE_MD)
     data = {
         "doc_name": "tarife.pdf",
@@ -982,12 +1057,6 @@ async def test_flat_05_c1_flat_doc_bypasses_llm_node_selection():
     assert "Tarif: Basis" in text  # verbalized row_record surfaced
     mock_llm.assert_not_called()  # LLM node-selection bypassed
 
-
-async def test_flat_05_c1_tree_doc_still_uses_llm_node_selection():
-    """FLAT-05-C1 boundary: a normal tree doc (non-empty structure[]) takes the
-    UNCHANGED LLM node-selection path -- the adapter must not hijack it."""
-    sem = asyncio.Semaphore(1)
-
     with patch.object(
         helpers.rag,
         "_llm",
@@ -999,6 +1068,205 @@ async def test_flat_05_c1_tree_doc_still_uses_llm_node_selection():
     mock_llm.assert_awaited_once()  # tree path unchanged
     assert result is not None
     assert result[2] == "alpha text"
+    assert TABLE_PROMPT_LINE not in mock_llm.await_args.args[0]  # no tables, no line
+
+    async def prompt_and_text(env_value: str, doc: dict, pick: str) -> tuple[str, str | None]:
+        monkeypatch.setenv("TABLES_IN_SEARCH", env_value)
+        with patch.object(
+            helpers.rag,
+            "_llm",
+            new_callable=AsyncMock,
+            return_value=json.dumps({"thinking": "t", "node_list": [pick]}),
+        ) as llm:
+            res = await helpers._search_one_doc("GDP 2020?", "doc3", doc, sem)
+        return llm.await_args.args[0], (res[2] if res else None)
+
+    prompt_on, text_on = await prompt_and_text("1", _table_tree_doc(), "0001_t0")
+    assert TABLE_PROMPT_LINE in prompt_on
+    assert '"node_id": "0001_t0"' in prompt_on and "GDP and inflation 2019-2022" in prompt_on
+    assert "| GDP (US$ bn) |" not in prompt_on  # the markdown never enters the prompt
+    assert text_on == _table_tree_doc()["structure"][0]["nodes"][1]["text"]  # stored cells
+
+    prompt_off, _ = await prompt_and_text("0", _table_tree_doc(), "0001")
+    stripped = _table_tree_doc()
+    seg, _t = stripped["structure"][0]["nodes"]
+    for key in ("type", "table_id", "description"):
+        del seg[key]
+    stripped["structure"][0]["nodes"] = [seg]
+    prompt_today, _ = await prompt_and_text("1", stripped, "0001")
+    assert prompt_off == prompt_today
+    assert TABLE_PROMPT_LINE not in prompt_off and "0001_t0" not in prompt_off
+
+    # A build_search_view failure falls back to the tables-off view, never
+    # the raw tree with every table entry unconditionally shown.
+    real_build_search_view = helpers.rag.build_search_view
+    call_count = {"n": 0}
+
+    def flaky_build_search_view(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("boom")
+        return real_build_search_view(*args, **kwargs)
+
+    monkeypatch.setattr(helpers.rag, "build_search_view", flaky_build_search_view)
+    prompt_fallback, _ = await prompt_and_text("1", _table_tree_doc(), "0001")
+    assert '"type": "table"' not in prompt_fallback
+    assert TABLE_PROMPT_LINE not in prompt_fallback
+
+
+def _table_record(tid: str, *, coverage: float, links=(), title: str = "", header=("A", "B")):
+    from pageindex_mcp.tables.schema import SOURCE_PYMUPDF, SOURCE_TABLEFORMER, TableLink
+
+    return TableRecord(
+        table_id=tid,
+        page=int(tid[1:5]),
+        page_label=str(int(tid[1:5]) + 1),
+        bbox=(0.0, 0.0, 100.0, 100.0),
+        rows=5,
+        cols=len(header),
+        header=tuple(header),
+        cells=(tuple(header), *((f"r{i}" + "x" * 150, str(i)) for i in range(5))),
+        markdown="| A | B |",
+        source=SOURCE_TABLEFORMER if "-f" in tid else SOURCE_PYMUPDF,
+        strategy=None if "-f" in tid else "lines",
+        coverage=coverage,
+        title=title,
+        links=tuple(TableLink(table_id=t, overlap=o) for t, o in links),
+    )
+
+
+async def test_rfc052_r8_search_budget_drop_order_and_table_descriptions(monkeypatch):
+    """RFC-052 P15 (R8 AC3): added view tokens <= TABLES_SEARCH_TOKEN_BUDGET,
+    new _t entries dropped lowest coverage first, then enriched _seg additions;
+    storage untouched; a tables_search_budget decision is logged; with
+    tables_on=False on a table-free tree the view IS _strip_text.
+
+    R8 AC1-2 / P4-3 / P16 (tables/describe.py): only PyMuPDF records reach the
+    LLM, in batches, the per-doc cap spent on highest coverage first; a linked
+    TableFormer twin copies its partner's description; a failed batch, an
+    over-cap table and an unlinked twin get the header-row fallback; with
+    PII_CORPUS and a non-ZDR endpoint there is zero egress and every
+    description is fallback."""
+    import re
+    from types import SimpleNamespace
+
+    from pageindex_mcp.client import llm as llm_mod
+    from pageindex_mcp.helpers.rag import _strip_text
+    from pageindex_mcp.tables import describe as describe_mod
+    from pageindex_mcp.tables import search_view
+    from pageindex_mcp.tables.settings import DescribeSettings
+
+    # --- P15: search-view budget -------------------------------------------
+    plain = _tree_doc()["structure"]
+    assert build_search_view(plain, budget_tokens=0, tables_on=False)[0] == _strip_text(plain)
+    assert json.dumps(build_search_view(plain, budget_tokens=0, tables_on=True)[0]) == json.dumps(
+        _strip_text(plain)
+    )
+
+    tree = _table_tree_doc()["structure"]
+    kids = tree[0]["nodes"]
+    for k, cov in enumerate((0.9, 0.1, 0.5)):  # _t0 .. _t2; _t1 is lowest
+        kids.append(
+            {**kids[1], "node_id": f"0001_t{k}", "coverage": cov, "table_id": f"p0003-t{k}"}
+        )
+    del kids[1]
+    before = copy.deepcopy(tree)
+    base = search_view.count_tokens(
+        json.dumps(build_search_view(tree, budget_tokens=0, tables_on=False)[0], indent=2)
+    )
+
+    def ids(view):
+        return [n["node_id"] for n in view[0]["nodes"]]
+
+    full, stats = build_search_view(tree, budget_tokens=10**6, tables_on=True)
+    assert ids(full) == ["0001_seg1", "0001_t0", "0001_t1", "0001_t2"]
+    assert full[0]["nodes"][1] == {
+        "node_id": "0001_t0",
+        "type": "table",
+        "title": "Table 3. Economic indicators",
+        "description": "GDP and inflation 2019-2022",
+    }
+    one_entry = stats["added_token_count"] - search_view.count_tokens(
+        json.dumps(full[0]["nodes"][2], indent=2)
+    )
+    emitted = MagicMock()
+    monkeypatch.setattr(search_view, "decision", emitted)
+    for budget in (one_entry, stats["added_token_count"] // 3, 0):
+        view, st = build_search_view(tree, budget_tokens=budget, tables_on=True, doc_id="d1")
+        added = search_view.count_tokens(json.dumps(view, indent=2)) - base
+        assert added <= budget and st["added_token_count"] == max(0, added), (budget, st)
+        shown = ids(view)
+        dropped = [t for t in ("0001_t1", "0001_t2", "0001_t0") if t not in shown]
+        assert dropped == ["0001_t1", "0001_t2", "0001_t0"][: len(dropped)], (
+            shown
+        )  # ascending coverage
+        if st["dropped_enriched_count"]:
+            assert len(dropped) == 3 and "type" not in view[0]["nodes"][0]
+    assert "type" not in view[0]["nodes"][0] and ids(view) == ["0001_seg1"]  # budget 0 = today
+    assert tree == before  # storage never touched
+    assert emitted.call_args.kwargs["event"] == "tables_search_budget"
+
+    # --- describe: batching, cap, twin copy, fallback -----------------------
+    from pageindex_mcp import config as config_mod
+
+    def use_settings(**kw):  # Settings is frozen: swap the object, as the HR3 suite does
+        fake = SimpleNamespace(**kw)
+        monkeypatch.setattr(llm_mod, "settings", fake)
+        monkeypatch.setattr(config_mod, "settings", fake)
+
+    use_settings(pii_corpus=False, openai_base_url="https://unused.example.invalid/v1")
+    prompts: list[str] = []
+
+    async def create(*, model, messages, temperature):
+        prompt = messages[0]["content"]
+        prompts.append(prompt)
+        batch = re.findall(r"^\[(p\d{4}-[tf]\d+)\]", prompt, re.M)
+        if "p0002-t0" in batch:
+            raise ValueError("bad batch")  # non-retryable -> whole batch falls back
+        body = {tid: f"{model} desc {tid} " + "word " * 60 for tid in batch}
+        return MagicMock(choices=[MagicMock(message=MagicMock(content=json.dumps(body)))])
+
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(side_effect=create)
+    monkeypatch.setattr(llm_mod, "get_openai_client", lambda: client)
+
+    tables = [
+        _table_record("p0001-t0", coverage=0.9),
+        _table_record("p0001-t1", coverage=0.5),
+        _table_record("p0002-t0", coverage=0.3),  # cap order: t0, t1 | p0002-t0
+        _table_record("p0003-t0", coverage=0.1),  # over the cap of 3
+        _table_record("p0001-f0", coverage=0.4, links=[("p0001-t1", 0.93)]),
+        _table_record("p0004-f0", coverage=0.4, header=("Year", "", "GDP")),
+    ]
+    knobs = DescribeSettings(enabled=True, model="unused", batch=2, concurrency=2, max_per_doc=3)
+    got = await describe_mod.describe_with_sources(tables, model="filter-m", cfg=knobs)
+    assert set(got) == {t.table_id for t in tables}
+    assert {tid: src for tid, (_, src) in got.items()} == {
+        "p0001-t0": "llm",
+        "p0002-t0": "fallback",  # its batch failed
+        "p0001-t1": "llm",
+        "p0003-t0": "fallback",
+        "p0001-f0": "llm",
+        "p0004-f0": "fallback",
+    }
+    assert got["p0001-f0"] == got["p0001-t1"]  # twin copies its partner
+    assert got["p0004-f0"][0] == "Table with columns: Year | GDP"
+    assert got["p0001-t0"][0].startswith("filter-m desc p0001-t0")
+    assert search_view.count_tokens(got["p0001-t0"][0]) <= describe_mod.MAX_DESC_TOKENS
+    assert len(prompts) == 2 and all("p0001-f0" not in p and "p0003-t0" not in p for p in prompts)
+    for line in (ln for p in prompts for ln in p.splitlines() if ln.startswith("[p")):
+        assert len(line) <= describe_mod.MAX_INPUT_CHARS
+
+    # P16 (HR3): PII corpus + non-ZDR endpoint -> zero egress, all fallback.
+    client.chat.completions.create.reset_mock()
+    use_settings(pii_corpus=True, openai_base_url="https://not-zdr.example.invalid/v1")
+    monkeypatch.setattr(llm_mod, "_primary_zdr_verified", False)
+    monkeypatch.setenv("TABLES_DESC_MODEL", "filter-m")  # describe() reads describe_settings()
+    plain_desc = await describe_mod.describe(tables, model="filter-m")
+    assert set(plain_desc) == {t.table_id for t in tables}
+    got = await describe_mod.describe_with_sources(tables, model="filter-m", cfg=knobs)
+    assert {src for _, src in got.values()} == {"fallback"}
+    client.chat.completions.create.assert_not_called()
 
 
 def test_flat_05_c2_tree_doc_is_unaffected():

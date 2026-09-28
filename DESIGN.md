@@ -82,22 +82,26 @@ the final answer from the returned excerpts — this tool does not generate an a
 |---|---|---|
 | `query` | str | Natural-language question or clause reference |
 
-**Output shape:**
+**Output shape** (as `helpers/rag.py::_rag_inner` returns it; corrected 2026-09-27, RFC-052 R8 AC4):
 ```json
 {
   "query": "Was ist versichert unter A1-1?",
-  "results": [
-    {
-      "doc_id": "a1b2c3d4",
-      "doc_name": "AVB-PHV-Komfort.pdf",
-      "node_id": "node_007",
-      "title": "A1-1 Gegenstand der Versicherung",
-      "pages": "5-6",
-      "excerpt": "..."
-    }
-  ]
+  "sources": [
+    {"doc_id": "a1b2c3d4", "doc_name": "AVB-PHV-Komfort.pdf"}
+  ],
+  "content": "=== AVB-PHV-Komfort.pdf ===\n<text of every selected node, joined by blank lines>\n\n=== <next doc> ===\n..."
 }
 ```
+
+- `content` is one string: per matched document a `=== <doc_name> ===` header followed by the
+  full `text` of each node the tree search selected. No per-node ids or page ranges are
+  returned; use `get_document_structure` / `get_page_content` for those.
+- No match: `sources` is `[]` and `content` is `"No relevant content found for the query."`
+- **Tables (RFC-052 R8, `TABLES_IN_SEARCH=1`, default):** the per-document search prompt
+  also lists table nodes as `{node_id, type: "table", title, description}`, within
+  `TABLES_SEARCH_TOKEN_BUDGET` (default 8000) tokens added over the table-free view; a
+  selected table contributes its stored markdown to `content`, so a table question is
+  answered from the stored cells. `TABLES_IN_SEARCH=0` restores the table-free prompt.
 
 Note: when only one document is indexed, the pre-filter step is skipped (no LLM call).
 Concurrency across documents is bounded by `PAGEINDEX_SEARCH_CONCURRENCY` (default 3).
@@ -204,10 +208,25 @@ Text bodies are omitted; use `get_page_content` for full text.
       "title": "A1-1 Gegenstand der Versicherung",
       "pages": "5-6",
       "text": "Mitversichert ist abweichend von A1-1 ..."
+    },
+    {
+      "node_id": "0042_t0",
+      "title": "Table 3. Economic indicators",
+      "pages": "105-105",
+      "text": "| Indicator | 2019 | 2020 |\n|---|---|---|\n| GDP (US$ bn) | 18.9 | 20.1 |",
+      "type": "table",
+      "table_id": "p0104-t0"
     }
   ]
 }
 ```
+
+**Table nodes (RFC-052 R8 AC4).** A table node carries `start_index = end_index = page + 1`
+(1-based, so `pages` is `"<p>-<p>"`), and its `text` is the table's stored markdown. Its hit
+additionally carries `type: "table"` and `table_id` (the `processed/<doc_id>.tables.json`
+record). Non-table hits keep exactly the four keys above. The MCP surface stays 5 tools.
+Known gap: Docling-route section nodes otherwise carry no `start_index`/`end_index`, so on
+those documents only table nodes (and page 0) match a page selector.
 
 ---
 
@@ -450,7 +469,9 @@ Every node in the `structure` array (and its `children` recursively) has this sh
 
 ### Excerpt schema
 
-Returned by `find_relevant_documents` and `get_page_content`:
+Planned per-node excerpt shape (not what the tools return today: `get_page_content` returns
+the hit objects documented under its contract, and `find_relevant_documents` returns
+`{query, sources, content}`):
 
 ```json
 {
@@ -733,3 +754,4 @@ subsequent agent queries.
 | OI-6 | Versioning (`effective_date`, `doc_family`, `supersedes` link) not implemented — re-ingesting a document creates an unrelated `doc_id` | Medium |
 | OI-7 | Webhook/push completion notification not implemented — consumers must poll | Low |
 | OI-8 | `PAGEINDEX_SEARCH_CONCURRENCY` upper bound under OpenAI rate limits is untested above 3 | Low |
+| OI-9 | **HR4 (AGPL-3.0):** RFC-052 P4 table records are PyMuPDF `find_tables()` output, persisted to `processed/<doc_id>.tables.json` and served over MCP (table nodes in `find_relevant_documents` search, their markdown via `get_page_content`). This is a new network use of AGPL code. The user deferred the legal review on 2026-09-27; it is tracked here as an open item, not a gate. The MIT escape remains Docling (TableFormer records). `tiktoken` (search token budget) is MIT and raises no HR4 question. | High |

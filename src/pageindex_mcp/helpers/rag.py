@@ -17,6 +17,8 @@ from ..metrics import (
     RAG_SEARCHES,
 )
 from ..script import normalize_dashes
+from ..tables.search_view import TABLE_PROMPT_LINE, build_search_view
+from ..tables.settings import search_settings
 from .flat import _flat_search_text
 
 logger = logging.getLogger(__name__)
@@ -125,6 +127,34 @@ def _strip_text(nodes: list) -> list:
     return result
 
 
+def _search_view(tree: list, doc_id: str) -> tuple[list, dict]:
+    """RFC-052 R8: the slim tree for the node-selection prompt.
+
+    ``TABLES_IN_SEARCH=0`` renders today's ``_strip_text`` view (table nodes
+    left out); ``1`` adds table entries within ``TABLES_SEARCH_TOKEN_BUDGET``.
+    A table node's ``text`` is its markdown and stays in the node map, so a
+    selected table is answered from its stored cells (R7 AC8).
+    """
+    cfg = search_settings()
+    try:
+        return build_search_view(
+            tree, budget_tokens=cfg.token_budget, tables_on=cfg.in_search, doc_id=doc_id
+        )
+    except Exception as exc:  # never let the view builder break a search
+        logger.warning("RAG: search view for doc %s fell back (%s)", doc_id, type(exc).__name__)
+        try:
+            # Fall back to the tables-off view first so a builder failure
+            # never floods the prompt with every table unconditionally.
+            return build_search_view(tree, budget_tokens=0, tables_on=False, doc_id=doc_id)
+        except Exception as exc2:
+            logger.warning(
+                "RAG: tables-off search view for doc %s also fell back (%s)",
+                doc_id,
+                type(exc2).__name__,
+            )
+            return _strip_text(tree), {}
+
+
 def _build_node_map(nodes: list, nm: dict) -> None:
     """Recursively flatten tree into {node_id: node} dict."""
     for n in nodes:
@@ -148,20 +178,33 @@ def _parse_page_spec(pages: str) -> set[int]:
 
 
 def _extract_page_hits(structure: list, pages: str) -> list[dict]:
-    """Shared page-hit extraction: build node map, parse page spec, filter by intersection."""
+    """Shared page-hit extraction: build node map, parse page spec, filter by intersection.
+
+    RFC-052 R8 AC4: a table node carries ``start_index = end_index = page + 1``
+    and ``text`` = its markdown, so it is returned for its page like any other
+    node; its hit additionally carries ``type`` and ``table_id`` (keys absent
+    on non-table hits, whose shape is unchanged).
+    """
     nm: dict = {}
     _build_node_map(structure, nm)
     wanted = _parse_page_spec(pages)
-    return [
-        {
+    hits = []
+    for nid, n in nm.items():
+        if "text" not in n or not (
+            set(range(n.get("start_index", 0), n.get("end_index", 0) + 1)) & wanted
+        ):
+            continue
+        hit = {
             "node_id": nid,
             "title": n.get("title"),
             "pages": f"{n.get('start_index')}-{n.get('end_index')}",
             "text": n["text"],
         }
-        for nid, n in nm.items()
-        if set(range(n.get("start_index", 0), n.get("end_index", 0) + 1)) & wanted and "text" in n
-    ]
+        if n.get("type") == "table" or "table_id" in n:
+            hit["type"] = "table"
+            hit["table_id"] = n.get("table_id")
+        hits.append(hit)
+    return hits
 
 
 async def _rag(query: str, doc_ids: list[str]) -> str:
@@ -196,7 +239,9 @@ async def _search_one_doc(
             logger.warning("RAG: flat doc %s — no verbalized content to serve", doc_id)
             return None
 
-        tree_slim = _strip_text(tree)
+        tree_slim, view_stats = _search_view(tree, doc_id)
+        # R8: one extra line, only when a table entry is actually in the view.
+        table_line = f"{TABLE_PROMPT_LINE}\n" if view_stats.get("shown_table_count") else ""
 
         nm: dict = {}
         _build_node_map(tree, nm)
@@ -208,6 +253,7 @@ async def _search_one_doc(
         search_prompt = (
             "You are given a question and a document tree.\n"
             "Each node has a node_id, title, and summary.\n"
+            f"{table_line}"
             "Find all node_ids whose content likely answers the question.\n"
             "Match names flexibly: partial names, abbreviations, or surname-only "
             "queries should match full names.\n"
