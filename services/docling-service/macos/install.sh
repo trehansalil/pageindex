@@ -75,10 +75,8 @@ export DOCLING_ARTIFACTS_PATH="$ROOT/models" TESSDATA_PREFIX="$ROOT/tessdata"
 # RFC-052 R3 AC3: DOCLING_DO_OCR=0 is page-class driven (1 would force OCR on
 # every page). A request without page classes still gets OCR (R2 AC7).
 export DOCLING_DO_OCR=0 DOCLING_MAX_CONCURRENT=1 DOWNLOAD_TIMEOUT_S=120
-# RFC-052 R9 kill switches (P4 task 9.6), all off = today's per-chunk options.
-# TABLES_OCR_BYPASS goes to 1 after the 9.6 parity run; TABLES_TRUST_BYPASS
-# only on the 9.7 gate.
-export TABLES_OCR_BYPASS=0 TABLES_TRUST_BYPASS=0 TABLES_TRUST_COVERAGE=0.5
+# RFC-052 R9 kill switch (P4 task 9.6); off = today's per-chunk options.
+export TABLES_OCR_BYPASS=0
 export TABLES_OCR_BYPASS_MIN_FILLED=0.5
 export DOCLING_BLOCK_PRIVATE_URLS=1  # no NetworkPolicy fences a Mac's egress
 export MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1

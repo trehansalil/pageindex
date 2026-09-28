@@ -79,13 +79,12 @@ P4 measurement subcommands (task 9.1, 9.6, 9.7 -- ``design-rfc052-*.md``
 "Table Capture" / "Signal-driven Bypass"): the plain R4 bench above stays the
 default with no subcommand (or ``r4`` explicitly); three more measure the
 P4 knobs, each a two-phase "record one arm, then --compare" pair because
-their switches (``TABLES_CAPTURE``, ``TABLES_OCR_BYPASS``,
-``TABLES_TRUST_BYPASS``) are worker/service ENV vars the orchestrator
-toggles between runs, not per-request overrides this script can set::
+their switches (``TABLES_CAPTURE``, ``TABLES_OCR_BYPASS``) are
+worker/service ENV vars the orchestrator toggles between runs, not
+per-request overrides this script can set::
 
     uv run python scripts/conversion_bench.py capture --help
     uv run python scripts/conversion_bench.py bypass --help
-    uv run python scripts/conversion_bench.py grid --help
 """
 
 from __future__ import annotations
@@ -317,9 +316,9 @@ def run_arm(  # noqa: PLR0913
 
     Repair cycle 1 (reviewer finding 2): ``X-Shard`` reflects the actual
     requested range -- ``overrides["page_start"]``/``["page_end"]`` when the
-    caller sliced the request (the 9.7 grid sub-requests), else the whole
-    document, unchanged from before. Otherwise a sliced request's Loki lines
-    would be mislabeled as covering the full document.
+    caller sliced the request, else the whole document, unchanged from
+    before. Otherwise a sliced request's Loki lines would be mislabeled as
+    covering the full document.
     """
     import httpx
 
@@ -892,9 +891,8 @@ def capture_bench_main(argv: list[str]) -> int:
 def bypass_bench_main(argv: list[str]) -> int:
     """task 9.6: record one run's bypass labels/reasons + wall time, or diff two runs.
 
-    Label semantics (design "Label semantics"): filter on
-    ``bypass_reasons`` for ``ac3_trusted_grid`` vs ``ac2_no_table`` where the
-    distinction matters -- ``bypass == "tableformer"`` alone conflates both.
+    Label semantics (design "Label semantics"): ``bypass="ocr"`` only when the
+    bypass removed OCR the page-class decision would have run.
     """
     ap = argparse.ArgumentParser(
         prog="conversion_bench.py bypass", description=bypass_bench_main.__doc__
@@ -979,211 +977,19 @@ def bypass_bench_main(argv: list[str]) -> int:
     args.json_dir.mkdir(parents=True, exist_ok=True)
     out_json = args.json_dir / f"{args.label}.json"
     out_json.write_text(json.dumps(result, indent=2))
-    switches = {k: (run.applied or {}).get(k) for k in ("tables_ocr_bypass", "tables_trust_bypass")}
+    switches = {"tables_ocr_bypass": (run.applied or {}).get("tables_ocr_bypass")}
     print(f"wrote {out_json}: {run.seconds:.1f}s switches={switches}")
     return 0
 
 
-# ---------------------------------------------------------------------------
-# 9.7: grid replacement (find_tables vs TableFormer) changed-cell gate (R9 AC3)
-#
-# Reuses two bypass_bench_main JSON outputs (r3_ocr_bypass, r3_trust) as the
-# treatment arms, and re-requests the SAME pages -- only those the bypass
-# covered -- from the plain r3 arm (no bypass at all) via the P3
-# page_start/page_end slice API, so the comparison is against an unbypassed
-# reference rather than bypass-vs-bypass.
-# ---------------------------------------------------------------------------
-
-
-def _tree_gate(markdown: str, doc: Doc) -> tuple[str, bool, float]:
-    """The same ``validate_tree``/garble read ``score()`` does, for one markdown string."""
-    from pageindex_mcp.converters.headings import _md_to_structure
-    from pageindex_mcp.helpers.tree_validation import validate_tree
-
-    gate = validate_tree(
-        _md_to_structure(markdown),
-        expected_script=doc.expected_script,
-        page_count=doc.page_count or None,
-    )
-    sig = gate.signals
-    verdict = "PASS" if gate.ok else f"FAIL:{gate.defect}"
-    return verdict, bool(sig and sig.garbled), float(sig.garble_ratio) if sig else 0.0
-
-
-def _load_bypass_recording(path: Path, ocr: bool, trust: bool) -> dict:
-    """Load a ``bypass`` recording, refusing one made with other bypass switches."""
-    payload = json.loads(path.read_text())
-    applied = payload.get("applied") or {}
-    got = (applied.get("tables_ocr_bypass"), applied.get("tables_trust_bypass"))
-    if got != (ocr, trust):
-        raise SystemExit(
-            f"{path}: recorded with tables_ocr_bypass/tables_trust_bypass={got}, "
-            f"expected {(ocr, trust)}"
-        )
-    return payload
-
-
-def _grid_arm_row(
-    baseline: dict, run_payload: dict, fired, doc: Doc, base_gate: tuple
-) -> tuple[str, str]:
-    """Score one grid-bench arm against the baseline.
-
-    Returns (status, report-row cells after the arm column).
-    """
-    table_pages = set(doc.pages_with_tables or [])
-    covered = sorted(
-        {
-            p
-            for c in run_payload["applied"].get("chunks", [])
-            if fired(c)
-            for p in range(c["page_start"], c["page_end"] + 1)
-        }
-    )
-    if not covered:
-        return (
-            "NOT MEASURED",
-            "| 0 | -- | -- | -- | -- | NOT MEASURED (the bypass fired on no page) |",
-        )
-    base_verdict, base_garbled, base_ratio = base_gate
-    diff = table_cell_diff(baseline["markdown"], run_payload["markdown"])
-    cells = max(diff["baseline_cells"], diff["arm_cells"])
-    changed = diff["changed_cell_ratio"] * cells
-    covered_tables = len(table_pages.intersection(covered))
-    share = covered_tables / len(table_pages) if table_pages else 1.0
-    covered_cells = cells * share
-    ratio = changed / covered_cells if covered_cells else (1.0 if changed else 0.0)
-    run_verdict, run_garbled, run_ratio = _tree_gate(run_payload["markdown"], doc)
-    verdict_ok = not (base_verdict == "PASS" and run_verdict != "PASS")
-    garble_ok = run_ratio <= base_ratio + GARBLE_NOISE_TOLERANCE and not (
-        run_garbled and not base_garbled
-    )
-    status = "PASS" if ratio <= FAST_MAX_CHANGED_CELL_RATIO and verdict_ok and garble_ok else "FAIL"
-    return status, (
-        f"| {len(covered)} ({covered_tables} with tables) "
-        f"| {diff['changed_cell_ratio']:.2%} | {ratio:.2%} "
-        f"| {base_verdict} -> {run_verdict} "
-        f"| {base_ratio:.3f} -> {run_ratio:.3f} | {status} |"
-    )
-
-
-def grid_bench_main(argv: list[str]) -> int:
-    """task 9.7: find_tables-vs-TableFormer changed-cell ratio, gated at <= 2%.
-
-    Enable ``TABLES_TRUST_BYPASS`` only when this gate is green on every
-    document (design "9.7 benchmark"; documents: the pocketbook plus a
-    ruled-table T&C PDF -- invoke this once per document).
-
-    Every input is a whole-document ``bypass`` recording of the same backend:
-    one with both bypasses off (the baseline) and one per bypass switched on.
-    Comparing whole document with whole document is the point -- the first
-    version diffed a live page-slice baseline against a whole-document run,
-    which scores every cell outside the slice as changed. The markdown has no
-    page markers, so the changed cells cannot be pinned to pages; since the
-    uncovered pages ran with identical settings (noise floor 0.00%), every
-    changed cell is attributed to the covered pages, and the gate divides by
-    the covered table pages' estimated share of the cells.
-
-    Covered pages are the chunks the arm's own bypass decided: ``ac1`` for
-    the OCR arm, ``grid_replace`` for the trust arm. A TableFormer skip on a
-    table-free chunk (``ac2``) is not grid replacement and does not count.
-    An arm whose bypass fired on no page is NOT MEASURED, never PASS.
-    """
-    ap = argparse.ArgumentParser(
-        prog="conversion_bench.py grid", description=grid_bench_main.__doc__
-    )
-    ap.add_argument("--doc", type=Path, required=True)
-    ap.add_argument("--doc-label", default=None, help="report label; defaults to --doc's stem")
-    ap.add_argument(
-        "--baseline-json",
-        type=Path,
-        required=True,
-        help="bypass_bench_main output recorded with both bypasses off",
-    )
-    ap.add_argument(
-        "--ocr-bypass-json",
-        type=Path,
-        required=True,
-        help="bypass_bench_main output recorded with the service's TABLES_OCR_BYPASS=1",
-    )
-    ap.add_argument(
-        "--trust-json",
-        type=Path,
-        required=True,
-        help="bypass_bench_main output recorded with the service's TABLES_TRUST_BYPASS=1",
-    )
-    ap.add_argument(
-        "--out",
-        type=Path,
-        default=Path(f"audit/RFC052_GRID_BENCH_{_dt.date.today().isoformat()}.md"),
-    )
-    args = ap.parse_args(argv)
-    from pageindex_mcp.converters.table_bypass import REASON_AC1
-
-    label = args.doc_label or args.doc.stem
-    doc = Doc(label=label, path=args.doc)
-    classify(doc)
-    table_pages = set(doc.pages_with_tables or [])
-
-    baseline = _load_bypass_recording(args.baseline_json, False, False)
-    base_gate = _tree_gate(baseline["markdown"], doc)
-
-    rows: list[str] = []
-    status: dict[str, str] = {}
-    for arm_name, run_path, ocr, trust, fired in (
-        (
-            "r3_ocr_bypass",
-            args.ocr_bypass_json,
-            True,
-            False,
-            lambda c: REASON_AC1 in c.get("bypass_reasons", []),
-        ),
-        ("r3_trust", args.trust_json, False, True, lambda c: bool(c.get("grid_replace"))),
-    ):
-        run_payload = _load_bypass_recording(run_path, ocr, trust)
-        status[arm_name], cells = _grid_arm_row(baseline, run_payload, fired, doc, base_gate)
-        rows.append(f"| {arm_name} {cells}")
-
-    measured = [s for s in status.values() if s != "NOT MEASURED"]
-    if "FAIL" in measured:
-        overall = "FAIL"
-    elif status.get("r3_trust") == "PASS":
-        overall = "PASS"
-    else:
-        overall = "NOT MEASURED"
-    lines = [
-        f"# RFC-052 grid-replacement bench ({_dt.date.today().isoformat()})",
-        "",
-        f"Document: {label} ({doc.page_count} pages, {len(table_pages)} with tables) · "
-        f"baseline: `{args.baseline_json.name}` · threshold: "
-        f"changed_cell_ratio <= {FAST_MAX_CHANGED_CELL_RATIO:.0%} on covered pages (R9 AC3)",
-        "",
-        "Whole-document recordings compared with each other. Changed cells are "
-        "attributed to the covered pages (uncovered pages ran identical settings); "
-        "the covered ratio divides them by the covered table pages' share of all cells.",
-        "",
-        "| arm | covered pages | changed (whole doc) | changed (covered, gate) "
-        "| verdict (base -> run) | garble ratio (base -> run) | gate |",
-        "|---|---|---|---|---|---|---|",
-        *rows,
-        "",
-        f"**Overall: {overall}** -- enable TABLES_TRUST_BYPASS only if every "
-        "document's r3_trust row is PASS; NOT MEASURED is not a pass.",
-    ]
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text("\n".join(lines) + "\n")
-    print(f"wrote {args.out}: {overall}")
-    return 0 if overall == "PASS" else 1
-
-
 def _dispatch(argv: list[str] | None = None) -> int:
     """Subcommand dispatch: the original R4 TableFormer/OCR bench (default, unchanged)
-    plus the P4 measurement subcommands (``capture``, ``bypass``, ``grid``).
+    plus the P4 measurement subcommands (``capture``, ``bypass``).
     """
     argv = sys.argv[1:] if argv is None else argv
     subcommands = {
         "capture": capture_bench_main,
         "bypass": bypass_bench_main,
-        "grid": grid_bench_main,
     }
     if argv and argv[0] in subcommands:
         return subcommands[argv[0]](argv[1:])

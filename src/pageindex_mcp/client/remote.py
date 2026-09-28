@@ -666,7 +666,7 @@ def _rebase_convert_extras(data: dict, page_start: int) -> tuple[list, list, lis
     for c in (applied.get("chunks") if isinstance(applied, dict) else None) or []:
         if not isinstance(c, dict):
             continue
-        entry = dict(c)  # verbatim, grid_replace included (P4-9)
+        entry = dict(c)  # verbatim (P4-9)
         for key in ("page_start", "page_end"):
             v = _as_int(entry.get(key))
             if v is not None:

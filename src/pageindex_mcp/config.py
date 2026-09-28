@@ -84,18 +84,6 @@ def tables_ocr_bypass_enabled() -> bool:
     return _env_flag("TABLES_OCR_BYPASS")
 
 
-def tables_trust_bypass_enabled() -> bool:
-    """``TABLES_TRUST_BYPASS`` (default ``0``): R9 AC3, replace TableFormer
-    with the ``find_tables()`` grid on trusted ruled pages. ``1`` only on the
-    9.7 gate."""
-    return _env_flag("TABLES_TRUST_BYPASS")
-
-
-def tables_trust_coverage() -> float:
-    """``TABLES_TRUST_COVERAGE`` (default ``0.5``): R9 AC3 coverage floor."""
-    return _env_unit_float("TABLES_TRUST_COVERAGE", 0.5)
-
-
 def tables_ocr_bypass_min_filled() -> float:
     """``TABLES_OCR_BYPASS_MIN_FILLED`` (default ``0.5``): R9 AC1 share of
     non-empty ``find_tables()`` cells a table needs before its page may skip OCR."""

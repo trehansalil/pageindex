@@ -698,8 +698,6 @@ docling-service (`config.py`; R9 signal-driven bypass):
 | Variable | Default | Purpose |
 |---|---|---|
 | `TABLES_OCR_BYPASS` | `0` (false) | R9 AC1: skip OCR on a chunk whose text layer and any table are already clean |
-| `TABLES_TRUST_BYPASS` | `0` (false) | R9 AC3: replace TableFormer's grid on a page with `find_tables()`'s markdown when it is trusted |
-| `TABLES_TRUST_COVERAGE` | `0.5` | R9 AC3 minimum share of the page's text inside the union of its `find_tables()` tables for the grid to be trusted |
 | `TABLES_OCR_BYPASS_MIN_FILLED` | `0.5` | R9 AC1 minimum share of non-empty cells, weighted by cell count across the page's tables, for the OCR-clean decision |
 | `TABLEFORMER_SKIP_ENABLED` | `1` (true) | R9 AC2's switch: skip TableFormer entirely on a page with no detected tables |
 

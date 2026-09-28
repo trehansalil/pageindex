@@ -1825,7 +1825,7 @@ _PIPELINE_POINTS: tuple[DecisionPoint, ...] = (
             "RFC-052 R9 AC7 / P4-4 / P4-8 / P4-9 (repair cycle 2): one record "
             "per conversion with forced full-page OCR, never from a chunk "
             "child. prior_pass is the first pass's per-chunk context "
-            "(page_start, page_end, do_ocr, do_table_structure, grid_replace, "
+            "(page_start, page_end, do_ocr, do_table_structure, "
             "bypass, bypass_reasons, tableformer_pages, optional "
             "garbled_pages) -- numbers and labels only (HR3, sanitized: "
             "unknown bypass/reason tags and non-numeric page fields are "

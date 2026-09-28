@@ -206,7 +206,7 @@ class PdfConvertRequest(BaseModel):
     page_end: int | None = Field(default=None, ge=0)
     # RFC-052 R9 AC7 (P4-4, corrected P4-9 repair cycle 2): the HR5 recovery
     # request's first-pass context, [{page_start, page_end, do_ocr,
-    # do_table_structure, grid_replace, bypass, bypass_reasons,
+    # do_table_structure, bypass, bypass_reasons,
     # tableformer_pages, garbled_pages?}, ...]. These pages are 0-based
     # WHOLE-DOCUMENT pages, NOT slice-relative -- an HR5 recovery request is
     # itself unsliced (no page_start/page_end of its own), so there is no

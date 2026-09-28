@@ -212,7 +212,7 @@ tail     = remaining chunks → shared queue; each backend pulls one shard of
 | P4-1 | The R9 bypass signals are computed **in docling-service, per chunk** (service-local `find_tables()` on the chunk's P1 table pages, ~3% of chunk time). The worker's capture never gates dispatch, and the R7 veto set is empty. |
 | P4-2 | Keep the worker's 1536 Mi limit. Use a 512 Mi reserve, 256 Mi per capture process, and 2 capture slots per pod. Measure the worker cgroup's `memory.peak` on the 9.1 live run, and raise the limit to 2 Gi only if the peak is above 1.3 Gi. |
 | P4-3 | Table descriptions use `PAGEINDEX_FILTER_MODEL` (the cheaper model, same endpoint and HR3 gate), with 600 LLM descriptions per document at most. The rest get deterministic ones. |
-| P4-4 | `force_full_page_ocr` disables the OCR bypass and grid replacement, but not R3's no-table TableFormer skip. Every forced run records its **recovery context**: which documents took the path, and what the first pass did per chunk. These cases are measured (task 9.8) before any further policy change. |
+| P4-4 | `force_full_page_ocr` disables the OCR bypass (and, until it was dropped, grid replacement), but not R3's no-table TableFormer skip. Every forced run records its **recovery context**: which documents took the path, and what the first pass did per chunk. These cases are measured (task 9.8) before any further policy change. |
 | P4-5 | Recommended defaults adopted, each described in the sections below:<br>• PyMuPDF↔TableFormer links use containment (intersection ÷ smaller area) ≥ 0.5.<br>• Node spans come from service `heading_pages`, falling back to a title search.<br>• Tree route only; flat documents get no `tables.json`.<br>• Capture scans every page, cheap positives first.<br>• The `text` strategy runs only on column-alignment pages and never drives grid replacement.<br>• The search budget counts only tokens *added* over today's view.<br>• The ≤ 5% bound is judged on median arq job wall time over 2 runs per arm. |
 | P4-8 | (Repair cycle 1) An explicit operator `do_ocr_policy="force_on"` outranks the R9 AC1 OCR bypass, below force. `docling_force_recovery` gains a `recovery_trigger` label and a computed `garbled_tableformer_overlap`; `doc_id` is dropped from the record (the service has none). |
 | P4-9 | (Repair cycle 2) `recovery_trigger` is a **closed vocabulary** (`hr5_garble`/`hr5_low_content`/`hr5_image_dominant`); it sets `choice`/`force_reason` to the closed `hr5_recovery` category, never to the label itself. `garbled_tableformer_overlap` is `null`, with a companion `garbled_pages_known: bool`, when no first-pass chunk carried `garbled_pages` -- unknown is not zero. The resolved `do_ocr_policy` must be threaded all the way into `_apply_chunk_bypass` (chunk child, `_decide_chunk_bypass`, and the direct route), not just the first `do_ocr` resolution, or a per-request `force_on` is silently lost to the bypass. `prior_pass` pages are whole-document (an HR5 recovery request is itself unsliced); the worker rebases the shard-relative `applied.chunks[*]` it forwards verbatim (including `grid_replace`) by that shard's `page_start`. |
@@ -434,7 +434,7 @@ def decide_bypass(pdf_path: str, pages: range, classes: list[PageClass] | None, 
                   force_ocr: bool, switches: BypassSwitches) -> ChunkBypass
 @dataclass(frozen=True)
 class ChunkBypass:
-    do_ocr: bool; do_table_structure: bool; grid_replace: bool
+    do_ocr: bool; do_table_structure: bool
     bypass: Literal["none", "ocr", "tableformer", "both"]; reasons: tuple[str, ...]
 ```
 
@@ -442,22 +442,21 @@ class ChunkBypass:
 |---|---|---|
 | AC1 skip OCR | clean text layer (P1 garble screen) **and** image fraction < `PAGECLASS_IMAGE_AREA_MIN` **and** (no table **or** the page's `find_tables()` tables together have ≥ `TABLES_OCR_BYPASS_MIN_FILLED` non-empty cells, cell-weighted, and every table with text is clean) *(amended 2026-09-28)* | `page_classes` from the request, plus service-local `find_tables()` on the chunk's table pages |
 | AC2 skip TableFormer | P1 `has_tables` false | Today's R3 path |
-| AC3 grid replace | Every table on the page is `lines`, the union of the table bboxes holds ≥ `TABLES_TRUST_COVERAGE` of the page's text, and no column-alignment region lies outside the table bboxes *(amended 2026-09-28; was per-table coverage)* | Service-local `find_tables()` |
-| AC4 chunk | OCR off only if AC1 holds on every page; TableFormer off only if AC2 or AC3 holds on every page | — |
+| AC3 grid replace | **Dropped 2026-09-28 (user):** changed 13-20% of cells against TableFormer in the 9.7 bench | — |
+| AC4 chunk | OCR off only if AC1 holds on every page; TableFormer off only if AC2 holds on every page | — |
 
 **Label semantics (P4-7 clarification).** `bypass` (`ChunkBypass.bypass`) is the coarse label a reader groups by; `reasons` is the finer AC trail, and the two do not always align 1:1:
-- `bypass="tableformer"` covers BOTH TableFormer paths that turn `do_table_structure` off: R3's own AC2 no-table skip AND the P4 AC3 grid-replacement bypass. Distinguish them by `reasons`, not by `bypass` alone.
-- A 9.7/9.8 count of "how many chunks were bypassed via grid replacement" vs "via the no-table skip" must filter on `bypass_reasons` containing `ac3_trusted_grid` vs `ac2_no_table` -- `bypass == "tableformer"` alone conflates both.
+- `bypass="tableformer"` is R3's own AC2 no-table skip (the only TableFormer bypass since AC3 was dropped).
+- `bypass="ocr"` is reported only when the bypass removed OCR the page-class decision would have run; a chunk whose OCR page-class policy already turned off shows `tableformer` even with `ac1` in its reasons.
 - `reasons` may contain `ac1_clean_text_layer` even when the resulting `bypass` label is `"none"`: AC1 only removes OCR the P3 decision would otherwise have run, so a chunk that never needed OCR in the first place still records the AC1 finding for the 9.8 census without showing `bypass="ocr"`.
 
 **AC1 "clean" definition.** A page counts as having a clean text layer when the P1 garble screen passes on the JOINED text of all of a table's non-empty cells (not judged per cell). A per-cell garble check misfires on numeric-heavy cells (a lone `"14.3"` or `"–"` looks like low-entropy garble in isolation), so numeric-heavy tables must fail AC1 safe -- i.e. an all-numeric or mostly-numeric table never satisfies "clean" on cell content alone and keeps OCR on for that page.
 
 - **Cost:** service-local `find_tables()` takes ~0.8 s/page on a chunk's table pages only, ≈3% of chunk time, in parallel across chunks.
 - **Plans unchanged:** the R3 chunk plan is not changed, so there are no new joins and R6 parity holds.
-- **Grid replacement:** only when `TABLES_TRUST_BYPASS=1`. The chunk runs `do_table_structure=False`, and each Docling table on a trusted page gets the overlapping `find_tables()` markdown.
 
 **Precedence (P4-4, amended P4-8, repair cycle 2 finding 1).** `_resolve_force_ocr` decides force.
-- **Under force:** `do_ocr=True`, `bypass ∉ {ocr, both}`, `grid_replace=False`.
+- **Under force:** `do_ocr=True`, `bypass ∉ {ocr, both}`.
 - **Not overridden:** R3's no-table TableFormer skip (AC2).
 - **Orchestrator decision (P4-8):** below force, an explicit operator kill-switch (`do_ocr_policy="force_on"`, i.e. `DOCLING_DO_OCR=1`) outranks the R9 AC1 signal-driven OCR bypass. A human-set "OCR is always on" must not be silently defeated by a heuristic that thinks a page looks clean. Full order: `force_full_page_ocr` → policy `force_on` (**request** `do_ocr_policy` if given, else the `DOCLING_DO_OCR` env -- the existing request-over-env rule) → `bypass_ocr` → the rest of the policy (`page_class` defers to the chunk's `needs_ocr`).
 - **Single decision point:** `_resolve_do_ocr` stays the only place OCR is decided, and takes `bypass_ocr` as an input below force and below an explicit `force_on`.
@@ -467,7 +466,7 @@ class ChunkBypass:
 - `doc_sha8` and route (no `doc_id`: the docling-service has none, so this record identifies documents by `doc_sha8` + `job_id`, not `doc_id`);
 - `choice`/`force_reason` stay the **closed** inferred category -- `request`, `env`, or `hr5_recovery` -- exactly as before P4-8. A valid `recovery_trigger` (below) sets `choice`/`force_reason` to `hr5_recovery`, same as `prior_pass` presence already did; it never becomes the label itself (repair cycle 2, QA finding 5 -- the earlier P4-8 draft of this section, which said the trigger "sets force_reason/choice", was wrong and is corrected here);
 - `recovery_trigger` (P4-8, **closed vocabulary**, repair cycle 2 finding 5): one of `hr5_garble`, `hr5_low_content`, `hr5_image_dominant` -- one per `client/recovery.py` HR5 path (`_recover_garble_ocr`, `_recover_low_content_ocr`, `_recover_image_dominant_ocr`). Sanitized to `[a-z0-9_]`, ≤ 40 chars, AND checked against the closed set; anything else (including a merely well-formed but unrecognised label such as a stray `hr5_rtl`) is dropped to `None` rather than passed through. Lives only in this attr;
-- for each chunk of the **first pass**: `do_ocr`, `do_table_structure`, `grid_replace`, `bypass`, `bypass_reasons`, the pages TableFormer produced tables on (`tableformer_pages`, from `table_results`), and optionally `garbled_pages` (P4-8) -- see "`garbled_pages` source" below for exactly where these pages come from and when they are omitted;
+- for each chunk of the **first pass**: `do_ocr`, `do_table_structure`, `bypass`, `bypass_reasons`, the pages TableFormer produced tables on (`tableformer_pages`, from `table_results`), and optionally `garbled_pages` (P4-8) -- see "`garbled_pages` source" below for exactly where these pages come from and when they are omitted;
 - `garbled_pages_known` (repair cycle 2, QA finding 2): `true` only when at least one first-pass chunk record actually carried a `garbled_pages` key **whose value is a list** (present-but-invalid, e.g. `None`, does not count as known -- the sanitizer drops the key entirely in that case rather than injecting `[]`). `low_content`/`image_dominant` triggers normally have no garble detector run and so omit it.
 
 **`garbled_pages` source (wave 2 couple B, orchestrator decision).** `garbled_pages` is produced by the **worker**, not the service, and is wired as part of couple B's `client/recovery.py` work, not P4 wave 1:
@@ -479,7 +478,7 @@ class ChunkBypass:
 - **State carried to recovery:** the worker keeps the first pass's `applied.chunks` on its extraction state from the first pass through to any later recovery pass; each `_recover_*` method in `client/recovery.py` (`_recover_garble_ocr`, `_recover_low_content_ocr`, `_recover_image_dominant_ocr`) passes its own `recovery_trigger` into `_execute_ocr_retry`, which is where `prior_pass` (built from that retained `applied.chunks`, rebased per "Wire list and page frame" above) and `recovery_trigger` are both forwarded on the recovery request -- couple B's wiring job, not P4 wave 1's.
 - `garbled_tableformer_overlap` (P4-8): count of pages that are in both some chunk's `garbled_pages` and some chunk's `tableformer_pages` -- directly answers "did the recovered garble involve TableFormer pages" without a manual join in Loki. **`null` (not `0`) when `garbled_pages_known` is `false`** -- omitted must never read as "zero overlap".
 
-**Wire list and page frame (repair cycle 2, QA findings 3-4).** The worker forwards `applied.chunks[*]` **verbatim** as `prior_pass` entries: `page_start`, `page_end`, `do_ocr`, `do_table_structure`, `grid_replace`, `bypass`, `bypass_reasons`, `tableformer_pages`, plus an optional `garbled_pages` it adds itself. `prior_pass` pages are **0-based whole-document pages**, not slice-relative: an HR5 recovery request is itself unsliced (no `page_start`/`page_end` of its own), so there is no slice for them to be relative to. `applied.chunks[*]` WAS shard-relative to the earlier (possibly `page_start`-sliced, P3 R5 AC3) request that produced it -- the worker is the one that rebases those pages by that shard's own `page_start` before assembling this later request's `prior_pass`. (`page_classes`/`pages_with_tables`, by contrast, stay slice-relative to *this* request's own slice when one is given -- see "TableFormer source" above; only `prior_pass`, carried on an always-unsliced recovery request, is whole-document.) The sanitizer accepts and keeps `grid_replace` as a coerced `bool`, alongside the other flags.
+**Wire list and page frame (repair cycle 2, QA findings 3-4).** The worker forwards `applied.chunks[*]` **verbatim** as `prior_pass` entries: `page_start`, `page_end`, `do_ocr`, `do_table_structure`, `bypass`, `bypass_reasons`, `tableformer_pages`, plus an optional `garbled_pages` it adds itself. `prior_pass` pages are **0-based whole-document pages**, not slice-relative: an HR5 recovery request is itself unsliced (no `page_start`/`page_end` of its own), so there is no slice for them to be relative to. `applied.chunks[*]` WAS shard-relative to the earlier (possibly `page_start`-sliced, P3 R5 AC3) request that produced it -- the worker is the one that rebases those pages by that shard's own `page_start` before assembling this later request's `prior_pass`. (`page_classes`/`pages_with_tables`, by contrast, stay slice-relative to *this* request's own slice when one is given -- see "TableFormer source" above; only `prior_pass`, carried on an always-unsliced recovery request, is whole-document.) The sanitizer drops any other key, including a `grid_replace` from a build before AC3 was dropped.
 
 The recovery request also carries a top-level `recovery_trigger` so the service can see why this is a forced pass, in addition to which pages TableFormer covered and which were garbled, before re-OCRing them. Every field is sanitized on the way into the record (HR3): unknown `bypass`/reason tags and non-numeric page fields are dropped rather than logged verbatim, and chunk/page lists are capped (512 chunks, 2000 pages).
 - **P4 scope:** only recorded and logged, never acted on.
@@ -502,8 +501,6 @@ The recovery request also carries a top-level `recovery_trigger` so the service 
 |---|---|---|
 | `TABLES_OCR_BYPASS` | `0` → `1` after the 9.6 parity run | AC1 |
 | `TABLEFORMER_SKIP_ENABLED` | existing | AC2 (reused) |
-| `TABLES_TRUST_BYPASS` | `0` | AC3; `1` only on the 9.7 gate |
-| `TABLES_TRUST_COVERAGE` | `0.5` | AC3 coverage floor for the page's tables together |
 | `TABLES_OCR_BYPASS_MIN_FILLED` | `0.5` | AC1 non-empty cell share, cell-weighted across the page's tables |
 
 **9.7 benchmark** (`scripts/conversion_bench.py`):
@@ -533,7 +530,7 @@ The recovery request also carries a top-level `recovery_trigger` so the service 
 - **P14 (never drop):** records from both sources are kept, and links are symmetric.
 - **P15 (budget):** added search-view tokens ≤ `TABLES_SEARCH_TOKEN_BUDGET`, and drops follow ascending coverage. Storage is unchanged by the budget, and with `TABLES_IN_SEARCH=0` the view equals `_strip_text`.
 - **P16 (HR3):** with `PII_CORPUS=true` and a non-ZDR endpoint, description generation makes zero egress calls and every description is `fallback`.
-- **P17 (need safety):** OCR is bypassed only when AC1 holds on every page of the chunk, and TableFormer only when AC2 or AC3 does.
-- **P18 (force precedence):** `force_full_page_ocr` ⇒ `do_ocr=True`, `bypass ∉ {ocr, both}` and `grid_replace=False`, and a `docling_force_recovery` record is emitted with the first pass's per-chunk context.
+- **P17 (need safety):** OCR is bypassed only when AC1 holds on every page of the chunk, and TableFormer only when AC2 does.
+- **P18 (force precedence):** `force_full_page_ocr` ⇒ `do_ocr=True`, `bypass ∉ {ocr, both}`, and a `docling_force_recovery` record is emitted with the first pass's per-chunk context.
 - **P19 (kill switches):** with every P4 switch off, each chunk's `(do_ocr, do_table_structure)` equals the P3 decision.
 - **P20 (logging):** every `docling_chunk` record carries `bypass ∈ {none, ocr, tableformer, both}`.
