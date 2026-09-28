@@ -821,12 +821,13 @@ def _apply_chunk_bypass(
       override, or ``None`` to defer to the env -- forwarded so an explicit
       per-request ``force_on`` still outranks the bypass here, not just at the
       call site that first computed ``do_ocr`` (P4-8 precedence).
-    * TableFormer: only AC3's grid replacement can turn it off beyond the P3
-      decision; AC2 is R3's own skip, already in ``do_table_structure``. So
-      with every R9 switch off this is the P3 decision exactly (design P19).
+    * TableFormer: the bypass never turns it off beyond the P3 decision
+      (AC3 grid replacement was dropped 2026-09-28); AC2 is R3's own skip,
+      already in ``do_table_structure``. So with every R9 switch off this is
+      the P3 decision exactly (design P19).
     * ``bypass`` labels what the chunk actually skips: ``ocr`` only when the
       bypass removed OCR the P3 decision would have run, ``tableformer``
-      whenever TableFormer is off (R3's AC2 skip or AC3). Every production
+      whenever TableFormer is off (R3's AC2 skip). Every production
       caller resolves ``do_ocr`` to a bool before it reaches here (a
       top-level call resolves it inline; a chunk child receives it already
       resolved by its parent) -- ``do_ocr=None`` only happens when a test
@@ -846,13 +847,10 @@ def _apply_chunk_bypass(
         # known True baseline proves OCR was removed by the bypass; None
         # (unresolved, baseline unknowable) must not inflate "ocr".
         ocr_bypassed = bool(do_ocr) and not effective_ocr
-    grid_replace = decided.grid_replace and not _resolve_force_ocr(force_full_page_ocr)
-    effective_tables = do_table_structure and not grid_replace
     return ChunkBypass(
         do_ocr=effective_ocr,  # type: ignore[arg-type]
-        do_table_structure=effective_tables,
-        grid_replace=grid_replace,
-        bypass=bypass_label(ocr_bypassed, not effective_tables),
+        do_table_structure=do_table_structure,
+        bypass=bypass_label(ocr_bypassed, not do_table_structure),
         reasons=decided.reasons,
     )
 
@@ -913,7 +911,6 @@ def _chunk_context(page_start: int, page_end: int, bypass_record: dict, tables: 
         "page_end": page_end,
         "do_ocr": bypass_record.get("do_ocr"),
         "do_table_structure": bypass_record.get("do_table_structure"),
-        "grid_replace": bypass_record.get("grid_replace", False),
         "bypass": bypass_record.get("bypass", "none"),
         "bypass_reasons": list(bypass_record.get("bypass_reasons", ())),
         "tableformer_pages": sorted({t["page"] for t in tables})
@@ -965,7 +962,6 @@ _FORCE_RECOVERY_KNOWN_REASONS = frozenset(
         "no_page_classes",
         "ac1_clean_text_layer",
         "ac2_no_table",
-        "ac3_trusted_grid",
     }
 )
 
@@ -992,8 +988,7 @@ def _sanitize_prior_pass_page_list(value) -> list[int]:
 def _sanitize_prior_pass_entry(entry: dict) -> dict:
     """One ``prior_pass`` chunk entry, sanitized for the
     ``docling_force_recovery`` record (HR3): page fields coerced to ``int``,
-    flags (including ``grid_replace`` -- repair cycle 2, QA finding 3) to
-    ``bool``, ``bypass`` kept only from the known set, reason tags only from
+    flags to ``bool``, ``bypass`` kept only from the known set, reason tags only from
     the known ``REASON_*`` constants, and both page lists (P4-8's
     ``garbled_pages`` included) capped and int-coerced."""
     from .table_bypass import BYPASS_VALUES
@@ -1007,7 +1002,7 @@ def _sanitize_prior_pass_entry(entry: dict) -> dict:
             sanitized[key] = int(val)
         except (TypeError, ValueError):
             continue
-    for key in ("do_ocr", "do_table_structure", "grid_replace"):
+    for key in ("do_ocr", "do_table_structure"):
         val = entry.get(key)
         if val is not None:
             sanitized[key] = bool(val)
@@ -1299,7 +1294,6 @@ def _docling_chunk_worker(  # noqa: PLR0913
                 pages_with_tables=None if chunk_bypass.do_table_structure else set(),
                 do_ocr=chunk_bypass.do_ocr,
                 tableformer_mode=tableformer_mode,
-                grid_replace=chunk_bypass.grid_replace,
                 extras=extras,
             )
         result_queue.put(("ok", result, _peak_rss_bytes(), extras))

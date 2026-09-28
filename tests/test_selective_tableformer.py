@@ -487,7 +487,7 @@ class TestRemotePdfToMarkdownPayload:
         assert not {"page_start", "prior_pass", "recovery_trigger"} & set(captured_payload)
 
         # A page_start slice rebases every page-keyed extra to whole-document
-        # pages; applied.chunks are otherwise forwarded verbatim (grid_replace).
+        # pages; applied.chunks are otherwise forwarded verbatim.
         body.update(
             table_results=[
                 {"page": 1, "bbox": [0, 0, 9, 9], "rows": 1, "cols": 1, "cells": [["a"]],
@@ -496,7 +496,7 @@ class TestRemotePdfToMarkdownPayload:
             ],
             heading_pages=[["Intro", 0], ["Tarif", 2]],
             applied={"chunks": [{"page_start": 0, "page_end": 2, "tableformer_pages": [1],
-                                 "grid_replace": True, "bypass": "none"}]},
+                                 "bypass_reasons": ["ac2_no_table"], "bypass": "none"}]},
             picture_results=[{"page": 1, "png_bytes": ""}],
         )  # fmt: skip
         prior = [{"page_start": 0, "page_end": 9, "garbled_pages": [3]}]
@@ -513,7 +513,7 @@ class TestRemotePdfToMarkdownPayload:
         assert res.heading_pages == [("Intro", 10), ("Tarif", 12)]
         assert res.applied_chunks == [
             {"page_start": 10, "page_end": 12, "tableformer_pages": [11],
-             "grid_replace": True, "bypass": "none"}
+             "bypass_reasons": ["ac2_no_table"], "bypass": "none"}
         ]  # fmt: skip
         assert res.pictures[0]["page"] == 11 and res.page_start == 10
         # P3 shards merge in page order, whatever order they finished in.
@@ -795,46 +795,41 @@ class TestPageClassChunking:
         assert all(c.needs_tables and c.needs_ocr for c in eleventh_chunks)
 
         # RFC-052 R9 design P17 (need safety): OCR is bypassed only when AC1
-        # holds on EVERY page of the chunk, TableFormer only when AC2 or AC3
-        # does. Signals stubbed per page; the real find_tables() scan below.
+        # holds on EVERY page of the chunk, TableFormer only when AC2 does
+        # (AC3 grid replacement dropped 2026-09-28). Signals stubbed per page;
+        # the real find_tables() scan below.
         from pageindex_mcp.converters import table_bypass as tb
 
-        box = (0.0, 0.0, 100.0, 100.0)
-        ok, sparse, garbled, thin = (
-            tb.TableSignal(1.0, True, 0.8, "lines", box, 9),
-            tb.TableSignal(0.2, True, 0.8, "lines", box, 9),
-            tb.TableSignal(1.0, False, 0.8, "lines", box, 9),
-            tb.TableSignal(1.0, True, 0.1, "lines", box, 9),
+        ok, sparse, garbled = (
+            tb.TableSignal(1.0, True, 9),
+            tb.TableSignal(0.2, True, 9),
+            tb.TableSignal(1.0, False, 9),
         )
         # 2026-09-28 amendment: a small sparse header box beside a big full
         # table (Unfall p1) no longer vetoes AC1; an empty box is not garbled.
         header, empty, big = (
-            tb.TableSignal(0.2, True, 0.03, "lines", box, 9),
-            tb.TableSignal(0.0, False, 0.0, "lines", box, 4),
-            tb.TableSignal(0.9, True, 0.4, "lines", box, 120),
+            tb.TableSignal(0.2, True, 9),
+            tb.TableSignal(0.0, False, 4),
+            tb.TableSignal(0.9, True, 120),
         )
-        on = tb.BypassSwitches(ocr_bypass=True, trust_bypass=True)
+        on = tb.BypassSwitches(ocr_bypass=True)
         P = tb.PageTables
         for flags, scans, expected in [
-            (["T--", "T--"], {}, ("both", False)),  # AC1 + AC2 everywhere
-            (["T-t", "T--"], {0: P((ok,), False, 0.8)}, ("both", True)),  # AC1; AC3 + AC2
-            (["T-t", "T--"], {0: P((sparse,), False, 0.8)}, ("tableformer", True)),  # few cells
-            (["T-t"], {0: P((garbled,), False, 0.8)}, ("tableformer", True)),  # garbled cells
-            (["T-t"], {0: P((thin,), False, 0.1)}, ("ocr", False)),  # coverage < floor
-            (["T-t"], {0: P((ok,), True, 0.8)}, ("ocr", False)),  # alignment outside tables
-            (["T-t"], {0: P((), False, 0.0)}, ("ocr", False)),  # find_tables() finds none
-            # amendment: cell-weighted fill; union coverage 0.03 + 0.4 + 0.4 >= 0.5
-            (["T-t"], {0: P((header, empty, big, big), False, 0.83)}, ("both", True)),
-            (["T-t"], {0: P((thin, thin), False, 0.2)}, ("ocr", False)),  # union < floor
-            (["T-t"], {0: None}, ("none", False)),  # scan failed: the safe value
-            (["Ti-", "T--"], {}, ("tableformer", False)),  # a raster image keeps OCR
-            (["---", "T--"], {}, ("tableformer", False)),  # no text layer keeps OCR
+            (["T--", "T--"], {}, "both"),  # AC1 + AC2 everywhere
+            (["T-t", "T--"], {0: P((ok,))}, "ocr"),  # AC1; the table page keeps TableFormer
+            (["T-t"], {0: P((sparse,))}, "none"),  # few cells
+            (["T-t"], {0: P((garbled,))}, "none"),  # garbled cells
+            (["T-t"], {0: P((header, empty, big))}, "ocr"),  # cell-weighted fill
+            (["T-t"], {0: P(())}, "ocr"),  # find_tables() finds none
+            (["T-t"], {0: None}, "none"),  # scan failed: the safe value
+            (["Ti-", "T--"], {}, "tableformer"),  # a raster image keeps OCR
+            (["---", "T--"], {}, "tableformer"),  # no text layer keeps OCR
         ]:
             monkeypatch.setattr(tb, "_scan_table_pages", lambda _p, pages, s=scans: {
                 p: s.get(p) for p in pages})  # fmt: skip
             got = tb.decide_bypass("x.pdf", range(len(flags)), _classes(*[(f, 1) for f in flags]),
                                    force_ocr=False, switches=on)  # fmt: skip
-            assert (got.bypass, got.grid_replace) == expected, (flags, scans, got)
+            assert got.bypass == expected, (flags, scans, got)
             assert got.do_ocr is (got.bypass not in ("ocr", "both"))
             assert got.do_table_structure is (got.bypass not in ("tableformer", "both"))
 
@@ -851,8 +846,8 @@ class TestPageClassChunking:
                                 switches=on).reasons == ("no_page_classes",)  # fmt: skip
         monkeypatch.undo()
 
-        # The real scan: a ruled 3x3 grid whose clean, filled cells hold all
-        # the page's text -> AC1 and AC3 both hold.
+        # The real scan: a ruled 3x3 grid whose cells are clean and filled
+        # -> AC1 holds; the table page keeps TableFormer.
         fitz = pytest.importorskip("fitz")
         doc = fitz.open()
         page = doc.new_page()
@@ -868,14 +863,11 @@ class TestPageClassChunking:
         doc.save(grid_pdf)
         doc.close()
         [scan] = tb._scan_table_pages(grid_pdf, [0]).values()
-        assert scan is not None and not scan.alignment_outside
-        assert [(t.filled_ratio, t.clean, t.coverage, t.cells) for t in scan.tables] == [
-            (1.0, True, 1.0, 9)
-        ]
-        assert scan.coverage == 1.0
+        assert scan is not None
+        assert [(t.filled_ratio, t.clean, t.cells) for t in scan.tables] == [(1.0, True, 9)]
         real = tb.decide_bypass(grid_pdf, range(1), _classes(("T-t", 1)), force_ocr=False,
                                 switches=on)  # fmt: skip
-        assert (real.bypass, real.grid_replace) == ("both", True)
+        assert real.bypass == "ocr"
 
     def test_ocr_policy_tableformer_mode_and_converter_cache_key(self, monkeypatch, caplog):
         """RFC-052 R3 AC3 + R4 AC1 (tasks 5.2, 5.4): DOCLING_DO_OCR is a
@@ -991,17 +983,16 @@ class TestPageClassChunking:
         assert dc._resolve_do_ocr(False, policy="force_on", bypass_ocr=True) is True
         assert dc._resolve_do_ocr(False, policy="force_off", bypass_ocr=True) is False
         monkeypatch.setattr(tb, "_scan_table_pages", lambda *_a: pytest.fail("scanned"))
-        on = tb.BypassSwitches(ocr_bypass=True, trust_bypass=True)
+        on = tb.BypassSwitches(ocr_bypass=True)
         forced = tb.decide_bypass(path, range(2), _classes((_TEXT[0], 2)), force_ocr=True,
                                   switches=on)  # fmt: skip
-        assert (forced.do_ocr, forced.grid_replace, forced.bypass) == (True, False, "tableformer")
+        assert (forced.do_ocr, forced.bypass) == (True, "tableformer")
         assert forced.reasons == ("force_full_page_ocr", "ac2_no_table")
-        forged = tb.ChunkBypass(False, False, True, "both", ())
+        forged = tb.ChunkBypass(False, False, "both", ())
         applied = dc._apply_chunk_bypass(
             forged, force_full_page_ocr=True, do_ocr=True, do_table_structure=True
         )
-        assert (applied.do_ocr, applied.grid_replace, applied.do_table_structure) == (
-            True, False, True)  # fmt: skip
+        assert (applied.do_ocr, applied.do_table_structure) == (True, True)
         assert applied.bypass not in ("ocr", "both")
 
         # repair cycle 2, QA finding 1: a per-request do_ocr_policy="force_on"
@@ -1011,7 +1002,7 @@ class TestPageClassChunking:
         # resolved policy, not silently fall back to reading DOCLING_DO_OCR.
         monkeypatch.setenv("TABLES_OCR_BYPASS", "1")
         monkeypatch.delenv("DOCLING_DO_OCR", raising=False)
-        bypass_wants_off = tb.ChunkBypass(False, True, False, "ocr", ("ac1_clean_text_layer",))
+        bypass_wants_off = tb.ChunkBypass(False, True, "ocr", ("ac1_clean_text_layer",))
         # item 2 fix: do_ocr=None means the caller has not yet resolved P3's
         # decision -- with no needs_ocr in scope at this level the baseline
         # is unknown, so an unresolved call must never be inflated to "ocr"
@@ -1082,8 +1073,8 @@ class TestPageClassChunking:
         assert [r.choice for r in force_records()] == ["env"]
 
         # finding 3 (HR3): an unknown bypass/reason tag, a non-numeric page
-        # field, and grid_replace are handled -- dropped or coerced -- rather
-        # than logged verbatim.
+        # field, and an unknown flag (grid_replace, dropped with AC3) are
+        # handled -- dropped or coerced -- rather than logged verbatim.
         monkeypatch.delenv("DOCLING_FORCE_FULL_PAGE_OCR", raising=False)
         dirty_prior = [
             {
@@ -1108,7 +1099,7 @@ class TestPageClassChunking:
         assert "bypass" not in entry and entry["bypass_reasons"] == []
         assert (entry["page_start"], entry["page_end"]) == (0, 9)
         assert entry["tableformer_pages"] == [1, 2]
-        assert entry["grid_replace"] is True
+        assert "grid_replace" not in entry
         assert trig.attrs["garbled_pages_known"] is True
         assert trig.attrs["garbled_tableformer_overlap"] == 1
 
@@ -1214,7 +1205,7 @@ class TestPageClassChunking:
         # RFC-052 R9, design P19: every R9 switch at its default (off), so the
         # child's real bypass decision must leave each chunk's (do_ocr,
         # do_table_structure) at the P3 decision asserted below.
-        for knob in ("TABLES_OCR_BYPASS", "TABLES_TRUST_BYPASS", "TABLEFORMER_SKIP_ENABLED"):
+        for knob in ("TABLES_OCR_BYPASS", "TABLEFORMER_SKIP_ENABLED"):
             monkeypatch.delenv(knob, raising=False)
         md, pic_pages, got, recs = run(page_classes=classes)
         # P20: each record carries bypass; with the switches off it is only
@@ -1284,8 +1275,7 @@ class TestPageClassChunking:
 
         def fake_pipeline(*a, **kw):
             real.bind(*a, **kw)
-            child_kw.append((kw["pages_with_tables"], kw["do_ocr"], kw["tableformer_mode"],
-                             kw["grid_replace"]))  # fmt: skip
+            child_kw.append((kw["pages_with_tables"], kw["do_ocr"], kw["tableformer_mode"]))
             kw["extras"]["table_results"] = [{"page": 0}]
             return "md", [], {}
 
@@ -1299,7 +1289,7 @@ class TestPageClassChunking:
         first, final = q.get_nowait(), q.get_nowait()
         assert (first[0], first[1]["bypass"], final[0], final[3]) == (
             "bypass", "tableformer", "ok", {"table_results": [{"page": 0}]})  # fmt: skip
-        assert child_kw == [(set(), True, "fast", False)]
+        assert child_kw == [(set(), True, "fast")]
 
     def test_direct_path_and_service_thread_page_classes(
         self, tmp_path, monkeypatch, docling_service_app
@@ -1384,8 +1374,8 @@ class TestPageClassChunking:
             return app.convert_pdf(req, _ConnectedClient())
 
         url = "https://example.com/x.pdf"
-        for knob in ("TABLES_OCR_BYPASS", "TABLES_TRUST_BYPASS", "TABLES_TRUST_COVERAGE",
-                     "TABLES_OCR_BYPASS_MIN_FILLED", "TABLEFORMER_SKIP_ENABLED"):  # fmt: skip
+        for knob in ("TABLES_OCR_BYPASS", "TABLES_OCR_BYPASS_MIN_FILLED",
+                     "TABLEFORMER_SKIP_ENABLED"):  # fmt: skip
             monkeypatch.delenv(knob, raising=False)
         resp0 = asyncio.run(
             _convert(
@@ -1422,8 +1412,6 @@ class TestPageClassChunking:
             # RFC-052 R9 (design "Logging"): the switch values and each
             # chunk's effective decision; the prior pass is only noted.
             "tables_ocr_bypass": False,
-            "tables_trust_bypass": False,
-            "tables_trust_coverage": 0.5,
             "tables_ocr_bypass_min_filled": 0.5,
             "tableformer_skip_enabled": True,
             "chunks": [chunk_ctx],

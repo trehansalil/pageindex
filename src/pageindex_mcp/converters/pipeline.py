@@ -320,7 +320,6 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
     tableformer_mode: str | None = None,
     pageclass_chunking: bool | None = None,
     do_ocr_policy: str | None = None,
-    grid_replace: bool = False,
     extras: dict | None = None,
     prior_pass: list | None = None,
     recovery_trigger: str | None = None,
@@ -330,8 +329,7 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
     RFC-052 R9 / 9.2 (P4):
     * The direct route takes the same per-chunk bypass decision as a chunk
       child (``_decide_chunk_bypass``), the document being one chunk. A chunk
-      child arrives with it already applied (``do_ocr`` resolved, and
-      ``grid_replace`` for AC3).
+      child arrives with it already applied (``do_ocr`` resolved).
     * ``extras`` (when given) receives ``table_results`` / ``heading_pages``
       (0-based pages; see ``converters/table_results.py``) and, at top level,
       ``chunks`` (one first-pass context record per chunk).
@@ -607,7 +605,6 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
     _bypass_record: dict = {
         "do_ocr": do_ocr,
         "do_table_structure": _do_table_structure,
-        "grid_replace": grid_replace,
         "bypass": "tableformer" if not _do_table_structure else "none",
         "bypass_reasons": [],
     }
@@ -622,7 +619,6 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
         )
         do_ocr = bool(_effective.do_ocr)
         _do_table_structure = _effective.do_table_structure
-        grid_replace = _effective.grid_replace
         _bypass_record = _effective.as_record()
 
     # Reuse the process-cached converter (see _docling_converter): a fresh
@@ -679,18 +675,9 @@ def pdf_to_markdown_docling(  # noqa: PLR0913, PLR0915, C901
             bypass_reasons=_bypass_record["bypass_reasons"],
         )
 
-    # RFC-052 R9 AC3: only reached with TABLES_TRUST_BYPASS=1 and never under
-    # force (P4-4). TableFormer did not run; Docling's layout tables get the
-    # overlapping find_tables() grid instead.
-    if grid_replace and not _resolve_force_ocr(force_full_page_ocr):
-        from .table_bypass import apply_grid_replacement
-
-        apply_grid_replacement(result.document, pdf_path)
     # RFC-052 9.2: TableFormer's tables, before the add-on touches the document.
     # P4 table-results contamination finding 2: only when TableFormer actually
-    # ran -- never after AC3 grid replacement and never on an AC2/force
-    # bypass, both of which imply _do_table_structure is False here (grid
-    # replacement requires tableformer_off by construction in decide_bypass).
+    # ran -- never on an AC2 skip, which implies _do_table_structure is False.
     if extras is not None:
         extras["table_results"] = (
             build_table_results(result.document) if _do_table_structure else []
