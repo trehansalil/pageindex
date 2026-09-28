@@ -315,10 +315,10 @@ Measured on 2026-09-27:
 
 1. **Skip OCR** on a page that has a clean text layer (R2 AC5), no raster image ≥ `PAGECLASS_IMAGE_AREA_MIN`, and, if it has tables, clean non-empty `find_tables()` cell text. This replaces D5's rule that table pages keep OCR.
 2. **Skip TableFormer** on a page with zero `find_tables()` tables and no ruled or column-alignment signal. This is the existing R3 path.
-3. **Replace TableFormer with the `find_tables()` grid** on a page only when the table is ruled (`lines` strategy), its `coverage` is ≥ `TABLES_TRUST_COVERAGE` and the page has no unruled column-alignment region outside it. This bypass is off by default (`TABLES_TRUST_BYPASS=0`). It is switched on only if R4's benchmark shows a changed-cell ratio ≤ 2% against TableFormer on the pages it would cover.
-4. **Skip both** OCR and TableFormer when AC1 and AC2, or AC1 and AC3, hold for a whole R3 chunk.
+3. ~~**Replace TableFormer with the `find_tables()` grid** on a page only when the table is ruled.~~ **Dropped 2026-09-28 (user)** after task 9.7: with the page-level amendment below it fired on real ruled tables and changed 13.33% (Unfall) and 20.10% (GHV) of cells against TableFormer, against a 2% gate. The code, `TABLES_TRUST_BYPASS` and `TABLES_TRUST_COVERAGE` are removed.
+4. **Skip both** OCR and TableFormer when AC1 and AC2 hold for a whole R3 chunk.
 5. Each bypass SHALL be logged per chunk in the `docling_chunk` record (`bypass: ocr|tableformer|both`), and each SHALL have its own kill switch.
-6. `force_full_page_ocr` (HR5 recovery) SHALL override the OCR bypass (AC1) and grid replacement (AC3). **Amended 2026-09-27 (user):** it does not re-enable R3's no-table TableFormer skip (AC2).
+6. `force_full_page_ocr` (HR5 recovery) SHALL override the OCR bypass (AC1). **Amended 2026-09-27 (user):** it does not re-enable R3's no-table TableFormer skip (AC2).
 7. Every forced conversion SHALL record its recovery context: the document, why force was set, and the first pass's per-chunk OCR/TableFormer decisions and TableFormer pages. The recovery request carries the prior pass. The cases SHALL be measured and tabulated before any policy acts on that context (user, 2026-09-27).
 
 > **Amendment (2026-09-28, user, task 9.7).** AC1 and AC3 were judged per table, so one small table vetoed a page that qualifies as a whole. Across `doc_store` AC3 fired on 0 pages, and AC1 on none of Unfall's 3 pages: each carries a 9-cell header box 22% filled holding 3% of the text, beside a table that holds 72-87%. Both criteria now judge the page's tables together:
@@ -326,6 +326,8 @@ Measured on 2026-09-27:
 > - **AC3:** every table is ruled, and the union of the table bboxes holds ≥ `TABLES_TRUST_COVERAGE` of the page's text; the no-alignment-outside condition is unchanged.
 >
 > Blast radius (local census, 2026-09-28): Unfall AC1 0→2 of 3 pages, AC3 0→3; GHV AC3 0→1 (AC1 still fails the garble screen); Haftpflicht, Reitlehrer and the pocketbook unchanged. Both switches stay off by default; the 9.7 grid bench is the gate.
+>
+> **AC3 dropped (2026-09-28, user).** The 9.7 bench on the amended rule failed (see AC3 above), so grid replacement is removed; the AC1 amendment stands.
 
 ## Decision Summary
 
@@ -345,7 +347,7 @@ Measured on 2026-09-27:
 | D12 | Stacked PRs `ICR-97-rfc52-<slug>` | UD3; matches RFC-050/051. |
 | D13 (accepted 2026-09-27) | Keep every `find_tables()` result as searchable data; run it in a memory-sized process pool in the worker, overlapped with remote conversion | User, 2026-09-27: extracted table data must not be discarded. Processes because PyMuPDF is not thread-safe; overlap because conversion (about 800 s) dwarfs capture (about 125 s with 2 processes). |
 | D14 (accepted 2026-09-27) | Tables become child nodes of the search tree, with short descriptions and a token budget | Reuses the one-call tree search and adds no second index; the budget protects search latency (about 96k tokens today). |
-| D15 (accepted 2026-09-27) | OCR and TableFormer bypass from `find_tables()` signals; grid replacement off until benchmarked | TableFormer is about 93% of conversion time (28.7 of 28.9 s/page, 1 thread); the `lines` strategy missed the unruled pocketbook tables, so replacing TableFormer needs evidence. |
+| D15 (accepted 2026-09-27; grid replacement dropped 2026-09-28) | OCR and TableFormer bypass from `find_tables()` signals; grid replacement off until benchmarked, then dropped when it failed the 2% gate | TableFormer is about 93% of conversion time (28.7 of 28.9 s/page, 1 thread); the `lines` strategy missed the unruled pocketbook tables, so replacing TableFormer needs evidence. |
 
 ## Implementation Plan
 
