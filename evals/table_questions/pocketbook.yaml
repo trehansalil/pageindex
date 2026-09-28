@@ -1,0 +1,100 @@
+# RFC-052 R8 AC5 (task 9.5) table question set for
+# `scripts/table_search_eval.py`, run against the World Statistics Pocketbook
+# 2023 (`issue/data2/world-stats-pocketbook-2023.pdf`, public UN statistics --
+# no PII). Every answer below was read directly off the PDF with PyMuPDF
+# (`fitz`) text extraction, NOT invented -- see BUILDER E's report for the
+# extraction commands.
+#
+# Schema per entry:
+#   id           short stable slug
+#   question     natural-language question a searcher might ask
+#   answer       the expected figure/name, exactly as printed in the table
+#   answer_page  0-based PDF page index (matches the `tables.json` / capture
+#                convention: "page is 0-based") of the profile page carrying
+#                the answer
+#   table_hint   which table/section on that page holds the answer, for a
+#                human skimming a failure
+#
+# `scripts/table_search_eval.py` normalizes both the stored `answer` and the
+# returned search text (casefold, collapse whitespace, drop thousands-
+# separator spaces) before checking containment, so "96 698 005" and
+# "96698005" are treated as the same hit.
+
+questions:
+  - id: world-gdp-2023
+    question: "What was the World's GDP (gross domestic product, million current US$) in 2023?"
+    answer: "96 698 005"
+    answer_page: 12
+    table_hint: "World profile, Economic indicators table, 2023 column"
+
+  - id: africa-population-2023
+    question: "What was Africa's population (in thousands) in 2023?"
+    answer: "1 426 736"
+    answer_page: 13
+    table_hint: "Africa profile, General information table, Population (000, 2023)"
+
+  - id: americas-gdp-growth-2023
+    question: "What was the GDP growth rate (annual %, constant 2015 prices) for the Americas in 2023?"
+    answer: "6.0"
+    answer_page: 20
+    table_hint: "Americas profile, Economic indicators table, 2023 column"
+
+  - id: northern-america-gdp-per-capita-2023
+    question: "What was Northern America's GDP per capita (current US$) in 2023?"
+    answer: "67 454.7"
+    answer_page: 21
+    table_hint: "Northern America profile, Economic indicators table, 2023 column"
+
+  - id: latin-america-pop-density-2023
+    question: "What was the population density (per km2) of Latin America and the Caribbean in 2023?"
+    answer: "32.6"
+    answer_page: 22
+    table_hint: "Latin America & the Caribbean profile, General information table"
+
+  - id: southern-europe-gdp-2023
+    question: "What was Southern Europe's GDP (million current US$) in 2023?"
+    answer: "4 290 867"
+    answer_page: 35
+    table_hint: "Southern Europe profile, Economic indicators table, 2023 column"
+
+  - id: argentina-capital
+    question: "What is the capital city of Argentina?"
+    answer: "Buenos Aires"
+    answer_page: 50
+    table_hint: "Argentina profile, General information table, Capital city"
+
+  - id: burundi-capital
+    question: "What is the capital city of Burundi?"
+    answer: "Gitega"
+    answer_page: 75
+    table_hint: "Burundi profile, General information table, Capital city"
+
+  - id: burundi-currency
+    question: "What is Burundi's national currency?"
+    answer: "Burundi Franc"
+    answer_page: 75
+    table_hint: "Burundi profile, General information table, National currency"
+
+  - id: drc-exchange-rate
+    question: "What was the exchange rate (per US$) for the Democratic Republic of the Congo?"
+    answer: "2 000.0"
+    answer_page: 100
+    table_hint: "Democratic Republic of the Congo profile, General information table, Exchange rate (per US$)"
+
+  - id: jordan-capital
+    question: "What is the capital city of Jordan?"
+    answer: "Amman"
+    answer_page: 150
+    table_hint: "Jordan profile, General information table, Capital city"
+
+  - id: palau-gdp-2023
+    question: "What was Palau's GDP (million current US$) in 2023?"
+    answer: "218"
+    answer_page: 200
+    table_hint: "Palau profile, Economic indicators table, 2023 column"
+
+  - id: tonga-currency
+    question: "What is Tonga's national currency?"
+    answer: "Pa'anga"
+    answer_page: 250
+    table_hint: "Tonga profile, General information table, National currency"
