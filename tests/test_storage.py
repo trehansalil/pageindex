@@ -137,7 +137,7 @@ def test_store_01_c1_save_doc_writes_processed_json(mock_minio):
 
 
 # ── FLAT-02 — save_flat_doc / get_flat_doc ────────────────────────────────────
-def test_flat_02_c1_save_flat_doc_writes_flat_json_only(mock_minio):
+def test_flat_02_c1_save_flat_doc_writes_flat_json_only(mock_minio, monkeypatch):
     """FLAT-02-C1: save_flat_doc PUTs the flat blocks JSON to
     processed/<doc_id>.flat.json; get_flat_doc returns a value-equivalent
     dict. No processed/<doc_id>.json (tree) is written for a flat doc.
@@ -190,6 +190,38 @@ def test_flat_02_c1_save_flat_doc_writes_flat_json_only(mock_minio):
     assert mock_minio.get_object.call_args[0][1] == "processed/tree0001.tables.json"
     mock_minio.get_object.side_effect = _nosuchkey()
     assert load_tables("flat0001") is None
+
+    # The sidecar ends in .json but is not a document. Read as one, the registry
+    # reconcile healed it into <id>.tables.meta.json plus a bogus doc_registry
+    # row, and list_processed_docs listed the doc twice.
+    from pageindex_mcp.registry_backfill import backfill as _bf
+    from pageindex_mcp.storage import verdict as _verdict
+
+    names = [
+        "processed/d1.json",
+        "processed/d1.meta.json",
+        "processed/d1.tables.json",
+        "processed/d1.tables.meta.json",
+        "processed/d2.flat.json",
+        "processed/d3.json",
+        "processed/d3.tables.json",
+    ]
+    objs = []
+    for name in names:
+        obj = MagicMock()
+        obj.object_name = name
+        obj.etag = '"e"'
+        objs.append(obj)
+    mc = MagicMock()
+    mc.list_objects.return_value = objs
+    mc.get_object.return_value.read.return_value = b"{}"
+    monkeypatch.setattr(_bf, "get_minio", lambda: mc)
+    monkeypatch.setattr(_verdict._minio_ops, "get_minio", lambda: mc)
+
+    entries, orphans = _bf._list_meta_entries()
+    assert [doc_id for _, _, doc_id in entries] == ["d1"]
+    assert orphans == {"d2": "flat", "d3": None}
+    assert sorted(d["doc_id"] for d in _verdict.list_processed_docs()) == ["d1", "d2", "d3"]
 
 
 # ── read_registry_fields ──────────────────────────────────────────────────────
@@ -309,6 +341,9 @@ async def test_erase_01_c1_cascade_order_observable_and_hash_cache_cleared(mock_
     mandated = [
         "uploads/order001/report.pdf",
         "processed/order001.json",
+        # A reconcile-healed table sidecar goes too (RFC-052 residue).
+        "processed/order001.tables.meta.json",
+        "processed/order001.tables.json",
         "processed/order001.meta.json",
         "redis:order001",
         # The hash-cache entry is keyed by filename, so a re-upload of

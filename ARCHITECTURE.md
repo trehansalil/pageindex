@@ -507,6 +507,7 @@ erase_document(doc_id):
    ✓ MinIO  processed/<doc_id>.json                 delete
    ✓ MinIO  processed/<doc_id>.flat.json            delete (flat-route docs only)
    ✓ MinIO  processed/<doc_id>.tables.json          delete (RFC-052 P4; docs with a captured-tables sidecar only)
+   ✓ MinIO  processed/<doc_id>.tables.meta.json     delete (residue of the pre-fix reconcile, which read the sidecar as a doc)
    ✓ MinIO  processed/<doc_id>.meta.json            delete
    ✓ MinIO  uploads/<doc_id>/*                      delete (all objects)
    ✓ MinIO  quarantine/<sha256>.json + .meta.json   delete via ctx.sha256 (RFC-049 D2-C)

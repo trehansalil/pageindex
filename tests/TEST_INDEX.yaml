@@ -35,6 +35,10 @@ mappings:
       - test_worker.py
       - test_docling_coldstart_worker.py   # cold start: retry, requeue, HR4
 
+  storage/processed_keys.py:
+    tests:
+      - test_storage.py           # primary: listers skip table sidecars
+
   client/images.py:
     coverage_threshold: 90
     tests:
