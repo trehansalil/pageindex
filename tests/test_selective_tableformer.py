@@ -801,21 +801,31 @@ class TestPageClassChunking:
 
         box = (0.0, 0.0, 100.0, 100.0)
         ok, sparse, garbled, thin = (
-            tb.TableSignal(1.0, True, 0.8, "lines", box),
-            tb.TableSignal(0.2, True, 0.8, "lines", box),
-            tb.TableSignal(1.0, False, 0.8, "lines", box),
-            tb.TableSignal(1.0, True, 0.1, "lines", box),
+            tb.TableSignal(1.0, True, 0.8, "lines", box, 9),
+            tb.TableSignal(0.2, True, 0.8, "lines", box, 9),
+            tb.TableSignal(1.0, False, 0.8, "lines", box, 9),
+            tb.TableSignal(1.0, True, 0.1, "lines", box, 9),
+        )
+        # 2026-09-28 amendment: a small sparse header box beside a big full
+        # table (Unfall p1) no longer vetoes AC1; an empty box is not garbled.
+        header, empty, big = (
+            tb.TableSignal(0.2, True, 0.03, "lines", box, 9),
+            tb.TableSignal(0.0, False, 0.0, "lines", box, 4),
+            tb.TableSignal(0.9, True, 0.4, "lines", box, 120),
         )
         on = tb.BypassSwitches(ocr_bypass=True, trust_bypass=True)
         P = tb.PageTables
         for flags, scans, expected in [
             (["T--", "T--"], {}, ("both", False)),  # AC1 + AC2 everywhere
-            (["T-t", "T--"], {0: P((ok,), False)}, ("both", True)),  # AC1; AC3 + AC2
-            (["T-t", "T--"], {0: P((sparse,), False)}, ("tableformer", True)),  # few cells
-            (["T-t"], {0: P((garbled,), False)}, ("tableformer", True)),  # garbled cells
-            (["T-t"], {0: P((thin,), False)}, ("ocr", False)),  # coverage < floor
-            (["T-t"], {0: P((ok,), True)}, ("ocr", False)),  # alignment outside tables
-            (["T-t"], {0: P((), False)}, ("ocr", False)),  # find_tables() finds none
+            (["T-t", "T--"], {0: P((ok,), False, 0.8)}, ("both", True)),  # AC1; AC3 + AC2
+            (["T-t", "T--"], {0: P((sparse,), False, 0.8)}, ("tableformer", True)),  # few cells
+            (["T-t"], {0: P((garbled,), False, 0.8)}, ("tableformer", True)),  # garbled cells
+            (["T-t"], {0: P((thin,), False, 0.1)}, ("ocr", False)),  # coverage < floor
+            (["T-t"], {0: P((ok,), True, 0.8)}, ("ocr", False)),  # alignment outside tables
+            (["T-t"], {0: P((), False, 0.0)}, ("ocr", False)),  # find_tables() finds none
+            # amendment: cell-weighted fill; union coverage 0.03 + 0.4 + 0.4 >= 0.5
+            (["T-t"], {0: P((header, empty, big, big), False, 0.83)}, ("both", True)),
+            (["T-t"], {0: P((thin, thin), False, 0.2)}, ("ocr", False)),  # union < floor
             (["T-t"], {0: None}, ("none", False)),  # scan failed: the safe value
             (["Ti-", "T--"], {}, ("tableformer", False)),  # a raster image keeps OCR
             (["---", "T--"], {}, ("tableformer", False)),  # no text layer keeps OCR
@@ -859,7 +869,10 @@ class TestPageClassChunking:
         doc.close()
         [scan] = tb._scan_table_pages(grid_pdf, [0]).values()
         assert scan is not None and not scan.alignment_outside
-        assert [(t.filled_ratio, t.clean, t.coverage) for t in scan.tables] == [(1.0, True, 1.0)]
+        assert [(t.filled_ratio, t.clean, t.coverage, t.cells) for t in scan.tables] == [
+            (1.0, True, 1.0, 9)
+        ]
+        assert scan.coverage == 1.0
         real = tb.decide_bypass(grid_pdf, range(1), _classes(("T-t", 1)), force_ocr=False,
                                 switches=on)  # fmt: skip
         assert (real.bypass, real.grid_replace) == ("both", True)

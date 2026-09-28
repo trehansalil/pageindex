@@ -10,13 +10,15 @@ Rules, per page (design table):
 
 * **AC1 skip OCR** -- clean text layer (P1 garble screen) and no raster image
   over ``PAGECLASS_IMAGE_AREA_MIN`` (both already in the ``PageClass``), and
-  either no table or every ``find_tables()`` table has at least
-  ``TABLES_OCR_BYPASS_MIN_FILLED`` non-empty cells whose text passes the
-  garble screen.
+  either no table or the page's ``find_tables()`` tables together have at
+  least ``TABLES_OCR_BYPASS_MIN_FILLED`` non-empty cells (cell-weighted across
+  the tables, so one small sparse box cannot veto the page) and every table
+  with text passes the garble screen.
 * **AC2 skip TableFormer** -- P1 ``has_tables`` false (today's R3 path).
-* **AC3 grid replace** -- every table on the page is ``lines``, has
-  ``coverage >= TABLES_TRUST_COVERAGE``, and no column-alignment region lies
-  outside the table bboxes.
+* **AC3 grid replace** -- every table on the page is ``lines``, the tables
+  together (the union of their bboxes) hold ``>= TABLES_TRUST_COVERAGE`` of
+  the page's text, and no column-alignment region lies outside the table
+  bboxes.
 * **AC4 chunk** -- OCR off only if AC1 holds on every page; TableFormer off
   only if AC2 or AC3 holds on every page (design P17).
 
@@ -150,6 +152,7 @@ class TableSignal:
     coverage: float  # page word chars inside the bbox / all page word chars
     strategy: str  # always "lines" here: find_tables()' default strategy
     bbox: tuple[float, float, float, float]  # PDF points, top-left origin
+    cells: int  # all cells, empty or not -- AC1's fill weight
 
 
 @dataclass(frozen=True)
@@ -157,6 +160,8 @@ class PageTables:
     tables: tuple[TableSignal, ...]
     #: An unruled column-alignment region outside every table bbox (AC3).
     alignment_outside: bool
+    #: Page word chars inside any table bbox / all page word chars (AC3).
+    coverage: float
 
 
 def _centre_in(box: tuple, bbox: tuple) -> bool:
@@ -182,11 +187,17 @@ def _scan_page(page) -> PageTables:
                 coverage=inside / total_chars if total_chars else 0.0,
                 strategy="lines",
                 bbox=bbox,  # type: ignore[arg-type]
+                cells=len(cells),
             )
         )
+    in_any = sum(len(w[4]) for w in words if any(_centre_in(w[:4], t.bbox) for t in signals))
     lines = _page_text_lines(page.get_text("dict"))
     outside = [ln for ln in lines if not any(_centre_in(ln, t.bbox) for t in signals)]
-    return PageTables(tuple(signals), _page_has_column_alignment(lines=outside))
+    return PageTables(
+        tuple(signals),
+        _page_has_column_alignment(lines=outside),
+        in_any / total_chars if total_chars else 0.0,
+    )
 
 
 def _scan_table_pages(pdf_path: str, pages: Iterable[int]) -> dict[int, PageTables | None]:
@@ -225,14 +236,27 @@ def _ac1(pc: PageClass, scan: PageTables | None, min_filled: float) -> bool:
         return True
     if scan is None:
         return False
-    return all(t.filled_ratio >= min_filled and t.clean for t in scan.tables)
+    if not scan.tables:  # P1 saw a table, find_tables() none: nothing to check
+        return True
+    # Amended 2026-09-28: fill is weighted by cell count across the page's
+    # tables; a table with no text is not screened for garbling.
+    cells = sum(t.cells for t in scan.tables)
+    filled = sum(t.filled_ratio * t.cells for t in scan.tables)
+    return (
+        cells > 0
+        and filled / cells >= min_filled
+        and all(t.clean or t.filled_ratio == 0 for t in scan.tables)
+    )
 
 
 def _ac3(pc: PageClass, scan: PageTables | None, coverage: float) -> bool:
     if not pc.has_tables or scan is None or not scan.tables:
         return False
-    return not scan.alignment_outside and all(
-        t.strategy == "lines" and t.coverage >= coverage for t in scan.tables
+    # Amended 2026-09-28: coverage is the tables' union, not each table's own.
+    return (
+        not scan.alignment_outside
+        and scan.coverage >= coverage
+        and all(t.strategy == "lines" for t in scan.tables)
     )
 
 
