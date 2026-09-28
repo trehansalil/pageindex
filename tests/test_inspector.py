@@ -451,7 +451,7 @@ class TestInspectorForcedOcrOnRemoteDoclingRoute:
     but the tests above only exercise the local ``conv_fn`` branch
     (``_use_remote`` is False because ``_fake_settings()`` has no
     ``docling_service_url``). These cover the remote
-    ``_remote_pdf_to_markdown()`` branch, proving the D2 wiring is symmetric."""
+    ``_remote_pdf_convert()`` branch, proving the D2 wiring is symmetric."""
 
     @staticmethod
     def _wire_remote(monkeypatch, *, preclassify=True):
@@ -459,8 +459,10 @@ class TestInspectorForcedOcrOnRemoteDoclingRoute:
         remote_settings = _pdi_fake_settings(docling_service_url="http://docling.test")
         monkeypatch.setattr(_idx, "settings", remote_settings)
         monkeypatch.setattr(_rec, "settings", remote_settings)
-        remote = AsyncMock(return_value=("# Heading\n\nBody text\n", []))
-        monkeypatch.setattr(_idx, "_remote_pdf_to_markdown", remote)
+        from pageindex_mcp.client.remote import RemoteConvertResult
+
+        remote = AsyncMock(return_value=RemoteConvertResult("# Heading\n\nBody text\n", []))
+        monkeypatch.setattr(_idx, "_remote_pdf_convert", remote)
         # Coldstart readiness gate: the backend is up (no Redis/health probe).
         monkeypatch.setattr(_idx, "wait_for_docling_ready", AsyncMock())
         mocks["remote"] = remote
@@ -476,7 +478,9 @@ class TestInspectorForcedOcrOnRemoteDoclingRoute:
         await c.index(pdf_file, pdf_classification=pdf_classification)
         return mocks
 
-    async def test_remote_route_forces_full_page_ocr_for_scanned(self, monkeypatch, pdf_file):
+    async def test_remote_route_forces_full_page_ocr_for_scanned(
+        self, monkeypatch, pdf_file, tmp_path
+    ):
         mocks = await self._run(
             monkeypatch, pdf_file, pdf_classification={"pdf_type": "scanned", "confidence": 0.95}
         )
@@ -486,6 +490,87 @@ class TestInspectorForcedOcrOnRemoteDoclingRoute:
         assert mocks["remote"].await_args.kwargs["ocr_lang_override"]
         mocks["conv_fn"].assert_not_called()
         mocks["PDF_INSPECTOR_FORCED_OCR"].inc.assert_called_once()
+
+        # RFC-052 R7 wiring on the same remote route (a real 1-page PDF, so
+        # the page probe runs): capture starts BEFORE the conversion and is
+        # joined only after it (P6); tables are inserted post-gate into the
+        # saved tree while node_count stays pre-insertion (P11); save_tables
+        # runs after save_doc. A raise mid-conversion joins and drops it.
+        from pageindex_mcp.client.remote import DoclingUnavailable, RemoteConvertResult
+
+        real = str(tmp_path / "real.pdf")
+        with fitz.open() as doc:
+            doc.new_page()
+            doc.save(real)
+        events: list = []
+
+        class _Pending:
+            finalized = False
+
+            async def collect(self, grace_s, *, describe, model):
+                events.append("collect")
+
+            async def finalize(
+                self,
+                *,
+                doc_id,
+                structure,
+                heading_pages,
+                tableformer_results,
+                job_deadline_monotonic=None,
+            ):
+                self.finalized = True
+                events.append(("finalize", heading_pages, tableformer_results))
+                table = {"node_id": "t", "type": "table", "nodes": []}
+                return [*structure, table], MagicMock(to_dict=lambda: {"tables": [1]})
+
+            async def aclose(self):
+                events.append("aclose")
+
+        def _start(path, **kw):
+            events.append(("start", path, kw["page_count"]))
+            return _Pending()
+
+        mocks = self._wire_remote(monkeypatch)
+        mocks["remote"].side_effect = lambda *a, **k: (
+            events.append("remote")
+            or RemoteConvertResult(
+                "# H\n\nbody", [], table_results=[{"page": 0}], heading_pages=[("H", 0)],
+                applied_chunks=[{"page_start": 0, "page_end": 0}],
+            )
+        )  # fmt: skip
+        monkeypatch.setattr(_idx, "_start_table_capture", _start)
+        save_tables = MagicMock(side_effect=lambda *a: events.append("save_tables"))
+        monkeypatch.setattr(_idx, "save_tables", save_tables)
+        mocks["save_doc"].side_effect = lambda *a: events.append("save_doc")
+        c = _make_client()
+        c._staging_key = "uploads/real.pdf"
+        tree = [{"node_id": "0001", "title": "H", "text": "body", "nodes": []}]
+        monkeypatch.setattr(
+            c, "_run_md_to_tree", AsyncMock(return_value={"structure": tree, "doc_description": ""})
+        )
+        doc_id = await c.index(real, pdf_classification=None)
+        assert events == [
+            ("start", real, 1), "remote", "collect", ("finalize", [("H", 0)], [{"page": 0}]),
+            "save_doc", "save_tables",
+        ]  # fmt: skip
+        assert len(mocks["save_doc"].call_args.args[1]["structure"]) == 2
+        assert mocks["save_doc_meta"].call_args.args[1]["node_count"] == 1
+        save_tables.assert_called_once_with(doc_id, {"tables": [1]})
+
+        events.clear()
+        mocks["remote"].side_effect = DoclingUnavailable("gone")
+        monkeypatch.setattr(
+            _idx,
+            "pipeline_config",
+            replace(_idx.pipeline_config, docling_unavailable_policy="requeue"),
+        )
+        monkeypatch.setattr(_idx.settings, "docling_unavailable_defer_s", 0, raising=False)
+        c = _make_client()
+        c._staging_key = "uploads/real.pdf"
+        with pytest.raises(DoclingUnavailable):
+            await c.index(real, pdf_classification=None)
+        assert events == [("start", real, 1), "aclose"]
 
 
 # --- from test_rfc_inspector.py ---

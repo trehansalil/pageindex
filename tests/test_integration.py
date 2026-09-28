@@ -151,7 +151,7 @@ class TestErasureEndToEnd:
         partial purge."""
         from pageindex_mcp.storage.documents import _ERASURE_MANIFEST, delete_doc
 
-        assert len(_ERASURE_MANIFEST) == 13
+        assert len(_ERASURE_MANIFEST) == 14  # RFC-052 P4 added processed_tables_json
 
         mock_mc = MagicMock()
         mock_mc.list_objects.return_value = iter([])

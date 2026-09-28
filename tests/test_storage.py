@@ -176,6 +176,21 @@ def test_flat_02_c1_save_flat_doc_writes_flat_json_only(mock_minio):
     assert loaded == flat
     assert mock_minio.get_object.call_args[0][1] == "processed/flat0001.flat.json"
 
+    # RFC-052 9.2: the tables sidecar has the same save/load shape, and a
+    # document without one (flat, TABLES_CAPTURE=0) loads as None, not error.
+    from pageindex_mcp.storage.documents import load_tables, save_tables
+
+    tables = {"schema_version": 1, "doc_id": "tree0001", "tables": [{"title": "Tarif"}]}
+    save_tables("tree0001", tables)
+    tables_put = mock_minio.put_object.call_args
+    assert tables_put.args[1] == "processed/tree0001.tables.json"
+    assert json.loads(tables_put.args[2].read()) == tables
+    response.read.return_value = json.dumps(tables).encode()
+    assert load_tables("tree0001") == tables
+    assert mock_minio.get_object.call_args[0][1] == "processed/tree0001.tables.json"
+    mock_minio.get_object.side_effect = _nosuchkey()
+    assert load_tables("flat0001") is None
+
 
 # ── read_registry_fields ──────────────────────────────────────────────────────
 
@@ -721,6 +736,7 @@ def test_erasure_manifest_ordering_matches_hr2_spec():
         "uploads",
         "processed_json",
         "processed_flat_json",
+        "processed_tables_json",
         "figures",
         "verdicts",
         "meta_json",
@@ -741,6 +757,7 @@ def test_erasure_manifest_ordering_matches_hr2_spec():
     name_to_step = {e.name: e.step for e in _ERASURE_MANIFEST}
     assert name_to_step["uploads"] == 1
     assert name_to_step["processed_json"] == 2
+    assert name_to_step["processed_tables_json"] == 2  # RFC-052 9.2 (P12)
     assert name_to_step["meta_json"] == 3
     assert name_to_step["quarantine"] == 3
     assert name_to_step["redis_cache"] == 4
@@ -751,8 +768,11 @@ def test_erasure_manifest_ordering_matches_hr2_spec():
 
     # Relative ordering of the manifest tuple itself (drives execution order).
     order = [e.name for e in _ERASURE_MANIFEST]
+    assert order.index("processed_tables_json") == order.index("processed_flat_json") + 1
     for earlier, later in (
         ("uploads", "processed_json"),
+        ("processed_flat_json", "processed_tables_json"),
+        ("processed_tables_json", "redis_cache"),
         ("processed_json", "meta_json"),
         ("meta_json", "quarantine"),
         ("quarantine", "redis_cache"),
@@ -780,6 +800,8 @@ def test_erasure_manifest_required_flags_match_behaviour():
         "processed_json": True,
         # Optional: only flat-doc ingests emit a .flat.json artifact.
         "processed_flat_json": False,
+        # Optional: flat docs, TABLES_CAPTURE=0 and pre-RFC-052 docs have none.
+        "processed_tables_json": False,
         # Optional: text-only documents never produce figure crops.
         "figures": False,
         # Optional: an unreachable sidecar carries no sha256 to key on.

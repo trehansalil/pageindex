@@ -1316,6 +1316,18 @@ async def test_raw_markdown_round_trip_persist_serve_erase(monkeypatch):
     monkeypatch.setattr(minio_ops, "get_minio", lambda: store)
 
     state = _make_persist_state(md_content="# Heading\n\nextracted body")
+    # RFC-052 9.2 (P10/P12): the table sidecar the same persist writes -- after
+    # save_doc, before the meta sidecar -- is erased by the same delete_doc.
+    from pageindex_mcp.tables.schema import CaptureMeta, TablesDocument
+
+    class _Pending:
+        finalized = False
+
+        async def finalize(self, *, doc_id, structure, **_kw):
+            meta = CaptureMeta(1, 0.1, 1, "1.27", ("lines",))
+            return structure, TablesDocument(doc_id, 1, meta, ())
+
+    state.pending_tables = _Pending()
     client = CustomPageIndexClient.__new__(CustomPageIndexClient)
     with (
         patch.object(_idx, "hash_cache_set"),
@@ -1329,6 +1341,11 @@ async def test_raw_markdown_round_trip_persist_serve_erase(monkeypatch):
             state, "report.pdf", ".pdf", None, "deadbeef" * 8, b"%PDF bytes", None, {}, None
         )
 
+    keys = list(store.objects)
+    tables_key = f"processed/{doc_id}.tables.json"
+    assert keys.index(f"processed/{doc_id}.json") < keys.index(tables_key)
+    assert keys.index(tables_key) < keys.index(f"processed/{doc_id}.meta.json")
+    assert _docs.load_tables(doc_id)["capture"]["procs"] == 1
     sidecar_key = f"uploads/{doc_id}/report.pdf.extracted.md"
     assert store.objects[sidecar_key] == b"# Heading\n\nextracted body"
     assert store.objects[f"uploads/{doc_id}/report.pdf"] == b"%PDF bytes"
@@ -1348,6 +1365,7 @@ async def test_raw_markdown_round_trip_persist_serve_erase(monkeypatch):
     mock_hc.assert_called_once_with("report.pdf")
     assert [k for k in store.objects if doc_id in k] == []
     assert _docs.load_extracted_md(doc_id) is None
+    assert _docs.load_tables(doc_id) is None
 
 
 # ===========================================================================

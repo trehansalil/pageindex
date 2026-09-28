@@ -1,5 +1,5 @@
-# ALLOW-NEW-TEST-FILE: not tests/test_docling_capacity.py because that file
-# covers the docling-service HTTP surface (7.1-7.3); this covers the worker's
+# ALLOW-NEW-TEST-FILE: not tests/test_docling_capacity.py because it tests the service
+# That file covers the docling-service HTTP surface (7.1-7.3); this covers the worker's
 # remote client (7.4) -- a different module (client/remote.py) with its own
 # fixture shape (a bare fake client, no FastAPI/TestClient).
 """RFC-052 P3, task 7.4: worker-side ``/capacity`` snapshot + build-skew check.

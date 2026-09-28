@@ -622,7 +622,79 @@ async def wait_for_docling_ready(deadline: float | None = None) -> ReadyResult:
             await _ready_sleep(settings.docling_ready_poll_s)
 
 
-async def _remote_pdf_to_markdown(
+@dataclasses.dataclass
+class RemoteConvertResult:
+    """Everything ``/convert/pdf`` returns (RFC-052 9.2 / R9 AC7).
+
+    Pages in ``table_results`` / ``heading_pages`` / ``applied_chunks`` /
+    picture ``page`` are 0-based WHOLE-DOCUMENT pages: a ``page_start`` slice
+    is rebased here, so callers never see slice-relative pages. An older
+    service without the new fields yields empty lists.
+    """
+
+    markdown: str
+    pictures: list
+    table_results: list[dict] = dataclasses.field(default_factory=list)
+    heading_pages: list[tuple[str, int]] = dataclasses.field(default_factory=list)
+    applied_chunks: list[dict] = dataclasses.field(default_factory=list)
+    applied: dict | None = None
+    page_start: int = 0
+
+
+def _as_int(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
+
+
+def _rebase_convert_extras(data: dict, page_start: int) -> tuple[list, list, list]:
+    """``(table_results, heading_pages, applied_chunks)`` from a response
+    body, pages shifted by *page_start*. Malformed entries are dropped: the
+    extras are advisory and must never fail a conversion."""
+    tables: list[dict] = []
+    for t in data.get("table_results") or []:
+        page = _as_int(t.get("page")) if isinstance(t, dict) else None
+        if page is None:
+            continue
+        tables.append({**t, "page": page + page_start})
+    headings: list[tuple[str, int]] = []
+    for h in data.get("heading_pages") or []:
+        if isinstance(h, (list, tuple)) and len(h) == 2 and _as_int(h[1]) is not None:
+            headings.append((str(h[0]), int(h[1]) + page_start))
+    chunks: list[dict] = []
+    applied = data.get("applied")
+    for c in (applied.get("chunks") if isinstance(applied, dict) else None) or []:
+        if not isinstance(c, dict):
+            continue
+        entry = dict(c)  # verbatim, grid_replace included (P4-9)
+        for key in ("page_start", "page_end"):
+            v = _as_int(entry.get(key))
+            if v is not None:
+                entry[key] = v + page_start
+        if isinstance(entry.get("tableformer_pages"), list):
+            pages = (_as_int(x) for x in entry["tableformer_pages"])
+            entry["tableformer_pages"] = [p + page_start for p in pages if p is not None]
+        chunks.append(entry)
+    return tables, headings, chunks
+
+
+def merge_convert_results(results: list[RemoteConvertResult]) -> RemoteConvertResult:
+    """Merge already-rebased P3 shard results in page order: markdown is
+    concatenated by ``page_start``; every page-keyed list is concatenated in
+    the same order (their pages are whole-document already)."""
+    ordered = sorted(results, key=lambda r: r.page_start)
+    return RemoteConvertResult(
+        markdown="\n\n".join(r.markdown for r in ordered if r.markdown),
+        pictures=[p for r in ordered for p in r.pictures],
+        table_results=[t for r in ordered for t in r.table_results],
+        heading_pages=[h for r in ordered for h in r.heading_pages],
+        applied_chunks=[c for r in ordered for c in r.applied_chunks],
+        applied=ordered[0].applied if ordered else None,
+        page_start=ordered[0].page_start if ordered else 0,
+    )
+
+
+async def _remote_pdf_convert(
     staging_key: str,
     *,
     force_full_page_ocr: bool = False,
@@ -631,12 +703,14 @@ async def _remote_pdf_to_markdown(
     pages_with_tables: list[int] | None = None,
     page_count: int | None = None,
     page_classes: list[list] | None = None,
-) -> tuple[str, list]:
+    page_start: int | None = None,
+    page_end: int | None = None,
+    prior_pass: list[dict] | None = None,
+    recovery_trigger: str | None = None,
+) -> RemoteConvertResult:
     """Call the external Docling service to convert a PDF.
 
-    Returns ``(markdown, pic_results)`` with the same shape as the local
-    ``pdf_to_markdown_docling()`` — callers are oblivious to the transport.
-    ``png_bytes`` in each PictureResult is decoded from base64 back to bytes.
+    ``png_bytes`` in each picture result is decoded from base64 back to bytes.
 
     ``expected_script`` is the caller's script expectation for the document
     (e.g. ``"latin"``, ``"arabic"``), matching the local converter's parameter
@@ -652,6 +726,12 @@ async def _remote_pdf_to_markdown(
     handshake (``[[start, end, "T-t"], ...]``, RFC-052 R2 AC6), forwarded
     verbatim. Like ``expected_script`` it is safe against an older service:
     its request model ignores unknown keys.
+
+    ``page_start``/``page_end`` (P3 R5 AC3, both or neither) slice the
+    conversion; the response's page-keyed fields are rebased by
+    ``page_start`` before they are returned. ``prior_pass`` (whole-document
+    pages) and ``recovery_trigger`` ride on an HR5 recovery request (R9 AC7)
+    and are sent only when given -- ``None`` is omitted, never sent as ``[]``.
     """
     import base64
 
@@ -667,7 +747,7 @@ async def _remote_pdf_to_markdown(
             raise
 
     url = presigned_get_url(staging_key)
-    payload = {
+    payload: dict = {
         "presigned_url": url,
         "force_full_page_ocr": force_full_page_ocr,
         "ocr_lang_override": ocr_lang_override,
@@ -675,6 +755,13 @@ async def _remote_pdf_to_markdown(
         "pages_with_tables": pages_with_tables,
         "page_classes": page_classes,
     }
+    if page_start is not None and page_end is not None:
+        payload["page_start"] = page_start
+        payload["page_end"] = page_end
+    if prior_pass is not None:
+        payload["prior_pass"] = prior_pass
+    if recovery_trigger is not None:
+        payload["recovery_trigger"] = recovery_trigger
     # QA fix 2: a read timeout longer than the child's remaining life just
     # gets killed as converter_timeout instead of ever raising here -- clamp
     # it, and refuse to dial out at all when too little time is left.
@@ -704,6 +791,7 @@ async def _remote_pdf_to_markdown(
         if settings.docling_service_bearer_token:
             capacity_headers["Authorization"] = f"Bearer {settings.docling_service_bearer_token}"
         await _log_capacity_snapshot(client, capacity_headers)
+    shift = page_start if page_start is not None and page_end is not None else 0
     pic_results: list[dict] = []
     for pr in data.get("picture_results", []):
         raw_b64 = pr.get("png_bytes", "")
@@ -711,8 +799,44 @@ async def _remote_pdf_to_markdown(
             pr["png_bytes"] = base64.b64decode(raw_b64)
         else:
             pr["png_bytes"] = b""
+        if shift and _as_int(pr.get("page")) is not None:
+            pr["page"] = int(pr["page"]) + shift
         pic_results.append(pr)
-    return data["markdown"], pic_results
+    tables, headings, chunks = _rebase_convert_extras(data, shift)
+    return RemoteConvertResult(
+        markdown=data["markdown"],
+        pictures=pic_results,
+        table_results=tables,
+        heading_pages=headings,
+        applied_chunks=chunks,
+        applied=data.get("applied") if isinstance(data.get("applied"), dict) else None,
+        page_start=shift,
+    )
+
+
+async def _remote_pdf_to_markdown(
+    staging_key: str,
+    *,
+    force_full_page_ocr: bool = False,
+    ocr_lang_override: list[str] | None = None,
+    expected_script: str | None = None,
+    pages_with_tables: list[int] | None = None,
+    page_count: int | None = None,
+    page_classes: list[list] | None = None,
+) -> tuple[str, list]:
+    """``(markdown, pic_results)`` view of :func:`_remote_pdf_convert`, the
+    same shape as the local ``pdf_to_markdown_docling()`` -- callers are
+    oblivious to the transport."""
+    res = await _remote_pdf_convert(
+        staging_key,
+        force_full_page_ocr=force_full_page_ocr,
+        ocr_lang_override=ocr_lang_override,
+        expected_script=expected_script,
+        pages_with_tables=pages_with_tables,
+        page_count=page_count,
+        page_classes=page_classes,
+    )
+    return res.markdown, res.pictures
 
 
 async def _remote_image_to_markdown(

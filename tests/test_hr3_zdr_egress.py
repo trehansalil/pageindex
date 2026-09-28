@@ -1849,18 +1849,18 @@ class TestRemotePdfExpectedScriptPayload:
         assert not failures, "expected_script payload rows: " + "; ".join(failures)
 
     def test_indexer_forwards_expected_script_to_remote(self):
-        """Wiring: indexer.py passes expected_script into _remote_pdf_to_markdown."""
+        """Wiring: indexer.py passes expected_script into _remote_pdf_convert."""
         import inspect
         import re
 
         from pageindex_mcp.client import indexer
 
         source = inspect.getsource(indexer)
-        calls = re.findall(r"_remote_pdf_to_markdown\((.*?)\n\s*\)", source, flags=re.DOTALL)
-        assert calls, "indexer.py must call _remote_pdf_to_markdown"
+        calls = re.findall(r"_remote_pdf_convert\((.*?)\n\s*\)", source, flags=re.DOTALL)
+        assert calls, "indexer.py must call _remote_pdf_convert"
         for call in calls:
             assert "expected_script=expected_script" in call, (
-                "every _remote_pdf_to_markdown call in indexer.py must forward "
+                "every _remote_pdf_convert call in indexer.py must forward "
                 f"expected_script; offending call args: {call!r}"
             )
 

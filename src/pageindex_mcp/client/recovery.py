@@ -38,6 +38,7 @@ from ..helpers import (
     route_and_extract_flat,
     validate_tree,
 )
+from ..helpers.garble import _garble_check_nodes
 from ..helpers.gates import _all_defects
 from ..helpers.heuristic_registry import registry as _heuristic_registry
 from ..metrics import (
@@ -48,6 +49,7 @@ from ..metrics import (
 from ..obs.decisions import decision
 from ..picture_plane import OcrEngine, SkipReason, skip_reason_from_str
 from ..script import BlobKind, ScriptContext, decide_rtl
+from ..tables.anchor import attach_garbled_pages, garbled_pages
 from .images import _IMAGE_EXTS
 
 if TYPE_CHECKING:
@@ -337,6 +339,61 @@ def _keep_best_wins(
     return False
 
 
+def _recovery_prior_pass(
+    state: ExtractionState,
+    recovery_trigger: str | None,
+    script_context: ScriptContext | None,
+    expected_script: str | None,
+) -> list | None:
+    """RFC-052 R9 AC7: the HR5 recovery request's ``prior_pass`` -- the first
+    pass's ``applied.chunks`` (already whole-document pages), or ``None``
+    (never ``[]``) when that pass reported none. For ``hr5_garble`` each entry
+    also gets ``garbled_pages``: the first-pass tree nodes the HR5 garble
+    detector flags, mapped to pages through ``heading_pages`` and filtered to
+    the entry's own range; omitted entirely when nothing anchors (unknown is
+    not zero, design "garbled_pages source")."""
+    chunks = state.first_pass_chunks
+    if not chunks:
+        return None
+    pages: list[int] | None = None
+    structure = (state.result or {}).get("structure", [])
+    if recovery_trigger == "hr5_garble":
+        raw_md = state.md_content or ""
+        ctx = (
+            script_context
+            if script_context is not None
+            else ScriptContext(
+                dominant_script=expected_script,
+                # The first pass's raw converter markdown, as _kb_sc does.
+                had_presentation_forms=_infer_presentation_forms(raw_md),  # pre-NFKC
+                source="garbled_pages",
+            )
+        )
+
+        def _flagged(node: dict) -> bool:
+            # The detector's own per-node verdict: one node, children
+            # stripped, no whole-tree fallback.
+            leaf = {**node, "nodes": []}
+            return (
+                _garble_check_nodes(
+                    [leaf], script_context=ctx, config=_garble_config, _is_toplevel=False
+                )
+                > 0
+            )
+
+        try:
+            pages = garbled_pages(
+                structure,
+                state.heading_pages,
+                state.pdf_page_count,
+                _flagged,
+            )
+        except Exception:
+            logger.warning("garbled_pages mapping failed; omitting it", exc_info=True)
+            pages = None
+    return attach_garbled_pages(chunks, pages)
+
+
 class RecoveryMixin:
     """Mixin providing recovery methods for CustomPageIndexClient.
 
@@ -375,6 +432,7 @@ class RecoveryMixin:
         splice_label: str,
         use_keep_best: bool,
         metric_fail_label: str,
+        recovery_trigger: str | None = None,
     ) -> bool:
         """Zone-1: shared OCR retry execution (language derivation, OCR
         dispatch, picture splice, reconvert + revalidate, keep-best, metrics).
@@ -388,6 +446,13 @@ class RecoveryMixin:
         Returns True when a successful full-page OCR re-extraction ran
         (callers should set ``state.full_page_already_applied = True``).
         Returns False on error or when keep-best reverted to pre-retry.
+
+        ``recovery_trigger`` (RFC-052 R9 AC7, closed vocabulary
+        ``hr5_garble``/``hr5_low_content``/``hr5_image_dominant``) rides on the
+        remote recovery request together with ``prior_pass`` (see
+        ``_recovery_prior_pass``). A kept retry's ``heading_pages`` and
+        TableFormer results replace the first pass's for table anchoring; a
+        reverted one leaves them alone.
         """
         # Lazy imports for cross-submodule deps
         from .images import TREE_PATH_PICTURE_SPLICE_ENABLED, _log_pic_splice_trace
@@ -398,10 +463,12 @@ class RecoveryMixin:
         )
         from .remote import (
             DoclingUnavailable,
-            _remote_pdf_to_markdown,
+            _remote_pdf_convert,
             child_deadline_monotonic,
             wait_for_docling_ready,
         )
+
+        _recovery_extras: tuple[list, list] | None = None
 
         # ---- Pre-retry snapshot (GARBLE/LOW_CONTENT only) ----
         pre_retry: RecoveryOutcome | None = None
@@ -500,13 +567,21 @@ class RecoveryMixin:
                     # legacy: skip the OCR retry, as a failed retry always did.
                     return False
                 assert self._staging_key is not None, "use_remote=True but _staging_key is None"
-                state.md_content, state.pic_results = await _remote_pdf_to_markdown(
+                # prior_pass is built from the FIRST-pass tree, before the
+                # retry replaces state.result.
+                _conv = await _remote_pdf_convert(
                     self._staging_key,
                     force_full_page_ocr=True,
                     ocr_lang_override=langs,
                     expected_script=expected_script,
                     page_count=state.pdf_page_count,
+                    prior_pass=_recovery_prior_pass(
+                        state, recovery_trigger, script_context, expected_script
+                    ),
+                    recovery_trigger=recovery_trigger,
                 )
+                state.md_content, state.pic_results = _conv.markdown, _conv.pictures
+                _recovery_extras = (list(_conv.heading_pages), list(_conv.table_results))
             else:
                 decision(
                     event="ocr_retry_dispatch_route",
@@ -656,6 +731,10 @@ class RecoveryMixin:
                         md_tmp.write(state.md_content)
                         state.tmp_md_path = md_tmp.name
 
+            # RFC-052 9.2: anchor tables against the pass whose tree is kept.
+            if _recovery_extras is not None and _ocr_applied:
+                state.heading_pages, state.tableformer_results = _recovery_extras
+
             # ---- Metric ----
             _metric_result = "recovered" if state.ok else metric_fail_label
             OCR_ESCALATION_TOTAL.labels(result=_metric_result).inc()
@@ -730,6 +809,7 @@ class RecoveryMixin:
             splice_label="garble_escalation",
             use_keep_best=True,
             metric_fail_label="still_garbled",
+            recovery_trigger="hr5_garble",
         )
         if applied:
             state.full_page_already_applied = True
@@ -786,6 +866,7 @@ class RecoveryMixin:
             splice_label="garble_escalation",
             use_keep_best=True,
             metric_fail_label="still_garbled",
+            recovery_trigger="hr5_low_content",
         )
         if applied:
             state.full_page_already_applied = True
@@ -852,6 +933,7 @@ class RecoveryMixin:
             splice_label="image_dominant_escalation",
             use_keep_best=True,
             metric_fail_label="still_image_only",
+            recovery_trigger="hr5_image_dominant",
         )
         if applied:
             state.full_page_already_applied = True
