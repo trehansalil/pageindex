@@ -440,9 +440,9 @@ class ChunkBypass:
 
 | Rule | Page test | Signal source |
 |---|---|---|
-| AC1 skip OCR | clean text layer (P1 garble screen) **and** image fraction < `PAGECLASS_IMAGE_AREA_MIN` **and** (no table **or** every `find_tables()` table has ≥ `TABLES_OCR_BYPASS_MIN_FILLED` non-empty cells with clean text) | `page_classes` from the request, plus service-local `find_tables()` on the chunk's table pages |
+| AC1 skip OCR | clean text layer (P1 garble screen) **and** image fraction < `PAGECLASS_IMAGE_AREA_MIN` **and** (no table **or** the page's `find_tables()` tables together have ≥ `TABLES_OCR_BYPASS_MIN_FILLED` non-empty cells, cell-weighted, and every table with text is clean) *(amended 2026-09-28)* | `page_classes` from the request, plus service-local `find_tables()` on the chunk's table pages |
 | AC2 skip TableFormer | P1 `has_tables` false | Today's R3 path |
-| AC3 grid replace | Every table on the page is `lines`, `coverage ≥ TABLES_TRUST_COVERAGE`, and no column-alignment region lies outside the table bboxes | Service-local `find_tables()` |
+| AC3 grid replace | Every table on the page is `lines`, the union of the table bboxes holds ≥ `TABLES_TRUST_COVERAGE` of the page's text, and no column-alignment region lies outside the table bboxes *(amended 2026-09-28; was per-table coverage)* | Service-local `find_tables()` |
 | AC4 chunk | OCR off only if AC1 holds on every page; TableFormer off only if AC2 or AC3 holds on every page | — |
 
 **Label semantics (P4-7 clarification).** `bypass` (`ChunkBypass.bypass`) is the coarse label a reader groups by; `reasons` is the finer AC trail, and the two do not always align 1:1:
@@ -503,8 +503,8 @@ The recovery request also carries a top-level `recovery_trigger` so the service 
 | `TABLES_OCR_BYPASS` | `0` → `1` after the 9.6 parity run | AC1 |
 | `TABLEFORMER_SKIP_ENABLED` | existing | AC2 (reused) |
 | `TABLES_TRUST_BYPASS` | `0` | AC3; `1` only on the 9.7 gate |
-| `TABLES_TRUST_COVERAGE` | `0.5` | AC3 coverage floor |
-| `TABLES_OCR_BYPASS_MIN_FILLED` | `0.5` | AC1 non-empty cell share |
+| `TABLES_TRUST_COVERAGE` | `0.5` | AC3 coverage floor for the page's tables together |
+| `TABLES_OCR_BYPASS_MIN_FILLED` | `0.5` | AC1 non-empty cell share, cell-weighted across the page's tables |
 
 **9.7 benchmark** (`scripts/conversion_bench.py`):
 - **Arms:** `r3_ocr_bypass` (the 9.6 parity run) and `r3_trust`.

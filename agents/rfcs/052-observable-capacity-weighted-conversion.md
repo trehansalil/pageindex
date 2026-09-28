@@ -321,6 +321,12 @@ Measured on 2026-09-27:
 6. `force_full_page_ocr` (HR5 recovery) SHALL override the OCR bypass (AC1) and grid replacement (AC3). **Amended 2026-09-27 (user):** it does not re-enable R3's no-table TableFormer skip (AC2).
 7. Every forced conversion SHALL record its recovery context: the document, why force was set, and the first pass's per-chunk OCR/TableFormer decisions and TableFormer pages. The recovery request carries the prior pass. The cases SHALL be measured and tabulated before any policy acts on that context (user, 2026-09-27).
 
+> **Amendment (2026-09-28, user, task 9.7).** AC1 and AC3 were judged per table, so one small table vetoed a page that qualifies as a whole. Across `doc_store` AC3 fired on 0 pages, and AC1 on none of Unfall's 3 pages: each carries a 9-cell header box 22% filled holding 3% of the text, beside a table that holds 72-87%. Both criteria now judge the page's tables together:
+> - **AC1:** the tables' non-empty cell share is cell-weighted across the page (≥ `TABLES_OCR_BYPASS_MIN_FILLED`), and every table *with text* passes the garble screen; an empty ruled box is not screened.
+> - **AC3:** every table is ruled, and the union of the table bboxes holds ≥ `TABLES_TRUST_COVERAGE` of the page's text; the no-alignment-outside condition is unchanged.
+>
+> Blast radius (local census, 2026-09-28): Unfall AC1 0→2 of 3 pages, AC3 0→3; GHV AC3 0→1 (AC1 still fails the garble screen); Haftpflicht, Reitlehrer and the pocketbook unchanged. Both switches stay off by default; the 9.7 grid bench is the gate.
+
 ## Decision Summary
 
 | ID | Decision | Rationale |
