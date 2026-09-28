@@ -995,27 +995,6 @@ def bypass_bench_main(argv: list[str]) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _sliced_page_fields(doc: Doc, page_start: int, page_end: int) -> dict:
-    """Slice-relative ``page_classes``/``pages_with_tables`` for a P3 sub-request.
-
-    docling-service expects both arrays relative to the slice, not the whole
-    document, when ``page_start``/``page_end`` are given (app.py: "page_start
-    and pages_with_tables are SLICE-relative"). Recomputes page classes
-    locally (PyMuPDF, HR4) rather than reusing ``doc.page_classes``, which is
-    whole-document.
-    """
-    from pageindex_mcp.converters.preclassify import detect_page_classes, page_classes_to_ranges
-
-    classes, _method = detect_page_classes(str(doc.path))
-    if classes is None:
-        return {}
-    sliced = classes[page_start : page_end + 1]
-    return {
-        "page_classes": page_classes_to_ranges(sliced),
-        "pages_with_tables": [i for i, pc in enumerate(sliced) if pc.has_tables],
-    }
-
-
 def _tree_gate(markdown: str, doc: Doc) -> tuple[str, bool, float]:
     """The same ``validate_tree``/garble read ``score()`` does, for one markdown string."""
     from pageindex_mcp.converters.headings import _md_to_structure
@@ -1031,20 +1010,95 @@ def _tree_gate(markdown: str, doc: Doc) -> tuple[str, bool, float]:
     return verdict, bool(sig and sig.garbled), float(sig.garble_ratio) if sig else 0.0
 
 
+def _load_bypass_recording(path: Path, ocr: bool, trust: bool) -> dict:
+    """Load a ``bypass`` recording, refusing one made with other bypass switches."""
+    payload = json.loads(path.read_text())
+    applied = payload.get("applied") or {}
+    got = (applied.get("tables_ocr_bypass"), applied.get("tables_trust_bypass"))
+    if got != (ocr, trust):
+        raise SystemExit(
+            f"{path}: recorded with tables_ocr_bypass/tables_trust_bypass={got}, "
+            f"expected {(ocr, trust)}"
+        )
+    return payload
+
+
+def _grid_arm_row(
+    baseline: dict, run_payload: dict, fired, doc: Doc, base_gate: tuple
+) -> tuple[str, str]:
+    """Score one grid-bench arm against the baseline.
+
+    Returns (status, report-row cells after the arm column).
+    """
+    table_pages = set(doc.pages_with_tables or [])
+    covered = sorted(
+        {
+            p
+            for c in run_payload["applied"].get("chunks", [])
+            if fired(c)
+            for p in range(c["page_start"], c["page_end"] + 1)
+        }
+    )
+    if not covered:
+        return (
+            "NOT MEASURED",
+            "| 0 | -- | -- | -- | -- | NOT MEASURED (the bypass fired on no page) |",
+        )
+    base_verdict, base_garbled, base_ratio = base_gate
+    diff = table_cell_diff(baseline["markdown"], run_payload["markdown"])
+    cells = max(diff["baseline_cells"], diff["arm_cells"])
+    changed = diff["changed_cell_ratio"] * cells
+    covered_tables = len(table_pages.intersection(covered))
+    share = covered_tables / len(table_pages) if table_pages else 1.0
+    covered_cells = cells * share
+    ratio = changed / covered_cells if covered_cells else (1.0 if changed else 0.0)
+    run_verdict, run_garbled, run_ratio = _tree_gate(run_payload["markdown"], doc)
+    verdict_ok = not (base_verdict == "PASS" and run_verdict != "PASS")
+    garble_ok = run_ratio <= base_ratio + GARBLE_NOISE_TOLERANCE and not (
+        run_garbled and not base_garbled
+    )
+    status = "PASS" if ratio <= FAST_MAX_CHANGED_CELL_RATIO and verdict_ok and garble_ok else "FAIL"
+    return status, (
+        f"| {len(covered)} ({covered_tables} with tables) "
+        f"| {diff['changed_cell_ratio']:.2%} | {ratio:.2%} "
+        f"| {base_verdict} -> {run_verdict} "
+        f"| {base_ratio:.3f} -> {run_ratio:.3f} | {status} |"
+    )
+
+
 def grid_bench_main(argv: list[str]) -> int:
     """task 9.7: find_tables-vs-TableFormer changed-cell ratio, gated at <= 2%.
 
     Enable ``TABLES_TRUST_BYPASS`` only when this gate is green on every
     document (design "9.7 benchmark"; documents: the pocketbook plus a
-    ruled-table T&C PDF -- pass ``--doc`` twice by invoking this once per
-    document). Guards kept: ``refuse_portfolio`` and ``require_hr3``.
+    ruled-table T&C PDF -- invoke this once per document).
+
+    Every input is a whole-document ``bypass`` recording of the same backend:
+    one with both bypasses off (the baseline) and one per bypass switched on.
+    Comparing whole document with whole document is the point -- the first
+    version diffed a live page-slice baseline against a whole-document run,
+    which scores every cell outside the slice as changed. The markdown has no
+    page markers, so the changed cells cannot be pinned to pages; since the
+    uncovered pages ran with identical settings (noise floor 0.00%), every
+    changed cell is attributed to the covered pages, and the gate divides by
+    the covered table pages' estimated share of the cells.
+
+    Covered pages are the chunks the arm's own bypass decided: ``ac1`` for
+    the OCR arm, ``grid_replace`` for the trust arm. A TableFormer skip on a
+    table-free chunk (``ac2``) is not grid replacement and does not count.
+    An arm whose bypass fired on no page is NOT MEASURED, never PASS.
     """
     ap = argparse.ArgumentParser(
         prog="conversion_bench.py grid", description=grid_bench_main.__doc__
     )
     ap.add_argument("--doc", type=Path, required=True)
     ap.add_argument("--doc-label", default=None, help="report label; defaults to --doc's stem")
-    ap.add_argument("--base-url", default=os.environ.get("DOCLING_BENCH_BASE_URL", ""))
+    ap.add_argument(
+        "--baseline-json",
+        type=Path,
+        required=True,
+        help="bypass_bench_main output recorded with both bypasses off",
+    )
     ap.add_argument(
         "--ocr-bypass-json",
         type=Path,
@@ -1057,90 +1111,68 @@ def grid_bench_main(argv: list[str]) -> int:
         required=True,
         help="bypass_bench_main output recorded with the service's TABLES_TRUST_BYPASS=1",
     )
-    ap.add_argument("--timeout-s", type=float, default=3600.0)
     ap.add_argument(
         "--out",
         type=Path,
         default=Path(f"audit/RFC052_GRID_BENCH_{_dt.date.today().isoformat()}.md"),
     )
     args = ap.parse_args(argv)
+    from pageindex_mcp.converters.table_bypass import REASON_AC1
 
-    refuse_portfolio(args.base_url)
-    require_hr3(args.base_url)
-    require_bench_overrides_supported(
-        args.base_url, os.environ.get("DOCLING_BENCH_TOKEN", ""), timeout_s=30.0
-    )
-    from pageindex_mcp.config import settings
-    from pageindex_mcp.storage.staging import delete_staging, upload_staging
-
-    token = os.environ.get("DOCLING_BENCH_TOKEN") or settings.docling_service_bearer_token or ""
     label = args.doc_label or args.doc.stem
     doc = Doc(label=label, path=args.doc)
     classify(doc)
+    table_pages = set(doc.pages_with_tables or [])
+
+    baseline = _load_bypass_recording(args.baseline_json, False, False)
+    base_gate = _tree_gate(baseline["markdown"], doc)
 
     rows: list[str] = []
-    overall_ok = True
-    for arm_name, run_path, extra_bound_note in (
-        ("r3_ocr_bypass", args.ocr_bypass_json, "plus changed text <= 2% on covered pages"),
-        ("r3_trust", args.trust_json, ""),
+    status: dict[str, str] = {}
+    for arm_name, run_path, ocr, trust, fired in (
+        (
+            "r3_ocr_bypass",
+            args.ocr_bypass_json,
+            True,
+            False,
+            lambda c: REASON_AC1 in c.get("bypass_reasons", []),
+        ),
+        ("r3_trust", args.trust_json, False, True, lambda c: bool(c.get("grid_replace"))),
     ):
-        run_payload = json.loads(run_path.read_text())
-        pages = sorted(
-            {
-                p
-                for c in run_payload["applied"].get("chunks", [])
-                if c.get("bypass") not in (None, "none")
-                for p in range(c["page_start"], c["page_end"] + 1)
-            }
-        )
-        if not pages:
-            rows.append(f"| {arm_name} | -- | -- | -- | SKIP (no bypassed pages recorded) |")
-            continue
-        page_start, page_end = pages[0], pages[-1]
-        overrides = {
-            **ARMS["r3"],
-            "page_start": page_start,
-            "page_end": page_end,
-            **_sliced_page_fields(doc, page_start, page_end),
-        }
-        key = upload_staging(f"bench-{uuid.uuid4().hex[:12]}", doc.path.name, doc.path.read_bytes())
-        try:
-            baseline = run_arm(args.base_url, token, doc, overrides, key, args.timeout_s)
-        finally:
-            delete_staging(key)
-        diff = table_cell_diff(baseline.markdown, run_payload["markdown"])
-        ratio = diff["changed_cell_ratio"]
-        base_verdict, base_garbled, base_ratio = _tree_gate(baseline.markdown, doc)
-        run_verdict, run_garbled, run_ratio = _tree_gate(run_payload["markdown"], doc)
-        verdict_ok = not (base_verdict == "PASS" and run_verdict != "PASS")
-        garble_ok = run_ratio <= base_ratio + GARBLE_NOISE_TOLERANCE and not (
-            run_garbled and not base_garbled
-        )
-        ok = ratio <= FAST_MAX_CHANGED_CELL_RATIO and verdict_ok and garble_ok
-        overall_ok = overall_ok and ok
-        rows.append(
-            f"| {arm_name} | {ratio:.2%} | {base_verdict} -> {run_verdict} "
-            f"| {base_ratio:.3f} -> {run_ratio:.3f} "
-            f"| {'PASS' if ok else 'FAIL'} {extra_bound_note} |"
-        )
+        run_payload = _load_bypass_recording(run_path, ocr, trust)
+        status[arm_name], cells = _grid_arm_row(baseline, run_payload, fired, doc, base_gate)
+        rows.append(f"| {arm_name} {cells}")
 
+    measured = [s for s in status.values() if s != "NOT MEASURED"]
+    if "FAIL" in measured:
+        overall = "FAIL"
+    elif status.get("r3_trust") == "PASS":
+        overall = "PASS"
+    else:
+        overall = "NOT MEASURED"
     lines = [
         f"# RFC-052 grid-replacement bench ({_dt.date.today().isoformat()})",
         "",
-        f"Document: {label} · base: `{args.base_url}` · threshold: "
-        f"changed_cell_ratio <= {FAST_MAX_CHANGED_CELL_RATIO:.0%} (R9 AC3)",
+        f"Document: {label} ({doc.page_count} pages, {len(table_pages)} with tables) · "
+        f"baseline: `{args.baseline_json.name}` · threshold: "
+        f"changed_cell_ratio <= {FAST_MAX_CHANGED_CELL_RATIO:.0%} on covered pages (R9 AC3)",
         "",
-        "| arm | changed_cell_ratio | verdict (base -> run) | garble ratio (base -> run) | gate |",
-        "|---|---|---|---|---|",
+        "Whole-document recordings compared with each other. Changed cells are "
+        "attributed to the covered pages (uncovered pages ran identical settings); "
+        "the covered ratio divides them by the covered table pages' share of all cells.",
+        "",
+        "| arm | covered pages | changed (whole doc) | changed (covered, gate) "
+        "| verdict (base -> run) | garble ratio (base -> run) | gate |",
+        "|---|---|---|---|---|---|---|",
         *rows,
         "",
-        f"**Overall: {'PASS' if overall_ok else 'FAIL'}** "
-        "-- enable TABLES_TRUST_BYPASS only if every document's r3_trust row is PASS.",
+        f"**Overall: {overall}** -- enable TABLES_TRUST_BYPASS only if every "
+        "document's r3_trust row is PASS; NOT MEASURED is not a pass.",
     ]
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text("\n".join(lines) + "\n")
-    print(f"wrote {args.out}: {'PASS' if overall_ok else 'FAIL'}")
-    return 0 if overall_ok else 1
+    print(f"wrote {args.out}: {overall}")
+    return 0 if overall == "PASS" else 1
 
 
 def _dispatch(argv: list[str] | None = None) -> int:
