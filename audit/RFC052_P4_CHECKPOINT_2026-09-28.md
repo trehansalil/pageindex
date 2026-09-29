@@ -9,8 +9,8 @@ below was run on the Mac docling-service; the capture runs went worker -> Mac.
 
 | Task | Feature | Gate | Result | Switch (default) |
 |---|---|---|---|---|
-| 9.1 | Table capture in the worker | median wall time <= 1.05x, `memory.peak` <= 1536Mi | **FAIL**: 1.123x (454.7 s -> 510.5 s); memory 1.15 / 1.19 GB PASS | `TABLES_CAPTURE=0` |
-| 9.5 | Table nodes in search | on >= off, <= 1 regression | **FAIL**: 5/13 vs 6/13, 1 regression, +7,885 prompt tokens | `TABLES_DESC_ENABLED=0` |
+| 9.1 | Table capture in the worker | median wall time <= 1.05x, `memory.peak` <= 1536Mi | **PASS after #43** (2026-09-29): 1.011x, memory 1.28 GB. First run FAIL 1.123x | `TABLES_CAPTURE=0` |
+| 9.5 | Table nodes in search | on >= off, <= 1 regression | **PASS after #43** (2026-09-29): 9/13 vs 9/13, 1 regression, +7,736 tokens. First run FAIL 5/13 vs 6/13 | `TABLES_DESC_ENABLED=0` |
 | 9.6 | OCR bypass (AC1) | changed cells <= 2% | **PASS** on quality: 0.00% of 72,113 cells over 270 pages; **no time saved** | `TABLES_OCR_BYPASS=0` |
 | 9.7 | Grid replacement (AC3) | changed cells <= 2% on covered pages | **FAIL**: Unfall 13.33%, GHV 20.10%; **AC3 dropped**, code removed | -- |
 | 7.6 | Planner memory clamp (P3) | clamps under forced low memory, no OOM | **PASS**: 12 -> 3 processes; `safe_procs=0` -> 1 process; 0 OOM events | `DOCLING_RESERVE_BYTES` |
@@ -90,6 +90,45 @@ descriptions name the page's region and log why the LLM path fell back;
 dedupe the budget so it never drops the only copy; soften the table prompt
 line.
 
+## Re-run after the fixes (#43, 2026-09-29)
+
+#43 (merge 16b3690) built the capture markdown from the extracted cells
+instead of `to_markdown()`, joined the capture in a background task awaited
+by `finalize` (no dead join grace), expanded an empty search node to its
+descendants' text, and replaced greedy table anchoring with an
+order-preserving alignment. Worker image `sha-16b3690`, worker -> Mac.
+
+**9.1** (14:13-14:49 IST), pocketbook, 2 runs per arm:
+
+| Arm | Runs | Median | Worker `memory.peak` |
+|---|---|---|---|
+| capture off | 523.4 s, 515.9 s | 519.7 s | 1.15 GB |
+| capture on | 535.7 s, 515.3 s | 525.5 s | 1.28 GB |
+
+Ratio **1.011, PASS**. Worker logs: `capture joined: 306 table(s), 1 proc(s),
+457.7s, failed [(3, 7), (165, 291)]` and `318 table(s), 441.9s, failed [(3, 7),
+(171, 291)]`. Capture now overlaps the whole ingest instead of adding to it,
+but the pool still runs one process and scans ~160 of 292 pages before its
+deadline (was ~70). Sizing the pool by CPU is the remaining lever.
+
+**9.5** on the capture-on doc `a3779d3d`: off **9/13**, on **9/13**, one
+regression (`latin-america-pop-density-2023`, the same one as before), +7,736
+prompt tokens. **PASS.** Northern America now hits in both runs with tables on
+and was flaky with them off. Still missing in both arms: Africa population,
+Jordan and Palau (lost headings in Docling), and the latam regression.
+Descriptions are still `fallback` (`TABLES_DESC_ENABLED=0`).
+
+An earlier attempt at 12:24 IST measured nothing: the merge triggered the
+controller's docling-1 snapshot re-bake, `get.k3s.io` returned HTTP 500
+(Cloudflare error 1101) so the bake failed, and while the bake held the tick
+lock the `docling:backend` heartbeat went stale and the worker refused every
+conversion. Both bake attempts failed; the snapshot stays at `e0a7efb`.
+
+Kept pocketbook doc: `a3779d3d`; erased `9cc52a11` and the three other run
+copies (full cascade, no residue); the filename hash-cache entry was restored.
+
+The switches stay off until you decide to turn them on.
+
 ## 9.6 OCR bypass
 
 | Document | Pages the bypass covered | Changed cells | Wall time off -> on |
@@ -155,8 +194,8 @@ itself is still tested at 64 MiB.
 
 ## Open decisions for the user
 
-1. **9.1 / 9.5:** diagnosed above, not fixed. Build the capture and search
-   fixes (a new task set), or leave capture and table search off and move to
-   P5.
+1. **9.1 / 9.5:** both pass after #43. Turn on `TABLES_CAPTURE` (and decide
+   on `TABLES_DESC_ENABLED`) in the infra configmap, or keep them off and move
+   to P5.
 2. **HR4:** the table scan and grid use PyMuPDF (AGPL); the legal review stays
    deferred.
