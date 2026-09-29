@@ -30,10 +30,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import html
 import logging
 import re
 import time
 import unicodedata
+from array import array
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -67,9 +69,9 @@ _TITLE_PREFIX_MIN = 8  # a truncated title still matches when this long
 
 
 def normalize_title(text: object) -> str:
-    """NFKC, casefolded, markdown ``#`` and punctuation collapsed to single
+    """HTML entities decoded, NFKC, casefolded, markdown ``#`` and punctuation collapsed to single
     spaces -- the comparison form for heading titles and page text."""
-    s = unicodedata.normalize("NFKC", str(text or "")).casefold()
+    s = unicodedata.normalize("NFKC", html.unescape(str(text or ""))).casefold()
     s = s.lstrip("#").strip()
     return " ".join(_TOKEN_RE.findall(s))
 
@@ -81,6 +83,49 @@ def _titles_match(node_title: str, heading: str) -> bool:
         return True
     shorter, longer = sorted((node_title, heading), key=len)
     return len(shorter) >= _TITLE_PREFIX_MIN and longer.startswith(shorter)
+
+
+def _match_score(title: str, heading: str) -> int:
+    if title[:1] != heading[:1]:  # cheap reject: both rules share the first character
+        return 0
+    return 2 if title == heading else (1 if _titles_match(title, heading) else 0)
+
+
+def _align_titles(titles: Sequence[str], heads: Sequence[str]) -> list[tuple[int, int]]:
+    """Order-preserving ``(title_index, head_index)`` pairs that maximise the
+    match score (exact 2, prefix 1), earliest heading on a tie.
+
+    A greedy forward walk lets one title whose own heading Docling missed
+    prefix-match a far later heading ("Micronesia" -> "Micronesia (Federated
+    States of)") and skip every title in between; the alignment only takes
+    such a match when it costs nothing.
+    """
+    n, m = len(titles), len(heads)
+    if not n or not m:
+        return []
+    # best[i][k]: best score for titles[i:] against heads[k:].
+    best = [array("i", bytes(4 * (m + 1))) for _ in range(n + 1)]
+    for i in range(n - 1, -1, -1):
+        t, row, nxt = titles[i], best[i], best[i + 1]
+        for k in range(m - 1, -1, -1):
+            s = row[k + 1] if row[k + 1] > nxt[k] else nxt[k]
+            score = _match_score(t, heads[k])
+            if score and nxt[k + 1] + score > s:
+                s = nxt[k + 1] + score
+            row[k] = s
+    pairs: list[tuple[int, int]] = []
+    i = k = 0
+    while i < n and k < m:
+        cur = best[i][k]
+        score = _match_score(titles[i], heads[k])
+        if score and best[i + 1][k + 1] + score == cur:
+            pairs.append((i, k))
+            i, k = i + 1, k + 1
+        elif best[i][k + 1] == cur:
+            k += 1
+        else:
+            i += 1
+    return pairs
 
 
 def _walk(structure: Iterable[Any], depth: int = 0) -> Iterator[tuple[dict, int]]:
@@ -248,23 +293,19 @@ def resolve_heading_pages(
 ) -> dict[int, int]:
     """``id(node) -> 0-based heading page`` for the tree's non-table nodes.
 
-    From the service's ``heading_pages`` when non-empty: a forward-only walk
-    that pairs each node title (document order) with the next matching
-    heading. Otherwise a forward-only search of each title over the
-    normalized per-page text *page_texts*. Unmatched nodes stay unresolved.
+    From the service's ``heading_pages`` when non-empty: an order-preserving
+    alignment of node titles (document order) to headings (``_align_titles``).
+    Otherwise a forward-only search of each title over the normalized
+    per-page text *page_texts*. Unmatched nodes stay unresolved.
     """
     nodes = [(n, normalize_title(n.get("title"))) for n, _ in _walk(structure)]
     nodes = [(n, t) for n, t in nodes if t and not _is_table_seg(n) and n.get("type") != "table"]
     out: dict[int, int] = {}
     if heading_pages:
         heads = [(normalize_title(h[0]), int(h[1])) for h in heading_pages]
-        j = 0
-        for node, title in nodes:
-            for k in range(j, len(heads)):
-                if _titles_match(title, heads[k][0]):
-                    out[id(node)] = heads[k][1]
-                    j = k + 1
-                    break
+        pairs = _align_titles([t for _, t in nodes], [h for h, _ in heads])
+        for i, k in pairs:
+            out[id(nodes[i][0])] = heads[k][1]
         return out
     if page_texts:
         texts = [normalize_title(t) for t in page_texts]
@@ -549,17 +590,37 @@ class PendingTables:
     result: CaptureResult | None = None
     pymupdf: list[TableRecord] = field(default_factory=list)
     describe_task: asyncio.Task | None = None
+    collect_task: asyncio.Task | None = None
     joined: bool = False
     finalized: bool = False
     started: float = field(default_factory=time.monotonic)
 
     async def collect(self, grace_s: float, *, describe: bool, model: str) -> None:
-        """Join the capture (after conversion returned) and kick off the
-        descriptions in the background. Never raises."""
+        """Start joining the capture (after conversion returned), then the
+        descriptions, in the background, and return at once: the join's
+        *grace_s* overlaps the tree build instead of blocking it (RFC-052
+        9.1). ``finalize`` and ``aclose`` await it. Never raises."""
         self.joined = True
+        self.collect_task = asyncio.create_task(
+            self._collect(grace_s, describe=describe, model=model)
+        )
+
+    async def _await_collect(self) -> None:
+        if self.collect_task is not None:
+            with contextlib.suppress(Exception):
+                await self.collect_task
+
+    async def _collect(self, grace_s: float, *, describe: bool, model: str) -> None:
         try:
             self.result = await self.handle.join(grace_s)
             self.pymupdf = [r for r in self.result.tables if r.source == SOURCE_PYMUPDF]
+            logger.info(
+                "tables: capture joined: %d table(s), %d proc(s), %.1fs, failed %s",
+                len(self.pymupdf),
+                self.result.procs,
+                self.result.duration_s,
+                list(self.result.failed),
+            )
         except Exception:
             logger.warning("tables: capture join failed; continuing without tables", exc_info=True)
             self.result, self.pymupdf = None, []
@@ -625,6 +686,7 @@ class PendingTables:
         deterministic fallback description instead of blocking the caller's
         deadline indefinitely."""
         self.finalized = True
+        await self._await_collect()
         described, fb = await self._descriptions(job_deadline_monotonic=job_deadline_monotonic)
 
         def _build() -> tuple[list, list[TableRecord]]:
@@ -664,6 +726,7 @@ class PendingTables:
     async def aclose(self) -> None:
         """Release everything when the document does not reach
         ``_persist_tree_result`` (reject, flat, raise). Never raises."""
+        await self._await_collect()  # bounded by the join's grace
         if self.describe_task is not None and not self.describe_task.done():
             self.describe_task.cancel()
             with contextlib.suppress(BaseException):
