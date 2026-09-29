@@ -276,6 +276,22 @@ def normalise_cells(rows: Iterable[Iterable[Any]]) -> tuple[tuple[str, ...], ...
     return tuple(tuple("" if c is None else str(c) for c in row) for row in rows)
 
 
+def cells_markdown(header: Sequence[str], body: Iterable[Sequence[str]]) -> str:
+    """GitHub pipe table from extracted cells: ``|`` escaped, newlines as
+    ``<br>`` (PyMuPDF's convention). Replaces ``Table.to_markdown()``, which
+    re-extracts the cells and cost 3-7 s CPU on a large text-strategy table
+    (RFC-052 9.1). Empty when there is no header."""
+    if not header:
+        return ""
+
+    def row(cells: Sequence[str]) -> str:
+        return "|" + "|".join(c.replace("|", "\\|").replace("\n", "<br>") for c in cells) + "|"
+
+    lines = [row(header), "|" + "|".join("---" for _ in header) + "|"]
+    lines += [row(r) for r in body]
+    return "\n".join(lines) + "\n"
+
+
 def table_id(page: int, k: int, source: str) -> str:
     """``p{page:04d}-t{k}`` (PyMuPDF) or ``p{page:04d}-f{k}`` (TableFormer)."""
     return f"p{page:04d}-{_SOURCE_LETTER[source]}{k}"

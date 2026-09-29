@@ -164,6 +164,33 @@ def _build_node_map(nodes: list, nm: dict) -> None:
             _build_node_map(n["nodes"], nm)
 
 
+# Cap on the descendant text an empty selected node expands to (RFC-052 9.5).
+_EMPTY_NODE_EXPAND_CHARS = 12_000
+
+
+def _node_context(node: dict, selected: set) -> str:
+    """A selected node's own text. A node with none -- a section whose content
+    sits in its children, e.g. a region profile split into ``_seg`` nodes --
+    returns its descendants' text in document order instead, skipping nodes
+    the search selected itself, up to ``_EMPTY_NODE_EXPAND_CHARS``."""
+    if (node.get("text") or "").strip():
+        return node["text"]
+    parts: list[str] = []
+    size = 0
+    stack = list(reversed(node.get("nodes") or []))
+    while stack and size < _EMPTY_NODE_EXPAND_CHARS:
+        child = stack.pop()
+        if child.get("node_id") in selected:
+            continue
+        own = child.get("text") or ""
+        if own.strip():
+            own = own[: _EMPTY_NODE_EXPAND_CHARS - size]
+            parts.append(own)
+            size += len(own)
+        stack.extend(reversed(child.get("nodes") or []))
+    return "\n\n".join(parts)
+
+
 def _parse_page_spec(pages: str) -> set[int]:
     """Parse '1-3,5' style page spec into a set of page numbers."""
     wanted: set[int] = set()
@@ -284,7 +311,7 @@ async def _search_one_doc(
                 "RAG: failed to parse LLM response for doc %s: %s — raw: %s", doc_id, e, clean[:300]
             )
 
-        matched = [i for i in ids if i in nm and "text" in nm[i]]
+        matched = [i for i in ids if i in nm]
         missed = [i for i in ids if i not in nm]
         if missed:
             logger.warning(
@@ -294,7 +321,8 @@ async def _search_one_doc(
                 missed,
             )
 
-        text = "\n\n".join(nm[i]["text"] for i in matched)
+        selected = set(matched)
+        text = "\n\n".join(t for t in (_node_context(nm[i], selected) for i in matched) if t)
         if text:
             logger.info("RAG: doc %s — collected %d chars of context", doc_id, len(text))
             return (doc_id, name, text)

@@ -590,6 +590,24 @@ def test_9_1_tables_schema_roundtrip_links_and_title():
     texts = ["", "INTRO", "", "x Leistungen:", "Tarife", "", "Anhang", ""]
     by_text = ta.resolve_heading_pages(structure, [], page_texts=texts)
     assert [by_text[id(ids[k])] for k in ("0001", "0002", "0003", "0004")] == [1, 3, 4, 6]
+    # 9.5: a title whose own heading is missing must not prefix-match a far
+    # later heading and skip every title in between; "&amp;" is decoded.
+    oceania = [
+        {"node_id": k, "title": t, "text": "x", "nodes": []}
+        for k, t in (
+            ("r1", "Micronesia"),
+            ("c1", "Afghanistan"),
+            ("c2", "Latin America &amp; the Caribbean"),
+            ("c3", "Micronesia (Federated States of)"),
+        )
+    ]
+    heads = [
+        ("Afghanistan", 42),
+        ("Latin America & the Caribbean", 50),
+        ("Micronesia (Federated States of)", 177),
+    ]
+    aligned = ta.resolve_heading_pages(oceania, heads)
+    assert [aligned.get(id(n)) for n in oceania] == [None, 42, 50, 177]
 
     anchored = {r.table_id: r for r in ta.assign_nodes(described, structure, resolved, 8)}
     assert (anchored["p0004-t0"].node_id, anchored["p0004-t0"].node_id_method) == (
@@ -732,6 +750,8 @@ def test_9_1_capture_pool_bound_page_partition_and_rss_kill(tmp_path, monkeypatc
     assert (table.table_id, table.page, table.rows, table.cols) == ("p0002-t0", 2, 4, 3)
     assert table.header == ("Name", "2019", "2020") and table.cells[1] == ("v10", "v11", "v12")
     assert table.caption == table.title == "Table 1. Ruled figures"
+    # 9.1: markdown is built from the extracted cells, not Table.to_markdown().
+    assert table.markdown.startswith("|Name|2019|2020|\n|---|---|---|\n|v10|v11|v12|\n")
     assert (
         table.strategy == "lines"
         and 0 < table.coverage < 1

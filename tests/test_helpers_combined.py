@@ -1087,6 +1087,20 @@ async def test_flat_05_c1_node_selection_flat_bypass_tree_llm_and_table_nodes(mo
     assert "| GDP (US$ bn) |" not in prompt_on  # the markdown never enters the prompt
     assert text_on == _table_tree_doc()["structure"][0]["nodes"][1]["text"]  # stored cells
 
+    # 9.5: a selected node with no text of its own returns its descendants'
+    # text, skipping a descendant the search selected itself (no duplicate).
+    empty = _table_tree_doc()
+    empty["structure"][0]["text"] = ""
+    with patch.object(
+        helpers.rag,
+        "_llm",
+        new_callable=AsyncMock,
+        return_value=json.dumps({"thinking": "t", "node_list": ["0001", "0001_t0"]}),
+    ):
+        res = await helpers._search_one_doc("GDP 2020?", "doc4", empty, sem)
+    assert res is not None
+    assert res[2] == "| a | b |\n\n" + empty["structure"][0]["nodes"][1]["text"]
+
     prompt_off, _ = await prompt_and_text("0", _table_tree_doc(), "0001")
     stripped = _table_tree_doc()
     seg, _t = stripped["structure"][0]["nodes"]
