@@ -23,6 +23,7 @@ from .schema import (
     SOURCE_PYMUPDF,
     TableRecord,
     assign_table_ids,
+    cells_markdown,
     coverage,
     find_caption,
     normalise_cells,
@@ -109,10 +110,7 @@ def _record(page: Any, pno: int, label: str, table: Any, strategy: str, words, b
         names = list(cells[0]) if cells else []
     header = tuple("" if h is None else " ".join(str(h).split()) for h in names)
     caption = find_caption(blocks, bbox)
-    try:
-        markdown = table.to_markdown()
-    except Exception:
-        markdown = ""
+    markdown = cells_markdown(header, cells[1:])
     return TableRecord(
         table_id="",
         page=pno,
