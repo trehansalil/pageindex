@@ -445,9 +445,11 @@ class TestSplitCoordinator:
             "node": _cap(safe=4, spp=40.0),
         }
         split_env.fail = {("node", 210): [httpx.ReadTimeout("slow")]}
+        checks_before = split_env.version_checks
         _run_split(split_env)
         assert [c["backend"] for c in split_env.calls if c["page_start"] == 210] == ["node", "mac"]
-        assert split_env.version_checks > 0  # the pipeline-version gate still runs
+        # The pipeline-version gate runs for this split too.
+        assert split_env.version_checks == checks_before + 1
 
         # 3. Re-route: docling-1's block times out once and is retried on the Mac.
         split_env.calls.clear()
