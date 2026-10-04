@@ -203,6 +203,29 @@ def _release_slice_slot() -> None:
     _slice_slots.release()
 
 
+async def _admit_unless_cancelled(acquire, release, conv) -> None:
+    """Wait for ``acquire()``, but give up -- holding nothing -- once
+    ``conv.cancel_event`` is set or this request is cancelled. The watcher
+    only sets that (threading) event, so without this a cancelled slice
+    could sit on part of the group's slots until the rest freed up."""
+    acq = asyncio.ensure_future(acquire())
+    admitted = False
+    try:
+        while not conv.cancel_event.is_set():
+            done, _ = await asyncio.wait({acq}, timeout=CLIENT_POLL_S)
+            if acq in done:
+                acq.result()
+                admitted = True
+                return
+    finally:
+        if not admitted:
+            acq.cancel()  # the acquire rolls back whatever it held
+            await asyncio.wait({acq})
+            if not acq.cancelled() and acq.exception() is None:
+                release()  # it won the race with the cancel
+    raise DoclingCancelled("cancelled while queued for a conversion slot")
+
+
 #: Idle seconds before a cached download is deleted. A split's chunks follow
 #: each other within milliseconds; a retry within seconds.
 PDF_CACHE_IDLE_S = 120.0
@@ -1114,9 +1137,9 @@ async def convert_pdf(  # noqa: PLR0915, C901
         preempt_task = asyncio.create_task(_preempt_while_queued())
         try:
             if slice_request:
-                await _acquire_slice_slot()
+                await _admit_unless_cancelled(_acquire_slice_slot, _release_slice_slot, conv)
             else:
-                await _convert_slots.acquire()
+                await _admit_unless_cancelled(_convert_slots.acquire, _convert_slots.release, conv)
         finally:
             preempt_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

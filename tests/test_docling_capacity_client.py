@@ -516,6 +516,29 @@ class TestSplitCoordinator:
             _run_split(split_env)
         assert len(split_env.calls) == 6
 
+        # 8. No late tail copy: a 30-page document fills the first wave, so
+        #    the queue is empty from the start. Once the Mac finishes a chunk
+        #    under 1.7 s of budget remain, so it does not copy docling-1's
+        #    slow chunks, and they still finish the split.
+        clock[0] = 0.0
+
+        async def mac_done_late(*args, **kwargs):
+            try:
+                return await convert(*args, **kwargs)
+            finally:
+                if kwargs.get("base_url") == "http://mac:8090":
+                    clock[0] = 29.0
+
+        monkeypatch.setattr(remote_module, "_remote_pdf_convert", mac_done_late)
+        split_env.calls.clear()
+        split_env.cancelled.clear()
+        split_env.speed = {"mac": 0.0001, "node": 0.05}
+        remote_module._effective_read_timeout_s = lambda: 30.0
+        _run_split(split_env, page_count=30)
+        choice, attrs = _outcome(split_env)
+        assert (choice, attrs["shard_count"], attrs["copies"]) == ("split", 6, 0)
+        assert split_env.cancelled == [] and attrs["pages_by_backend"] == "mac:20,node:10"
+
     def test_kill_switch_fallback_and_build_skew(self, split_env):
         """R5 AC10 / property P5, R5 AC8."""
         from pageindex_mcp.client import split as split_module

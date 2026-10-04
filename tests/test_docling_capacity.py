@@ -498,6 +498,33 @@ def test_a_p5_5_split_chunks_share_a_download_and_a_group_slot(svc, monkeypatch)
     asyncio.run(group())
     assert (app._slice_slots.held, app._convert_slots.held) == (0, 0)
 
+    # A chunk cancelled while the group waits for its slots gives back the
+    # part it already took.
+    import threading
+    import types
+
+    monkeypatch.setattr(app, "CLIENT_POLL_S", 0.005)
+    conv = types.SimpleNamespace(cancel_event=threading.Event())
+
+    async def cancelled_while_queued():
+        # Fresh primitives: the previous asyncio.run bound the old ones.
+        monkeypatch.setattr(app, "_convert_slots", app._CountingSemaphore(2))
+        monkeypatch.setattr(app, "_slice_slots", app._CountingSemaphore(2))
+        monkeypatch.setattr(app, "_slice_group_lock", asyncio.Lock())
+        await app._convert_slots.acquire()  # a whole conversion holds one of two
+        admit = asyncio.ensure_future(
+            app._admit_unless_cancelled(app._acquire_slice_slot, app._release_slice_slot, conv)
+        )
+        await asyncio.sleep(0.02)
+        assert app._convert_slots.held == 2 and not admit.done()  # took the other
+        conv.cancel_event.set()
+        with pytest.raises(app.DoclingCancelled):
+            await asyncio.wait_for(admit, 1)
+        assert (app._convert_slots.held, app._slice_slots.held, app._slice_active) == (1, 0, 0)
+        app._convert_slots.release()
+
+    asyncio.run(cancelled_while_queued())
+
 
 # --------------------------------------------------------------------------- 9.1 table capture
 

@@ -146,7 +146,7 @@ docker run -p 8080:8080 \
 | `DOCLING_MAX_CONCURRENT`      | `1`     | Conversions run at once; others queue (each peaks ~2 GB RSS). `/capacity` `max_slots` |
 | `DOCLING_RESERVE_BYTES`       | `805306368` (768 MiB) | Memory `safe_procs` leaves free, in the planner clamp and `/capacity` |
 | `DOCLING_CHUNK_PAGES`         | `10`    | Chunk size `/capacity` quotes `safe_procs` for (each conversion clamps for its own) |
-| `DOCLING_SLICE_SLOTS`         | (computed) | Split chunks run at once (`/capacity` `slice_slots`); default `max(1, min(cpus, floor((total memory − reserve) / per-process peak for 20 pages)))`; `/capacity` further clamps it to what free memory fits, never below 1 |
+| `DOCLING_SLICE_SLOTS`         | (computed) | Split chunks run at once (`/capacity` `slice_slots`); default `max(1, min(cpus, floor((total memory − reserve) / per-process peak for 20 pages)))`; `/capacity` further clamps it to what free memory fits, never below 1 (when free memory is unreadable it reports the configured value unclamped, with `safe_procs` 0, which caps the coordinator at one chunk) |
 | `DOCLING_SPP_PRIOR`           | `40`    | `spp_ewma` before any chunk has finished (design: Mac 19, cpx62 40) |
 | `DOCLING_BACKEND_NAME`        | hostname | `/capacity` `backend`, and the `docling_chunk` / Loki `host` label |
 | `DOWNLOAD_TIMEOUT_S`          | `120`   | Timeout for downloading PDFs from presigned URL |
