@@ -66,6 +66,10 @@ class Capacity:
     max_slots: int
     spp_ewma: float
     chunk_pages: int
+    # The service's own identity (``DOCLING_BACKEND_NAME``, else hostname):
+    # the HR3 check uses it so a Mac configured under another alias is
+    # still recognised as the Mac.
+    backend: str = ""
 
     @classmethod
     def from_snapshot(cls, snap: dict) -> Capacity:
@@ -83,6 +87,7 @@ class Capacity:
             max_slots=_num("max_slots", 1, int),
             spp_ewma=spp if spp > 0 else _DEFAULT_SPP,
             chunk_pages=max(1, _num("chunk_pages", 10, int)),
+            backend=str(snap.get("backend") or ""),
         )
 
     @property
@@ -121,19 +126,42 @@ def configured_backends(spec: str | None = None) -> list[SplitBackend]:
     return out
 
 
-def hr3_eligible(name: str, *, pii_corpus: bool, pii_backends: str | None = None) -> bool:
+def hr3_eligible(
+    name: str,
+    *,
+    pii_corpus: bool,
+    url: str = "",
+    reported: str = "",
+    pii_backends: str | None = None,
+) -> bool:
     """R5 AC7: may backend ``name`` see this corpus's documents?
 
-    Without PII every backend may. With PII only the backends listed in
-    ``DOCLING_SPLIT_PII_BACKENDS`` may, and never the Mac.
+    Without PII every backend may. With PII a backend must pass all three:
+
+    - neither its configured ``name`` nor the identity the service itself
+      reports in ``/capacity`` (``reported``) is the Mac, case-insensitively,
+      so a Mac configured under another alias is still refused;
+    - ``name`` is listed in ``DOCLING_SPLIT_PII_BACKENDS``;
+    - ``url`` is a cluster-internal Service address (a bare Service name or a
+      ``*.svc`` / ``*.svc.cluster.local`` host), never a public or Tailscale
+      address. This is the self-hosted counterpart of
+      ``require_zdr_compliance``, whose allow-list covers only LLM APIs.
     """
+    from urllib.parse import urlparse
+
     if not pii_corpus:
         return True
-    if name in _NEVER_PII:
+    identities = {name.strip().lower(), reported.strip().lower()} - {""}
+    if identities & _NEVER_PII:
         return False
     raw = settings.docling_split_pii_backends if pii_backends is None else pii_backends
-    allowed = {p.strip() for p in (raw or "").split(",") if p.strip()}
-    return name in allowed
+    allowed = {p.strip().lower() for p in (raw or "").split(",") if p.strip()}
+    if name.strip().lower() not in allowed:
+        return False
+    host = (urlparse(url).hostname or "").lower()
+    return bool(host) and (
+        "." not in host or host.endswith(".svc") or host.endswith(".svc.cluster.local")
+    )
 
 
 def build_matches(expected: str, actual: str) -> bool:
@@ -291,16 +319,25 @@ async def _expected_build_sha(caps: dict[str, Capacity]) -> str:
     return caps[fastest].build_sha
 
 
-async def _eligible_backends(client) -> dict[str, tuple[SplitBackend, Capacity]]:
-    backends = [b for b in configured_backends() if not _is_absent(b.url)]
-    snaps = await asyncio.gather(*(_fetch_capacity(client, b) for b in backends))
+async def _eligible_backends(client) -> tuple[dict[str, tuple[SplitBackend, Capacity]], str]:
+    """Eligible backends and the expected build. Every configured backend gets
+    one ``docling_split_backend`` record; one still cached as absent is
+    reported ``unreachable`` without a new probe."""
+    backends = configured_backends()
+
+    async def _probe(b: SplitBackend) -> Capacity | None:
+        return None if _is_absent(b.url) else await _fetch_capacity(client, b)
+
+    snaps = await asyncio.gather(*(_probe(b) for b in backends))
     answered = {b.name: c for b, c in zip(backends, snaps, strict=True) if c is not None}
     expected = await _expected_build_sha(answered)
     eligible: dict[str, tuple[SplitBackend, Capacity]] = {}
     for b, cap in zip(backends, snaps, strict=True):
         if cap is None:
             choice = "unreachable"
-        elif not hr3_eligible(b.name, pii_corpus=settings.pii_corpus):
+        elif not hr3_eligible(
+            b.name, pii_corpus=settings.pii_corpus, url=b.url, reported=cap.backend
+        ):
             choice = "hr3_blocked"
         elif not build_matches(expected, cap.build_sha):
             choice = "build_skew"
@@ -331,7 +368,7 @@ async def _eligible_backends(client) -> dict[str, tuple[SplitBackend, Capacity]]
                 "spp_ewma": cap.spp_ewma if cap else None,
             },
         )
-    return eligible
+    return eligible, expected
 
 
 def _fmt_counts(counts: dict[str, int]) -> str:
@@ -355,6 +392,7 @@ async def split_convert(
     from .remote import (
         _MIN_USEFUL_CALL_S,
         DoclingUnavailable,
+        _check_remote_docling_version,
         _effective_read_timeout_s,
         _remote_pdf_convert,
         merge_convert_results,
@@ -371,7 +409,15 @@ async def split_convert(
     deadline = t0 + read_s
 
     async with httpx.AsyncClient(timeout=_CAPACITY_TIMEOUT_S) as client:
-        eligible = await _eligible_backends(client)
+        eligible, expected_sha = await _eligible_backends(client)
+    if eligible:
+        # The pipeline-version gate (REMOTE_VERSION_ENFORCE, DOCLING_VERSION_SKEW)
+        # still runs once per process against docling-active. Every shard's
+        # build was matched above to the expected build, which is
+        # docling-active's unless DOCLING_EXPECTED_BUILD_SHA overrides it or
+        # the controller's target did not answer.
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await _check_remote_docling_version(client)
 
     def _emit(choice: str, **attrs) -> None:
         attrs.setdefault("backends", ",".join(sorted(eligible)))
@@ -432,29 +478,42 @@ async def split_convert(
             **convert_kwargs,
         )
 
-    def _next_for(name: str) -> tuple[Shard, int, bool] | None:
-        """``name``'s next shard: its initial block, then a retry that failed
-        elsewhere, then a tail shard, then -- only when no other backend is
-        live -- a retry that failed on ``name`` itself."""
+    def _next_for(name: str) -> tuple[Shard, int, bool, str] | None:
+        """``name``'s next shard as ``(shard, attempts, is_initial, failed_on)``:
+        its initial block, then a retry that failed elsewhere, then a tail
+        shard, then -- only when no other backend is live -- a retry that
+        failed on ``name`` itself."""
         if name in first_dispatch:
-            return first_dispatch.pop(name), 0, True
+            return first_dispatch.pop(name), 0, True, ""
         for i, (shard, n, failed_on) in enumerate(retry):
             if failed_on != name:
                 retry.pop(i)
-                return shard, n, False
+                return shard, n, False, failed_on
         if queue:
-            return queue.pop(0), 0, False
+            return queue.pop(0), 0, False, ""
         if not any(b != name for b in live):
-            for i, (shard, n, _failed_on) in enumerate(retry):
+            for i, (shard, n, failed_on) in enumerate(retry):
                 retry.pop(i)
-                return shard, n, False
+                return shard, n, False, failed_on
         return None
 
     async def _still_accepts(name: str) -> bool:
-        """Per-shard check before a stolen or retried shard (design)."""
+        """Per-shard check before a stolen or retried shard (design). A
+        backend that stopped answering, or now runs a different build than the
+        rest of this document's shards (a restart or rollout between probes),
+        leaves the split for good."""
         async with httpx.AsyncClient(timeout=_CAPACITY_TIMEOUT_S) as client:
             cap = await _fetch_capacity(client, eligible[name][0])
         if cap is None:
+            live.discard(name)
+            return False
+        if not build_matches(expected_sha, cap.build_sha):
+            logger.warning(
+                "split: dropping backend %s mid-document: build_sha %s != expected %s",
+                name,
+                cap.build_sha,
+                expected_sha,
+            )
             live.discard(name)
             return False
         return cap.accepts_work
@@ -469,11 +528,13 @@ async def split_convert(
                 item = _next_for(name)
                 if item is None:
                     continue
-                shard, n, is_initial = item
+                shard, n, is_initial, failed_on = item
                 if not is_initial and not await _still_accepts(name):
-                    # Not queued behind a busy backend (R5 AC6): put it back.
+                    # Not queued behind a busy backend (R5 AC6): put it back,
+                    # still marked with the backend it failed on, so the retry
+                    # keeps preferring another backend.
                     if n:
-                        retry.insert(0, (shard, n, ""))
+                        retry.insert(0, (shard, n, failed_on))
                     else:
                         queue.insert(0, shard)
                     idle_until[name] = time.monotonic() + _BUSY_POLL_S

@@ -134,7 +134,7 @@ def _build_sha_mismatch(local_sha: str, remote_sha: str) -> bool:
 
 
 async def _log_capacity_snapshot(
-    client, headers: dict[str, str], *, base_url: str | None = None
+    client, headers: dict[str, str], *, base_url: str | None = None, warn_skew: bool = True
 ) -> None:
     """RFC-052 R5 AC1/AC8: GET the chosen backend's ``/capacity`` and log it.
 
@@ -186,7 +186,14 @@ async def _log_capacity_snapshot(
         key = (backend, remote_sha)
         # This IS the RFC-052 R5 AC8 build-skew check for P3 (single active
         # remote); P5 widens it to every eligible backend in the split.
-        if _build_sha_mismatch(_CLIENT_BUILD_SHA, remote_sha) and key not in _capacity_skew_warned:
+        # A P5 split call (``warn_skew=False``) was already build-matched
+        # against the document's expected build (R5 AC8 amendment A-P5-2);
+        # comparing it with the worker's own SHA would only warn falsely.
+        if (
+            warn_skew
+            and _build_sha_mismatch(_CLIENT_BUILD_SHA, remote_sha)
+            and key not in _capacity_skew_warned
+        ):
             _capacity_skew_warned.add(key)
             logger.warning(
                 "Docling backend %s build_sha %s != worker build_sha %s",
@@ -842,7 +849,9 @@ async def _remote_pdf_convert(
         capacity_headers: dict[str, str] = {}
         if settings.docling_service_bearer_token:
             capacity_headers["Authorization"] = f"Bearer {settings.docling_service_bearer_token}"
-        await _log_capacity_snapshot(client, capacity_headers, base_url=service_url)
+        await _log_capacity_snapshot(
+            client, capacity_headers, base_url=service_url, warn_skew=base_url is None
+        )
     shift = page_start if page_start is not None and page_end is not None else 0
     pic_results: list[dict] = []
     for pr in data.get("picture_results", []):

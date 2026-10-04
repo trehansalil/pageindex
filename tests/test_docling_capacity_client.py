@@ -223,13 +223,14 @@ def split_env(monkeypatch):
         decisions=[],
         settings=settings,
     )
-    probes: dict[str, int] = {}
+    probes: dict[int, int] = {}
 
     async def fake_capacity(client, backend):
         answer = env.caps.get(backend.name)
         if isinstance(answer, list):
-            i = probes.get(backend.name, 0)
-            probes[backend.name] = i + 1
+            # Keyed by the list itself: assigning a new list restarts it.
+            i = probes.get(id(answer), 0)
+            probes[id(answer)] = i + 1
             answer = answer[min(i, len(answer) - 1)]
         return answer
 
@@ -248,6 +249,12 @@ def split_env(monkeypatch):
 
     monkeypatch.setattr(split_module, "_fetch_capacity", fake_capacity)
     monkeypatch.setattr(remote_module, "_remote_pdf_convert", fake_convert)
+
+    async def no_version_check(client):
+        env.version_checks += 1
+
+    env.version_checks = 0
+    monkeypatch.setattr(remote_module, "_check_remote_docling_version", no_version_check)
 
     async def no_backend_state():
         return {"target": "mac"}
@@ -287,18 +294,28 @@ class TestSplitCoordinator:
         """11.3 / R5 AC7: the Mac never sees a PII document; docling-1 may."""
         from pageindex_mcp.client.split import build_matches, configured_backends, hr3_eligible
 
+        svc = "http://docling-service:8080"
+        public = "https://docling.example.com"
         table = [
-            # name, pii_corpus, DOCLING_SPLIT_PII_BACKENDS, eligible
-            ("mac", False, "node", True),
-            ("node", False, "node", True),
-            ("mac", True, "node", False),
-            ("mac", True, "mac,node", False),  # config cannot re-enable the Mac
-            ("node", True, "node", True),
-            ("node", True, "", False),
-            ("other", True, "node", False),
+            # name, pii_corpus, DOCLING_SPLIT_PII_BACKENDS, url, /capacity identity, eligible
+            ("mac", False, "node", public, "mac", True),
+            ("node", False, "node", svc, "", True),
+            ("mac", True, "node", svc, "", False),
+            ("mac", True, "mac,node", svc, "", False),  # config cannot re-enable the Mac
+            ("Mac", True, "Mac,node", svc, "", False),  # nor can a case variant
+            ("gpu", True, "gpu", svc, "mac", False),  # the Mac under another alias
+            ("node", True, "node", svc, "docling-1", True),
+            ("node", True, "node", "http://docling-service.pageindex-mcp.svc:8080", "", True),
+            ("node", True, "node", public, "", False),  # not a cluster Service
+            ("node", True, "node", "http://100.106.50.6:8090", "", False),  # Tailscale IP
+            ("node", True, "", svc, "", False),
+            ("other", True, "node", svc, "", False),
         ]
-        for name, pii, allowed, want in table:
-            assert hr3_eligible(name, pii_corpus=pii, pii_backends=allowed) is want, (name, pii)
+        for name, pii, allowed, url, reported, want in table:
+            got = hr3_eligible(
+                name, pii_corpus=pii, url=url, reported=reported, pii_backends=allowed
+            )
+            assert got is want, (name, pii, url, reported)
 
         assert build_matches("16b3690d6672", "16b3690d6672aaaabbbbccccddddeeeeffff0000")
         assert not build_matches("16b3690d6672", "44d5c132f7fe")
@@ -411,6 +428,27 @@ class TestSplitCoordinator:
         _run_split(split_env)
         assert [c["backend"] for c in split_env.calls if c["page_start"] >= 240] == ["mac", "mac"]
 
+        # 2b. A backend that rolled to another build between probes leaves the
+        #     split: no tail shard of this document comes from the new build.
+        split_env.calls.clear()
+        split_env.caps["node"] = [_cap(safe=4, spp=40.0), _cap(safe=4, spp=40.0, sha="0000000aaaa")]
+        _run_split(split_env)
+        assert [c["backend"] for c in split_env.calls if c["page_start"] >= 240] == ["mac", "mac"]
+
+        # 2c. A retry stays off the backend it failed on, even while the
+        #     other backend is briefly busy: the Mac's first per-shard probe
+        #     says busy, docling-1 is free, and the retry still waits for the Mac.
+        split_env.calls.clear()
+        split_env.speed = {"mac": 0.002, "node": 0.0}
+        split_env.caps = {
+            "mac": [_cap(safe=12, spp=20.0), _cap(safe=12, spp=20.0, busy=1), _cap(safe=12)],
+            "node": _cap(safe=4, spp=40.0),
+        }
+        split_env.fail = {("node", 210): [httpx.ReadTimeout("slow")]}
+        _run_split(split_env)
+        assert [c["backend"] for c in split_env.calls if c["page_start"] == 210] == ["node", "mac"]
+        assert split_env.version_checks > 0  # the pipeline-version gate still runs
+
         # 3. Re-route: docling-1's block times out once and is retried on the Mac.
         split_env.calls.clear()
         split_env.speed = {"mac": 0.0, "node": 0.0}
@@ -437,7 +475,9 @@ class TestSplitCoordinator:
         #    is refused with DoclingUnavailable instead of being dispatched.
         split_env.calls.clear()
         split_env.fail = {}
-        split_env.speed = {"mac": 0.001, "node": 0.001}
+        # Both blocks end with < 0.25 s of the 0.3 s budget left (mac 0.21 s,
+        # node 0.09 s), so neither may steal.
+        split_env.speed = {"mac": 0.001, "node": 0.003}
         remote_module._effective_read_timeout_s = lambda: 0.3
         remote_module._MIN_USEFUL_CALL_S = 0.25
         with pytest.raises(DoclingUnavailable):
