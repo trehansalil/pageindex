@@ -211,7 +211,7 @@ tail     = remaining chunks → shared queue; each backend pulls one shard of
 - **Plan:** `plan_split()` is pure.
   - Each initial block's target is `initial_frac · N · rate / Σrate` pages. The block is snapped by taking whole chunks while `got + size/2 ≤ target`, and gets at least one chunk.
   - Tail shards hold at most `min(safe_procs)` chunks.
-  - Shards are numbered in dispatch order and sent as `X-Shard: i/n:start-end`.
+  - Shards are numbered in plan order (initial blocks first, then the tail) and sent as `X-Shard: i/n:start-end`. The number is not the dispatch order.
 - **Scheduler:** one loop over idle backends. Each takes its initial block, then a retry that failed elsewhere, then a tail shard. A retry that failed on itself is taken only when no other backend is live. A stolen or retried shard first re-reads `/capacity`; when the backend is busy or out of memory, the shard goes back and the backend waits 5 s.
 - **Failure handling:** a `DoclingUnavailable` (deadline) fails at once. Any other error retries once.
 - **Kill switch:** with `DOCLING_SPLIT_ENABLED=0`, `_remote_pdf_convert` never imports the module.
