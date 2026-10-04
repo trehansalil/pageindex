@@ -133,7 +133,9 @@ def _build_sha_mismatch(local_sha: str, remote_sha: str) -> bool:
     return local_sha[:n] != remote_sha[:n]
 
 
-async def _log_capacity_snapshot(client, headers: dict[str, str]) -> None:
+async def _log_capacity_snapshot(
+    client, headers: dict[str, str], *, base_url: str | None = None
+) -> None:
     """RFC-052 R5 AC1/AC8: GET the chosen backend's ``/capacity`` and log it.
 
     Best-effort only: a 404 (older service without the route), a timeout or
@@ -149,7 +151,7 @@ async def _log_capacity_snapshot(client, headers: dict[str, str]) -> None:
     """
     try:
         resp = await client.get(
-            f"{settings.docling_service_url}/capacity",
+            f"{base_url or settings.docling_service_url}/capacity",
             headers=headers,
             timeout=_CAPACITY_TIMEOUT_S,
         )
@@ -217,7 +219,9 @@ _CORRELATION_HEADERS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _correlation_headers(page_count: int | None = None) -> dict[str, str]:
+def _correlation_headers(
+    page_count: int | None = None, *, shard: str | None = None
+) -> dict[str, str]:
     """Correlation headers from the current obs log context (RFC-052 R1 AC6).
 
     A field that is not bound is OMITTED -- never sent as ``"None"`` or ``""``,
@@ -228,7 +232,8 @@ def _correlation_headers(page_count: int | None = None) -> dict[str, str]:
     bounds (the same convention as ``docling_chunk``'s ``page_start`` /
     ``page_end``). Until the capacity split (RFC-052 P3) a document is always
     one shard, so it is ``"1/1:0-<page_count - 1>"``; with no known page count
-    the header is omitted rather than guessed.
+    the header is omitted rather than guessed. A P5 split shard passes its own
+    ``shard`` value (``"<i>/<n>:<start>-<end>"``), which wins.
     """
     from ..obs.context import current_context
 
@@ -238,7 +243,9 @@ def _correlation_headers(page_count: int | None = None) -> dict[str, str]:
         value = ctx.get(field)
         if value is not None and str(value) != "":
             headers[header] = str(value)
-    if isinstance(page_count, int) and not isinstance(page_count, bool) and page_count > 0:
+    if shard:
+        headers["X-Shard"] = shard
+    elif isinstance(page_count, int) and not isinstance(page_count, bool) and page_count > 0:
         headers["X-Shard"] = f"1/1:0-{page_count - 1}"
     return headers
 
@@ -707,6 +714,10 @@ async def _remote_pdf_convert(
     page_end: int | None = None,
     prior_pass: list[dict] | None = None,
     recovery_trigger: str | None = None,
+    base_url: str | None = None,
+    read_timeout_s: float | None = None,
+    shard: str | None = None,
+    hr3_checked: bool = False,
 ) -> RemoteConvertResult:
     """Call the external Docling service to convert a PDF.
 
@@ -732,6 +743,14 @@ async def _remote_pdf_convert(
     ``page_start`` before they are returned. ``prior_pass`` (whole-document
     pages) and ``recovery_trigger`` ride on an HR5 recovery request (R9 AC7)
     and are sent only when given -- ``None`` is omitted, never sent as ``[]``.
+
+    RFC-052 P5: an unsliced call with ``DOCLING_SPLIT_ENABLED=1`` goes to the
+    split coordinator (``client/split.py``) first; it returns ``None`` when no
+    named backend is eligible, and the call then proceeds as before. The
+    coordinator's own calls pass ``base_url`` (a named backend instead of
+    ``docling-active``), ``read_timeout_s`` (what is left of the shared
+    deadline), ``shard`` (the ``X-Shard`` value) and ``hr3_checked`` (the
+    backend already passed the per-backend HR3 eligibility, R5 AC7).
     """
     import base64
 
@@ -739,9 +758,35 @@ async def _remote_pdf_convert(
 
     from ..storage import presigned_get_url
 
-    if settings.pii_corpus:
+    # ``is True``: stand-in settings objects (SimpleNamespace / MagicMock) must
+    # never switch the split on by accident.
+    if (
+        base_url is None
+        and page_start is None
+        and getattr(settings, "docling_split_enabled", False) is True
+    ):
+        from .split import split_convert
+
+        split_res = await split_convert(
+            staging_key,
+            page_count=page_count,
+            page_classes=page_classes,
+            convert_kwargs={
+                "force_full_page_ocr": force_full_page_ocr,
+                "ocr_lang_override": ocr_lang_override,
+                "expected_script": expected_script,
+                "pages_with_tables": pages_with_tables,
+                "prior_pass": prior_pass,
+                "recovery_trigger": recovery_trigger,
+            },
+        )
+        if split_res is not None:
+            return split_res
+
+    service_url = base_url or settings.docling_service_url
+    if settings.pii_corpus and not hr3_checked:
         try:
-            require_zdr_compliance(settings.docling_service_url, "Docling remote PDF conversion")
+            require_zdr_compliance(service_url, "Docling remote PDF conversion")
         except ZDRComplianceError:
             HR3_EGRESS_BLOCKED_TOTAL.labels(path="docling_pdf").inc()
             raise
@@ -766,19 +811,26 @@ async def _remote_pdf_convert(
     # gets killed as converter_timeout instead of ever raising here -- clamp
     # it, and refuse to dial out at all when too little time is left.
     read_s = _effective_read_timeout_s()
+    if read_s is not None and read_timeout_s is not None:
+        read_s = min(read_s, read_timeout_s)
+        if read_s < _MIN_USEFUL_CALL_S:
+            read_s = None
     if read_s is None:
         raise DoclingUnavailable(
             f"not enough time left for a docling call "
             f"(< {_MIN_USEFUL_CALL_S:.0f}s remaining before the child deadline)"
         )
-    headers: dict[str, str] = _correlation_headers(page_count)
+    headers: dict[str, str] = _correlation_headers(page_count, shard=shard)
     _deadline_header(headers, read_s)
     if settings.docling_service_bearer_token:
         headers["Authorization"] = f"Bearer {settings.docling_service_bearer_token}"
     async with httpx.AsyncClient(timeout=_transport_timeout(read_s)) as client:
-        await _check_remote_docling_version(client)
+        if base_url is None:
+            # The one-per-process /version check is docling-active's; a split
+            # shard's build was already matched from its /capacity (R5 AC8).
+            await _check_remote_docling_version(client)
         resp = await client.post(
-            f"{settings.docling_service_url}/convert/pdf",
+            f"{service_url}/convert/pdf",
             json=payload,
             headers=headers,
         )
@@ -790,7 +842,7 @@ async def _remote_pdf_convert(
         capacity_headers: dict[str, str] = {}
         if settings.docling_service_bearer_token:
             capacity_headers["Authorization"] = f"Bearer {settings.docling_service_bearer_token}"
-        await _log_capacity_snapshot(client, capacity_headers)
+        await _log_capacity_snapshot(client, capacity_headers, base_url=service_url)
     shift = page_start if page_start is not None and page_end is not None else 0
     pic_results: list[dict] = []
     for pr in data.get("picture_results", []):
