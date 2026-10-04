@@ -673,10 +673,11 @@ Worker (`config.py` → `client/split.py`). Off by default; the whole document t
 | `DOCLING_SPLIT_BACKENDS` | `mac=http://docling-service-mac:8090,node=http://docling-service:8080` | `name=url` pairs probed through `/capacity`; names match the controller's `docling:backend` targets |
 | `DOCLING_SPLIT_PII_BACKENDS` | `node` | Backends allowed to see a PII document (HR3). Also required: a cluster-internal Service URL, and a name and reported `/capacity` identity that are not `mac` (never allowed, whatever this says) |
 | `DOCLING_SPLIT_MIN_PAGES` | `20` | Below this page count the document is not split |
-| `DOCLING_SPLIT_INITIAL_FRAC` | `0.8` | Share of pages handed out up front; the rest is the stealing tail |
 | `DOCLING_EXPECTED_BUILD_SHA` | empty | Build every shard must come from; empty = the build of the backend docling-active routes to (`docling:backend` target), or, when that target did not answer `/capacity`, the fastest responder's |
 
 Controller (infra `docling-node.sh`): `DOCLING_SPLIT_KEEP_NODE` (default `0`) starts docling-1 beside a healthy Mac when jobs wait.
+
+Scheduling (RFC-052 A-P5-5): the document is cut into page-class chunks targeting 5-20 pages (a page-class boundary can leave a shorter one), about two per slot, in one queue. Each backend keeps up to `min(safe_procs, slice_slots)` chunks in flight and pulls the next as one finishes; at the tail an idle backend also runs a copy of the oldest chunk running elsewhere, first result wins. Chunks share one presigned URL, renewed after 10 minutes. docling-service runs a page range of <= 20 pages as one process on `cpus // DOCLING_SLICE_SLOTS` threads (`plan_slice`), up to `DOCLING_SLICE_SLOTS` at once (default: the processes its total memory and CPUs allow), the chunks holding every whole-conversion slot as a group, and `/capacity` clamps `slice_slots` to what free memory fits; it downloads the PDF once per URL and deletes the copy 120 s after the last chunk.
 
 ### Table capture (RFC-052 P4)
 

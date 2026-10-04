@@ -28,6 +28,7 @@ from collections.abc import Mapping
 
 from pageindex_mcp.converters.docling_resources import (
     MIN_CHUNK_PAGES,
+    SLICE_MAX_PAGES,
     _read,
     available_memory_bytes,
     compute_safe_procs,
@@ -203,8 +204,15 @@ def effective_cpus(platform: str | None = None) -> float:
     return min(cpus, quota) if quota is not None else cpus
 
 
-def capacity_snapshot(
-    *, busy_slots: int, max_slots: int, tracker: SppTracker, backend: str, build_sha: str
+def capacity_snapshot(  # noqa: PLR0913 -- keyword-only, one per /capacity field group
+    *,
+    busy_slots: int,
+    max_slots: int,
+    tracker: SppTracker,
+    backend: str,
+    build_sha: str,
+    slice_slots: int = 0,
+    busy_slice_slots: int = 0,
 ) -> dict:
     """The ``GET /capacity`` body, field for field the design's example.
 
@@ -217,6 +225,12 @@ def capacity_snapshot(
     reserve = reserve_bytes()
     pages = chunk_pages()
     spp, samples = tracker.snapshot()
+    if slice_slots > 0 and free is not None:
+        # A-P5-5: what free memory allows for a full-size slice, plus the
+        # chunks already converting (their memory is out of ``free``), so a
+        # coordinator never admits more slices than fit -- at least one.
+        fit = compute_safe_procs(cpus, free, reserve, SLICE_MAX_PAGES)
+        slice_slots = max(1, min(slice_slots, fit + busy_slice_slots))
     return {
         "backend": backend,
         "build_sha": build_sha,
@@ -229,6 +243,10 @@ def capacity_snapshot(
         "safe_procs": 0 if free is None else compute_safe_procs(cpus, free, reserve, pages),
         "busy_slots": int(busy_slots),
         "max_slots": int(max_slots),
+        # RFC-052 A-P5-5: split chunks this backend runs at once, and how
+        # many it is running. 0/absent: a build without concurrent chunks.
+        "slice_slots": int(slice_slots),
+        "busy_slice_slots": int(busy_slice_slots),
         "spp_ewma": float(spp),
         "spp_samples": int(samples),
     }

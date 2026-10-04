@@ -109,7 +109,19 @@ Infra manifests live in `/root/hetzner-deployment-service` and ship as a compani
   - [x] 11.2 Coordinator: eligibility (HR3, build SHA), proportional initial allocation, tail stealing, per-shard `/capacity` check, the shared deadline, retry and re-route, merge, and join heading-shift count. _R5 AC4, AC6_ `client/split.py` (97e3794); `_remote_pdf_convert` hands unsliced calls to it when `DOCLING_SPLIT_ENABLED=1`.
   - [x] 11.3 HR3: docling-1 eligible for PII documents, the Mac never. Test the eligibility table. _R5 AC7_ `TestSplitCoordinator::test_hr3_eligibility_table_and_build_match`.
   - [x] 11.4 Add a stub-backend integration test for stealing, the deadline, and re-route after a failure. _Test strategy_ `TestSplitCoordinator::test_stub_backends_steal_reroute_and_share_the_deadline` (8a1d13f).
-  - [ ] 11.5 Deploy with `DOCLING_SPLIT_ENABLED=0`. Run a parity check on the pocketbook with split off and on. _R5 AC10, R6_
+  - [x] 11.5 Deploy with `DOCLING_SPLIT_ENABLED=0`. Run a parity check on the pocketbook with split off and on. _R5 AC10, R6_
+    - **Result 2026-10-04: quality PASS, speed FAIL.** Worker and both backends on `d77eb13`.
+      | Arm | Wall time | Verdict | node_count | Join heading shifts |
+      |---|---|---|---|---|
+      | split off (Mac only) | 619 s | PASS | 773 | -- |
+      | split on (Mac + docling-1 cpx62) | 1189 s | PASS | 774 (+0.13%) | 0 |
+    - The split step took 974 s: Mac 237 pages in 2 shards (done ~16:05), docling-1 55 pages in 1 shard (done 16:15:57); 0 retries, 0 reroutes. The Mac sat idle for ~10 min.
+    - **Cause:** docling-service ran the 55-page range as **one process** (`docling plan: workers=1, threads_per_worker=16, pages_per_chunk=55, safe_procs=9`). `_plan_from_total` runs any request of <= `PARALLEL_MIN_PAGES` (60) pages as a single process, and Docling barely scales with threads: ~17.7 s/page. The coordinator also sized docling-1's share from the 40 s/page prior (no samples) and cannot take over an in-flight shard. Fix proposed as A-P5-5.
+    - First attempt blocked: Hetzner retired the datacenter API, so every docling-1 start failed (`jq: invalid JSON text passed to --argjson`). Fixed in infra #22 (`ed23625`): stock now read from `server-type` `locations[].available`.
+    - Unrelated, seen in the same run: 2,440 Azure `AuthenticationError` (invalid subscription key) from the tree-build LLM calls. The tree still passed; needs its own look.
+    - Cleanup: both switches unset, docling-1 deleted, test docs `07a03e14` and `045bc5d2` erased (no errors, no partial purge, no MinIO residue), hash entry restored, kept doc `a3779d3d` untouched.
+  - [x] 11.6 Implement A-P5-5: shared chunk queue with per-backend `chunk_limit`, tail copies, one presigned URL per document (`client/split.py`); `plan_slice`, slice slots held as a group, shared download (docling-service). Tests: `test_docling_capacity_client.py` (pull/limit, copy, build roll, re-route, second failure, deadline), `test_docling_capacity.py` (shared download, HR2 eviction, group slot). _A-P5-5_
+  - [ ] 11.7 Re-run the 11.5 parity check on the A-P5-5 build (pocketbook, split off vs on; verdict, node_count ±3%, wall time below split off). _R6, A-P5-5_
 - [ ] 12. Checkpoint P5: `make test`, open the PR, and get the user's go-ahead before switching on `DOCLING_SPLIT_ENABLED=1`.
 
 ## Notes

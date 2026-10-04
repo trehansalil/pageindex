@@ -176,10 +176,10 @@ class TestLogCapacitySnapshot:
 # ── RFC-052 P5: split coordinator (client/split.py) ───────────────────────────
 
 
-def _cap(safe=4, spp=20.0, busy=0, max_slots=1, sha="abcdef123456", chunk=10):
+def _cap(safe=4, spp=20.0, busy=0, max_slots=1, sha="abcdef123456", chunk=10, slices=0):
     from pageindex_mcp.client.split import Capacity
 
-    return Capacity(sha, safe, busy, max_slots, spp, chunk)
+    return Capacity(sha, safe, busy, max_slots, spp, chunk, slice_slots=slices)
 
 
 @pytest.fixture
@@ -203,7 +203,6 @@ def split_env(monkeypatch):
         docling_split_backends="mac=http://mac:8090,node=http://node:8080",
         docling_split_pii_backends="node",
         docling_split_min_pages=20,
-        docling_split_initial_frac=0.8,
         docling_expected_build_sha="abcdef1",
         docling_service_url="http://docling-active:8090",
         pii_corpus=False,
@@ -216,12 +215,21 @@ def split_env(monkeypatch):
     split_module._absent_until.clear()
 
     env = types.SimpleNamespace(
-        caps={"mac": _cap(safe=12, spp=20.0), "node": _cap(safe=4, spp=40.0)},
+        # Chunks in flight: mac 4 (its slice slots), node 2 -> 6 slots, so a
+        # 300-page document is cut into 15 chunks of 20 pages.
+        caps={
+            "mac": _cap(safe=12, spp=20.0, slices=4),
+            "node": _cap(safe=4, spp=40.0, slices=2),
+        },
         speed={"mac": 0.0001, "node": 0.0001},
         fail={},
         calls=[],
         decisions=[],
         settings=settings,
+        inflight={},
+        peak={},
+        cancelled=[],
+        presigns=0,
     )
     probes: dict[int, int] = {}
 
@@ -234,12 +242,26 @@ def split_env(monkeypatch):
             answer = answer[min(i, len(answer) - 1)]
         return answer
 
+    def fake_presign(key):
+        env.presigns += 1
+        return f"http://minio/{key}?sig={env.presigns}"
+
+    monkeypatch.setattr("pageindex_mcp.storage.presigned_get_url", fake_presign)
+
     async def fake_convert(staging_key, **kw):
         name = {"http://mac:8090": "mac", "http://node:8080": "node"}.get(kw.get("base_url"))
         start, end = kw.get("page_start"), kw.get("page_end")
         env.calls.append({"backend": name, **kw})
         lo, hi = (0, kw["page_count"] - 1) if start is None else (start, end)
-        await asyncio.sleep(env.speed.get(name, 0.0) * (hi - lo + 1))
+        env.inflight[name] = env.inflight.get(name, 0) + 1
+        env.peak[name] = max(env.peak.get(name, 0), env.inflight[name])
+        try:
+            await asyncio.sleep(env.speed.get(name, 0.0) * (hi - lo + 1))
+        except asyncio.CancelledError:
+            env.cancelled.append((name, lo))
+            raise
+        finally:
+            env.inflight[name] -= 1
         pending = env.fail.get((name, lo))
         if pending:
             raise pending.pop(0)
@@ -346,48 +368,29 @@ class TestSplitCoordinator:
         assert choices == {"mac": "hr3_blocked", "node": "eligible"}
         assert _outcome(split_env)[0] == "single_backend"
 
-    def test_plan_partitions_the_document_on_chunk_boundaries(self):
-        """Property P1 (coverage) plus the proportional initial split (R5 AC4)."""
+    def test_chunks_partition_the_document(self):
+        """Property P1 (coverage) and the A-P5-5 chunk size: about two chunks
+        per slot, within [5, SLICE_MAX_PAGES]."""
         from hypothesis import given, settings
         from hypothesis import strategies as st
 
-        from pageindex_mcp.client.split import join_heading_shifts, plan_split
+        from pageindex_mcp.client.split import doc_chunks, join_heading_shifts, split_chunk_pages
 
-        # Worked example: mac rate 0.6, node 0.1 -> 80% of 300 split 6:1.
-        chunks = [(s, s + 9) for s in range(0, 300, 10)]
-        caps = {"mac": _cap(safe=12, spp=20.0), "node": _cap(safe=4, spp=40.0)}
-        initial, tail = plan_split(chunks, caps, initial_frac=0.8)
-        assert (initial["mac"].start, initial["mac"].end) == (0, 209)
-        assert (initial["node"].start, initial["node"].end) == (210, 239)
-        assert [(t.start, t.end) for t in tail] == [(240, 279), (280, 299)]
+        # The 11.5 pocketbook over Mac 12 + docling-1 16 slots: 6-page chunks.
+        assert split_chunk_pages(292, 28) == 6
+        assert split_chunk_pages(300, 6) == 20  # few slots: capped
+        assert split_chunk_pages(30, 28) == 5  # many slots: floored
 
         @settings(max_examples=150, deadline=None)
-        @given(
-            sizes=st.lists(st.integers(1, 60), min_size=1, max_size=40),
-            procs=st.lists(st.integers(1, 16), min_size=1, max_size=3),
-            spps=st.lists(st.floats(1.0, 100.0), min_size=3, max_size=3),
-            frac=st.floats(0.0, 1.0),
-        )
-        def prop(sizes, procs, spps, frac):
-            bounds, s = [], 0
-            for n in sizes:
-                bounds.append((s, s + n - 1))
-                s += n
-            caps = {f"b{i}": _cap(safe=p, spp=spps[i]) for i, p in enumerate(procs)}
-            initial, tail = plan_split(bounds, caps, initial_frac=frac)
-            shards = sorted([*initial.values(), *tail], key=lambda x: x.start)
-            assert shards[0].start == 0 and shards[-1].end == s - 1
-            for a, b in itertools.pairwise(shards):
-                assert b.start == a.end + 1
-            starts = {lo for lo, _ in bounds}
-            ends = {hi for _, hi in bounds}
-            assert all(x.start in starts and x.end in ends for x in shards)
-            assert sorted(x.index for x in shards) == list(range(len(shards)))
-            fastest = min(caps, key=lambda n: (-caps[n].rate, n))  # ties: by name
-            assert initial[fastest].start == 0
-            per_tail = min(procs)
-            for t in tail:
-                assert sum(1 for lo, _ in bounds if t.start <= lo <= t.end) <= per_tail
+        @given(page_count=st.integers(1, 600), slots=st.integers(1, 40))
+        def prop(page_count, slots):
+            size = split_chunk_pages(page_count, slots)
+            assert 5 <= size <= 20
+            chunks = doc_chunks(page_count, None, size)
+            assert chunks[0][0] == 0 and chunks[-1][1] == page_count - 1
+            for (_, a_end), (b_start, _) in itertools.pairwise(chunks):
+                assert b_start == a_end + 1
+            assert all(hi - lo + 1 <= size for lo, hi in chunks)
 
         prop()
 
@@ -395,96 +398,146 @@ class TestSplitCoordinator:
         assert join_heading_shifts(["# A\n## B", "#### C", "", "## D"]) == 1
         assert join_heading_shifts(["# A", "## B", "# C"]) == 0
 
-    def test_stub_backends_steal_reroute_and_share_the_deadline(self, split_env):
-        """11.4: tail stealing, busy backends, retry/re-route, the second
-        failure, and the shared deadline, against stub backends."""
+    def test_stub_backends_pull_copy_reroute_and_share_the_deadline(self, split_env, monkeypatch):
+        """A-P5-5 against stub backends: pulling from one queue up to each
+        backend's chunk limit, copying the tail, a build roll, retry/re-route,
+        the second failure and the shared deadline."""
+        import time
+
         import httpx
 
         from pageindex_mcp.client.remote import DoclingUnavailable
 
-        # 1. Stealing: docling-1 is 100x slower, so the Mac takes every tail
-        #    shard after its own block; the merge is complete and in order.
-        split_env.speed = {"mac": 0.0001, "node": 0.01}
+        starts = range(0, 300, 20)
+        # 1. Pull: docling-1 is 10x slower, so the Mac converts most chunks;
+        #    neither ever runs more than its limit; the merge is complete and
+        #    in order; every chunk shares one presigned URL (one download per
+        #    backend).
+        split_env.speed = {"mac": 0.0001, "node": 0.001}
         res = _run_split(split_env)
-        assert res.markdown == "# p0-209\n\n# p210-239\n\n# p240-279\n\n# p280-299"
-        assert [p["page"] for p in res.pictures] == [1, 211, 241, 281]
-        assert [c["backend"] for c in split_env.calls if c["page_start"] >= 240] == ["mac", "mac"]
-        assert {c["shard"] for c in split_env.calls} == {
-            "1/4:0-209",
-            "2/4:210-239",
-            "3/4:240-279",
-            "4/4:280-299",
-        }
-        choice, attrs = _outcome(split_env)
-        assert choice == "split" and attrs["pages_by_backend"] == "mac:270,node:30"
-        # Every shard's read timeout comes out of the one shared budget.
+        assert res.markdown == "\n\n".join(f"# p{s}-{s + 19}" for s in starts)
+        assert [p["page"] for p in res.pictures] == [s + 1 for s in starts]
+        assert split_env.peak == {"mac": 4, "node": 2}
+        assert {c["presigned_url"] for c in split_env.calls} == {"http://minio/key?sig=1"}
         assert all(0 < c["read_timeout_s"] <= 30.0 for c in split_env.calls)
+        choice, attrs = _outcome(split_env)
+        assert choice == "split" and (attrs["shard_count"], attrs["chunk_pages"]) == (15, 20)
+        assert attrs["slots_by_backend"] == "mac:4,node:2"
+        mac_pages = int(attrs["pages_by_backend"].split(",")[0].removeprefix("mac:"))
+        assert mac_pages > 150
 
-        # 2. Busy: docling-1 reports a full slot on the per-shard check, so no
-        #    tail shard is queued behind it (R5 AC6), even though it is fast.
+        # 2. Tail copy: docling-1's two chunks would take 1 s each; the idle
+        #    Mac copies both, wins, and docling-1's calls are cancelled.
         split_env.calls.clear()
-        split_env.speed = {"mac": 0.002, "node": 0.0}
-        split_env.caps["node"] = [_cap(safe=4, spp=40.0), _cap(safe=4, spp=40.0, busy=1)]
+        split_env.cancelled.clear()
+        split_env.speed = {"mac": 0.0001, "node": 0.05}
+        t0 = time.monotonic()
         _run_split(split_env)
-        assert [c["backend"] for c in split_env.calls if c["page_start"] >= 240] == ["mac", "mac"]
+        assert time.monotonic() - t0 < 0.8
+        choice, attrs = _outcome(split_env)
+        assert (attrs["copies"], attrs["copy_wins"]) == (2, 2)
+        assert attrs["pages_by_backend"] == "mac:300"
+        assert sorted(split_env.cancelled) == [("node", 80), ("node", 100)]
 
-        # 2b. A backend that rolled to another build between probes leaves the
-        #     split: no tail shard of this document comes from the new build.
+        # 3. An older build without slice slots gets one chunk at a time.
         split_env.calls.clear()
-        split_env.caps["node"] = [_cap(safe=4, spp=40.0), _cap(safe=4, spp=40.0, sha="0000000aaaa")]
-        _run_split(split_env)
-        assert [c["backend"] for c in split_env.calls if c["page_start"] >= 240] == ["mac", "mac"]
-
-        # 2c. A retry stays off the backend it failed on, even while the
-        #     other backend is briefly busy: the Mac's first per-shard probe
-        #     says busy, docling-1 is free, and the retry still waits for the Mac.
-        split_env.calls.clear()
-        split_env.speed = {"mac": 0.002, "node": 0.0}
-        split_env.caps = {
-            "mac": [_cap(safe=12, spp=20.0), _cap(safe=12, spp=20.0, busy=1), _cap(safe=12)],
-            "node": _cap(safe=4, spp=40.0),
-        }
-        split_env.fail = {("node", 210): [httpx.ReadTimeout("slow")]}
-        checks_before = split_env.version_checks
-        _run_split(split_env)
-        assert [c["backend"] for c in split_env.calls if c["page_start"] == 210] == ["node", "mac"]
-        # The pipeline-version gate runs for this split too.
-        assert split_env.version_checks == checks_before + 1
-
-        # 3. Re-route: docling-1's block times out once and is retried on the Mac.
-        split_env.calls.clear()
-        split_env.speed = {"mac": 0.0, "node": 0.0}
+        split_env.peak.clear()
+        split_env.speed = {"mac": 0.0001, "node": 0.0001}
         split_env.caps["node"] = _cap(safe=4, spp=40.0)
-        split_env.fail = {("node", 210): [httpx.ReadTimeout("slow")]}
+        _run_split(split_env)
+        assert split_env.peak["node"] == 1
+
+        # 4. A backend that rolled to another build leaves the split before
+        #    it may copy: the Mac is slow, docling-1 drains the queue, then
+        #    its probe before the copy shows a new build.
+        split_env.calls.clear()
+        split_env.speed = {"mac": 0.01, "node": 0.0}
+        split_env.caps["node"] = [
+            _cap(safe=4, spp=40.0, slices=2),
+            _cap(safe=4, spp=40.0, slices=2, sha="0000000aaaa"),
+        ]
+        _run_split(split_env)
+        choice, attrs = _outcome(split_env)
+        assert attrs["copies"] == 0
+        assert len({c["page_start"] for c in split_env.calls}) == len(split_env.calls) == 15
+
+        # 5. Re-route: docling-1's first chunk fails once; the retry goes to
+        #    the Mac, never back to docling-1 while the Mac is live.
+        split_env.calls.clear()
+        split_env.speed = {"mac": 0.0001, "node": 0.0}
+        split_env.caps["node"] = _cap(safe=4, spp=40.0, slices=2)
+        split_env.fail = {("node", 80): [httpx.ReadTimeout("slow")]}
+        checks_before = split_env.version_checks
         res = _run_split(split_env)
-        assert "# p210-239" in res.markdown
-        assert [c["backend"] for c in split_env.calls if c["page_start"] == 210] == ["node", "mac"]
+        assert "# p80-99" in res.markdown
+        at_80 = [c["backend"] for c in split_env.calls if c["page_start"] == 80]
+        assert at_80[:2] == ["node", "mac"]
         choice, attrs = _outcome(split_env)
         assert (choice, attrs["retries"], attrs["reroutes"]) == ("split", 1, 1)
+        assert split_env.version_checks == checks_before + 1  # the version gate runs
 
-        # 4. A second failure fails the conversion with the shard's own error.
+        # 6. A chunk that fails everywhere fails the conversion with its own
+        #    error after one retry.
         split_env.calls.clear()
         split_env.fail = {
-            ("node", 210): [httpx.ReadTimeout("slow")],
-            ("mac", 210): [httpx.ReadTimeout("slow")],
+            ("node", 80): [httpx.ReadTimeout("slow")] * 5,
+            ("mac", 80): [httpx.ReadTimeout("slow")] * 5,
         }
         with pytest.raises(httpx.ReadTimeout):
             _run_split(split_env)
         choice, attrs = _outcome(split_env)
         assert (choice, attrs["error_class"]) == ("failed", "ReadTimeout")
 
-        # 5. Shared deadline: the blocks use up the budget, so the next shard
-        #    is refused with DoclingUnavailable instead of being dispatched.
+        # 7. Shared deadline, on a fake clock that only moves when a chunk
+        #    finishes (1 s each): the first wave starts with the full 2 s and
+        #    leaves < 1.7 s, so no further chunk -- nor any tail copy -- is
+        #    dispatched.
+        import types
+
+        from pageindex_mcp.client import split as split_mod
+
+        clock = [0.0]
+        monkeypatch.setattr(split_mod, "time", types.SimpleNamespace(monotonic=lambda: clock[0]))
+        convert = remote_module._remote_pdf_convert
+
+        async def ticking(*args, **kwargs):
+            try:
+                return await convert(*args, **kwargs)
+            finally:
+                clock[0] += 1.0
+
+        monkeypatch.setattr(remote_module, "_remote_pdf_convert", ticking)
         split_env.calls.clear()
         split_env.fail = {}
-        # Both blocks end with < 0.25 s of the 0.3 s budget left (mac 0.21 s,
-        # node 0.09 s), so neither may steal.
-        split_env.speed = {"mac": 0.001, "node": 0.003}
-        remote_module._effective_read_timeout_s = lambda: 0.3
-        remote_module._MIN_USEFUL_CALL_S = 0.25
+        split_env.speed = {"mac": 0.0001, "node": 0.0001}
+        remote_module._effective_read_timeout_s = lambda: 2.0
+        remote_module._MIN_USEFUL_CALL_S = 1.7
         with pytest.raises(DoclingUnavailable):
             _run_split(split_env)
-        assert not any(c["page_start"] >= 240 for c in split_env.calls)
+        assert len(split_env.calls) == 6
+
+        # 8. No late tail copy: a 30-page document fills the first wave, so
+        #    the queue is empty from the start. Once the Mac finishes a chunk
+        #    under 1.7 s of budget remain, so it does not copy docling-1's
+        #    slow chunks, and they still finish the split.
+        clock[0] = 0.0
+
+        async def mac_done_late(*args, **kwargs):
+            try:
+                return await convert(*args, **kwargs)
+            finally:
+                if kwargs.get("base_url") == "http://mac:8090":
+                    clock[0] = 29.0
+
+        monkeypatch.setattr(remote_module, "_remote_pdf_convert", mac_done_late)
+        split_env.calls.clear()
+        split_env.cancelled.clear()
+        split_env.speed = {"mac": 0.0001, "node": 0.05}
+        remote_module._effective_read_timeout_s = lambda: 30.0
+        _run_split(split_env, page_count=30)
+        choice, attrs = _outcome(split_env)
+        assert (choice, attrs["shard_count"], attrs["copies"]) == ("split", 6, 0)
+        assert split_env.cancelled == [] and attrs["pages_by_backend"] == "mac:20,node:10"
 
     def test_kill_switch_fallback_and_build_skew(self, split_env):
         """R5 AC10 / property P5, R5 AC8."""

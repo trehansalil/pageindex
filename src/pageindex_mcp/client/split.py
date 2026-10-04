@@ -12,14 +12,18 @@ Flow (design "Allocation" / "Failure, deadline and merge"):
    (R5 AC8), ``safe_procs >= 1`` and it has a free slot.
 2. No eligible backend: fall back to today's path. One: the whole document,
    unsliced, to that backend. Two or more: split.
-3. Split: R3 page-class chunks; each backend gets a contiguous initial block
-   in proportion to ``rate = safe_procs / spp_ewma``, covering
-   ``DOCLING_SPLIT_INITIAL_FRAC`` of the pages, the fastest at the front. The
-   rest is cut into tail shards that idle backends pull (tail stealing).
-4. One shared deadline for all shards. A failed shard is retried once, on
+3. Split (A-P5-5): the document is cut into small chunks, page-class aligned,
+   about two per slot, in one shared queue. Each backend keeps up to
+   ``chunk_limit`` chunks in flight (its slice slots, capped by
+   ``safe_procs``) and takes the next chunk when one finishes, so measured
+   speed, not a prior, decides who converts what. Once the queue is empty an
+   idle backend also runs a copy of the oldest chunk still running elsewhere;
+   the first result wins and the other is cancelled. Every chunk shares one
+   presigned URL, so each backend downloads the PDF once.
+4. One shared deadline for all chunks. A failed chunk is retried once, on
    another backend when one is live; a second failure fails the conversion
-   with the shard's own exception, so the worker's retry policy is unchanged.
-5. Merge by ``page_start`` and count heading jumps at shard joins (R6 AC2).
+   with the chunk's own exception, so the worker's retry policy is unchanged.
+5. Merge in page order and count heading jumps at chunk joins (R6 AC2).
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import math
 import re
 import time
 
@@ -39,9 +44,13 @@ logger = logging.getLogger(__name__)
 # "a backend that refuses connections is marked absent (cached 60 s)").
 _ABSENT_TTL_S = 60.0
 _CAPACITY_TIMEOUT_S = 2.0
-# How long a backend waits before re-reading /capacity after it reported
-# itself busy or out of memory for a tail shard; also the scheduler's tick.
+# The scheduler's tick while nothing it waits on has finished.
 _BUSY_POLL_S = 5.0
+# Smallest split chunk. Each chunk is one process on a share of the cores, so
+# its model load (~5-10 s) is small against even 5 pages at ~10-20 s each.
+_MIN_SPLIT_CHUNK_PAGES = 5
+# Presigned URLs live 15 min (storage.presigned_get_url); renew well before.
+_PRESIGN_REFRESH_S = 600.0
 # HR3 (R5 AC7, NG6): the Mac is never eligible for a PII document, whatever
 # DOCLING_SPLIT_PII_BACKENDS says.
 _NEVER_PII = frozenset({"mac"})
@@ -70,6 +79,9 @@ class Capacity:
     # the HR3 check uses it so a Mac configured under another alias is
     # still recognised as the Mac.
     backend: str = ""
+    # A-P5-5: split chunks the service runs at once; 0 for a build that runs
+    # one request at a time.
+    slice_slots: int = 0
 
     @classmethod
     def from_snapshot(cls, snap: dict) -> Capacity:
@@ -88,7 +100,16 @@ class Capacity:
             spp_ewma=spp if spp > 0 else _DEFAULT_SPP,
             chunk_pages=max(1, _num("chunk_pages", 10, int)),
             backend=str(snap.get("backend") or ""),
+            slice_slots=max(0, _num("slice_slots", 0, int)),
         )
+
+    @property
+    def chunk_limit(self) -> int:
+        """Chunks to keep in flight on this backend: its slice slots, capped by
+        the processes its free memory allows; 1 for an older build."""
+        if self.slice_slots < 1:
+            return 1
+        return max(1, min(self.safe_procs, self.slice_slots))
 
     @property
     def rate(self) -> float:
@@ -98,10 +119,6 @@ class Capacity:
     @property
     def has_free_slot(self) -> bool:
         return self.busy_slots < self.max_slots
-
-    @property
-    def accepts_work(self) -> bool:
-        return self.safe_procs >= 1 and self.has_free_slot
 
 
 @dataclasses.dataclass(frozen=True)
@@ -175,14 +192,14 @@ def build_matches(expected: str, actual: str) -> bool:
 def doc_chunks(
     page_count: int, page_classes: list | None, chunk_pages: int
 ) -> list[tuple[int, int]]:
-    """R3 chunk boundaries for the whole document, ``(start, end)`` inclusive.
+    """A split's chunks, ``(start, end)`` inclusive, at most ``chunk_pages`` each.
 
-    Shards are cut only at these boundaries, so a split adds no join the
-    service would not make anyway (risk table: RFC-027 D7). Without usable
-    page classes the chunks are uniform ``chunk_pages`` runs.
+    With usable page classes they are R3 page-class chunks (needs-uniform, so
+    each chunk keeps its own OCR/TableFormer choice); without, uniform
+    ``chunk_pages`` runs. Each chunk is one request and one process (A-P5-5).
     """
     from ..converters.docling_conv import _page_classes_active
-    from ..converters.docling_resources import MAX_CHUNK_PAGES, MIN_CHUNK_PAGES
+    from ..converters.docling_resources import MIN_CHUNK_PAGES
     from ..converters.page_class_chunker import page_class_chunks
     from ..converters.preclassify import page_classes_from_ranges
 
@@ -195,56 +212,24 @@ def doc_chunks(
         return [
             (c.start, c.end)
             for c in page_class_chunks(
-                classes, max_pages=MAX_CHUNK_PAGES, min_pages=MIN_CHUNK_PAGES
+                classes,
+                max_pages=max(1, chunk_pages),
+                min_pages=min(MIN_CHUNK_PAGES, max(1, chunk_pages)),
             )
         ]
     step = max(1, chunk_pages)
     return [(s, min(s + step, page_count) - 1) for s in range(0, page_count, step)]
 
 
-def plan_split(
-    chunks: list[tuple[int, int]],
-    caps: dict[str, Capacity],
-    *,
-    initial_frac: float,
-) -> tuple[dict[str, Shard], list[Shard]]:
-    """Initial contiguous block per backend plus the tail shards (pure).
+def split_chunk_pages(page_count: int, total_slots: int) -> int:
+    """Pages per chunk: about two chunks per slot across the backends, so a
+    fast backend keeps pulling work while a slow one finishes its last chunk,
+    within ``[_MIN_SPLIT_CHUNK_PAGES, SLICE_MAX_PAGES]`` (the service runs a
+    larger range as a whole PDF)."""
+    from ..converters.docling_resources import SLICE_MAX_PAGES
 
-    Backends are ordered by rate, fastest first, and take consecutive blocks
-    from the front of the document, each sized ``initial_frac * N * rate /
-    sum(rate)`` and snapped to chunk boundaries. Every backend gets at least
-    one chunk while chunks remain. A tail shard holds at most
-    ``min(safe_procs)`` chunks, so any backend fills its processes in one wave.
-    """
-    if not chunks or not caps:
-        return {}, []
-    order = sorted(caps, key=lambda n: (-caps[n].rate, n))
-    total_rate = sum(caps[n].rate for n in order) or 1.0
-    n_pages = chunks[-1][1] - chunks[0][0] + 1
-    initial: dict[str, Shard] = {}
-    idx = 0
-    for name in order:
-        if idx >= len(chunks):
-            break
-        target = initial_frac * n_pages * caps[name].rate / total_rate
-        got = 0
-        first = idx
-        while idx < len(chunks):
-            size = chunks[idx][1] - chunks[idx][0] + 1
-            # Take a chunk while that keeps us nearer the target; always take
-            # one so every eligible backend starts at once.
-            if idx > first and got + size / 2 > target:
-                break
-            got += size
-            idx += 1
-        initial[name] = Shard(len(initial), chunks[first][0], chunks[idx - 1][1])
-    per_tail = max(1, min(caps[n].safe_procs for n in order))
-    tail: list[Shard] = []
-    while idx < len(chunks):
-        last = min(idx + per_tail, len(chunks)) - 1
-        tail.append(Shard(len(initial) + len(tail), chunks[idx][0], chunks[last][1]))
-        idx = last + 1
-    return initial, tail
+    target = math.ceil(page_count / max(1, 2 * total_slots))
+    return max(_MIN_SPLIT_CHUNK_PAGES, min(SLICE_MAX_PAGES, target))
 
 
 def join_heading_shifts(markdowns: list[str]) -> int:
@@ -440,30 +425,40 @@ async def split_convert(
         _emit("single_backend", shard_count=1, pages_by_backend=f"{backend.name}:{page_count}")
         return res
 
-    caps = {n: c for n, (_, c) in eligible.items()}
-    chunks = doc_chunks(page_count, page_classes, min(c.chunk_pages for c in caps.values()))
-    initial, tail = plan_split(chunks, caps, initial_frac=settings.docling_split_initial_frac)
-    n_shards = len(initial) + len(tail)
+    from ..storage import presigned_get_url
 
-    first_dispatch = dict(initial)
-    queue: list[Shard] = list(tail)
-    # (shard, attempts so far, backend it last failed on)
-    retry: list[tuple[Shard, int, str]] = []
-    attempts: dict[int, int] = {}
-    results = []
+    caps = {n: c for n, (_, c) in eligible.items()}
+    limit = {n: c.chunk_limit for n, c in caps.items()}
+    size = split_chunk_pages(page_count, sum(limit.values()))
+    shards = [Shard(i, s, e) for i, (s, e) in enumerate(doc_chunks(page_count, page_classes, size))]
+    n_shards = len(shards)
+
+    queue: list[int] = list(range(n_shards))  # chunk indexes not started yet
+    retry: list[tuple[int, str]] = []  # (chunk index, backend it failed on)
+    failures: dict[int, int] = {}
+    results: dict[int, object] = {}
+    # Insertion order is dispatch order: the first entry is the oldest chunk.
+    running: dict[asyncio.Future, tuple[str, int, str]] = {}  # (backend, index, kind)
+    copied: set[int] = set()
     pages_by: dict[str, int] = {}
     shards_by: dict[str, int] = {}
-    retries = 0
-    reroutes = 0
+    counts = {"retries": 0, "reroutes": 0, "copies": 0, "copy_wins": 0}
     live = set(eligible)
-    idle_until: dict[str, float] = {}
-    inflight: dict[asyncio.Future, tuple[str, Shard]] = {}
+    # One presigned URL for every chunk, so each backend downloads the PDF
+    # once (the service caches by URL); renewed before it can expire.
+    presigned = [presigned_get_url(staging_key), time.monotonic()]
 
-    async def _run(name: str, shard: Shard):
+    def _url() -> str:
+        if time.monotonic() - presigned[1] > _PRESIGN_REFRESH_S:
+            presigned[:] = [presigned_get_url(staging_key), time.monotonic()]
+        return presigned[0]
+
+    async def _run(name: str, idx: int):
+        shard = shards[idx]
         remaining = deadline - time.monotonic()
         if remaining < _MIN_USEFUL_CALL_S:
             raise DoclingUnavailable(
-                f"split deadline: {remaining:.0f}s left for shard {shard.index + 1}/{n_shards}"
+                f"split deadline: {remaining:.0f}s left for chunk {idx + 1}/{n_shards}"
             )
         return await _remote_pdf_convert(
             staging_key,
@@ -473,137 +468,156 @@ async def split_convert(
             page_end=shard.end,
             base_url=eligible[name][0].url,
             read_timeout_s=remaining,
-            shard=f"{shard.index + 1}/{n_shards}:{shard.start}-{shard.end}",
+            shard=f"{idx + 1}/{n_shards}:{shard.start}-{shard.end}",
             hr3_checked=True,
+            presigned_url=_url(),
             **convert_kwargs,
         )
 
-    def _next_for(name: str) -> tuple[Shard, int, bool, str] | None:
-        """``name``'s next shard as ``(shard, attempts, is_initial, failed_on)``:
-        its initial block, then a retry that failed elsewhere, then a tail
-        shard, then -- only when no other backend is live -- a retry that
-        failed on ``name`` itself."""
-        if name in first_dispatch:
-            return first_dispatch.pop(name), 0, True, ""
-        for i, (shard, n, failed_on) in enumerate(retry):
+    def _pick(name: str) -> tuple[int, str, str] | None:
+        """``name``'s next chunk as ``(index, kind, failed_on)``: a retry that
+        failed elsewhere, then the queue, then -- only when no other backend
+        is live -- a retry that failed on ``name`` itself, then a copy of the
+        oldest chunk still running on another backend (the tail)."""
+        for i, (idx, failed_on) in enumerate(retry):
             if failed_on != name:
                 retry.pop(i)
-                return shard, n, False, failed_on
+                return idx, "retry", failed_on
         if queue:
-            return queue.pop(0), 0, False, ""
-        if not any(b != name for b in live):
-            for i, (shard, n, failed_on) in enumerate(retry):
-                retry.pop(i)
-                return shard, n, False, failed_on
+            return queue.pop(0), "new", ""
+        if retry and not any(b != name for b in live):
+            idx, failed_on = retry.pop(0)
+            return idx, "retry", failed_on
+        if deadline - time.monotonic() < _MIN_USEFUL_CALL_S:
+            return None  # too late for a copy to be useful
+        for other, idx, _ in running.values():
+            if other != name and idx not in copied and idx not in results:
+                copied.add(idx)
+                return idx, "copy", ""
         return None
 
     async def _still_accepts(name: str) -> bool:
-        """Per-shard check before a stolen or retried shard (design). A
-        backend that stopped answering, or now runs a different build than the
-        rest of this document's shards (a restart or rollout between probes),
-        leaves the split for good."""
+        """Checked before a retried or copied chunk (design). A backend that
+        stopped answering, or now runs a different build than the rest of this
+        document's chunks (a restart or rollout between probes), leaves the
+        split for good. Its own chunks make it look busy, so busy is not
+        checked here."""
         async with httpx.AsyncClient(timeout=_CAPACITY_TIMEOUT_S) as client:
             cap = await _fetch_capacity(client, eligible[name][0])
-        if cap is None:
-            live.discard(name)
-            return False
-        if not build_matches(expected_sha, cap.build_sha):
+        if cap is not None and build_matches(expected_sha, cap.build_sha):
+            return True
+        if cap is not None:
             logger.warning(
                 "split: dropping backend %s mid-document: build_sha %s != expected %s",
                 name,
                 cap.build_sha,
                 expected_sha,
             )
-            live.discard(name)
-            return False
-        return cap.accepts_work
+        live.discard(name)
+        return False
+
+    def _dispatch_order() -> list[str]:
+        return sorted(live, key=lambda n: (-caps[n].rate, n))
 
     last_error: BaseException | None = None
     try:
-        while first_dispatch or queue or retry or inflight:
-            busy = {n for n, _ in inflight.values()}
-            for name in sorted(live - busy):
-                if idle_until.get(name, 0.0) > time.monotonic():
-                    continue
-                item = _next_for(name)
-                if item is None:
-                    continue
-                shard, n, is_initial, failed_on = item
-                if not is_initial and not await _still_accepts(name):
-                    # Not queued behind a busy backend (R5 AC6): put it back,
-                    # still marked with the backend it failed on, so the retry
-                    # keeps preferring another backend.
-                    if n:
-                        retry.insert(0, (shard, n, failed_on))
-                    else:
-                        queue.insert(0, shard)
-                    idle_until[name] = time.monotonic() + _BUSY_POLL_S
-                    continue
-                attempts[shard.index] = n + 1
-                inflight[asyncio.ensure_future(_run(name, shard))] = (name, shard)
-            if not inflight:
+        while len(results) < n_shards:
+            for name in _dispatch_order():
+                while (
+                    name in live
+                    and sum(1 for b, _, _ in running.values() if b == name) < limit[name]
+                ):
+                    item = _pick(name)
+                    if item is None:
+                        break
+                    idx, kind, failed_on = item
+                    if kind != "new" and not await _still_accepts(name):
+                        if kind == "retry":
+                            retry.insert(0, (idx, failed_on))
+                        else:
+                            copied.discard(idx)
+                        break
+                    if kind == "copy":
+                        counts["copies"] += 1
+                    running[asyncio.ensure_future(_run(name, idx))] = (name, idx, kind)
+            if not running:
                 if not live:
                     raise last_error or DoclingUnavailable("split: no live backend left")
                 if time.monotonic() >= deadline:
                     raise last_error or DoclingUnavailable(
-                        "split: deadline with shards undispatched"
+                        "split: deadline with chunks undispatched"
                     )
                 await asyncio.sleep(_BUSY_POLL_S)
                 continue
             done, _ = await asyncio.wait(
-                inflight, timeout=_BUSY_POLL_S, return_when=asyncio.FIRST_COMPLETED
+                running, timeout=_BUSY_POLL_S, return_when=asyncio.FIRST_COMPLETED
             )
             for fut in done:
-                name, shard = inflight.pop(fut)
+                name, idx, kind = running.pop(fut)
+                if fut.cancelled() or idx in results:
+                    continue  # the other copy already won
                 exc = fut.exception()
                 if exc is None:
-                    results.append(fut.result())
-                    pages_by[name] = pages_by.get(name, 0) + shard.pages
+                    results[idx] = fut.result()
+                    pages_by[name] = pages_by.get(name, 0) + shards[idx].pages
                     shards_by[name] = shards_by.get(name, 0) + 1
+                    if kind == "copy":
+                        counts["copy_wins"] += 1
+                    for other_fut, (_, j, _) in running.items():
+                        if j == idx:
+                            other_fut.cancel()  # the client disconnect cancels it remotely
                     continue
                 last_error = exc
                 if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
                     _mark_absent(eligible[name][0].url)
                     live.discard(name)
-                if attempts[shard.index] >= 2 or isinstance(exc, DoclingUnavailable):
+                if any(j == idx for _, j, _ in running.values()):
+                    continue  # its other copy may still finish
+                if isinstance(exc, DoclingUnavailable):
                     raise exc
-                retries += 1
+                failures[idx] = failures.get(idx, 0) + 1
+                if failures[idx] >= 2:
+                    raise exc
+                counts["retries"] += 1
                 if any(b != name for b in live):
-                    reroutes += 1
+                    counts["reroutes"] += 1
                 logger.warning(
-                    "split: shard %d/%d (pages %d-%d) failed on %s (%s); retrying once",
-                    shard.index + 1,
+                    "split: chunk %d/%d (pages %d-%d) failed on %s (%s); retrying once",
+                    idx + 1,
                     n_shards,
-                    shard.start,
-                    shard.end,
+                    shards[idx].start,
+                    shards[idx].end,
                     name,
                     type(exc).__name__,
                 )
-                retry.append((shard, attempts[shard.index], name))
+                retry.append((idx, name))
     except BaseException as e:
-        for fut in inflight:
-            fut.cancel()
-        if inflight:
-            await asyncio.gather(*inflight, return_exceptions=True)
         _emit(
             "failed",
             shard_count=n_shards,
+            chunk_pages=size,
+            slots_by_backend=_fmt_counts(limit),
             pages_by_backend=_fmt_counts(pages_by),
             shards_by_backend=_fmt_counts(shards_by),
-            retries=retries,
-            reroutes=reroutes,
             error_class=type(e).__name__,
+            **counts,
         )
         raise
+    finally:
+        for fut in running:
+            fut.cancel()
+        if running:
+            await asyncio.gather(*running, return_exceptions=True)
 
-    ordered = sorted(results, key=lambda r: r.page_start)
+    ordered = [results[i] for i in range(n_shards)]
     _emit(
         "split",
         shard_count=n_shards,
+        chunk_pages=size,
+        slots_by_backend=_fmt_counts(limit),
         pages_by_backend=_fmt_counts(pages_by),
         shards_by_backend=_fmt_counts(shards_by),
-        retries=retries,
-        reroutes=reroutes,
         split_join_heading_shifts=join_heading_shifts([r.markdown for r in ordered]),
+        **counts,
     )
-    return merge_convert_results(results)
+    return merge_convert_results(ordered)
