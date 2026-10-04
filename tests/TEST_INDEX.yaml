@@ -67,6 +67,11 @@ mappings:
       - test_garble.py
       - test_integration.py          # RFC-043 D1: e2e zero-content recovery
 
+  client/split.py:
+    coverage_threshold: 90
+    tests:
+      - test_docling_capacity_client.py   # RFC-052 P5 split coordinator
+
   client/remote.py:
     coverage_threshold: 90
     tests:

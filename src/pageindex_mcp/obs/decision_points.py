@@ -129,6 +129,7 @@ _S_DOCUMENTS = "pageindex_mcp.storage.documents"
 _W_SUBPROC = "pageindex_mcp.worker.subprocess_mgr"
 _W_JOB = "pageindex_mcp.worker.job"
 _C_REMOTE = "pageindex_mcp.client.remote"
+_C_SPLIT = "pageindex_mcp.client.split"
 _T_SEARCH_VIEW = "pageindex_mcp.tables.search_view"
 
 
@@ -2052,6 +2053,49 @@ _REMOTE_POINTS: tuple[DecisionPoint, ...] = (
         "numbers and the backend/build_sha identifiers; never document content "
         "(HR3). The build-skew WARNING (R5 AC8) is a plain logger.warning, not "
         "a decision record, deduped per (backend, service_sha) per process.",
+    ),
+    _p(
+        event="docling_split_backend",
+        phase=Phase.CONVERT,
+        module=_C_SPLIT,
+        function="_eligible_backends",
+        choices=("eligible", "unreachable", "hr3_blocked", "build_skew", "no_capacity", "busy"),
+        attrs=(
+            "backend",
+            "build_sha",
+            "expected_sha",
+            "safe_procs",
+            "busy_slots",
+            "max_slots",
+            "spp_ewma",
+        ),
+        always_emits=False,
+        note="RFC-052 P5 R5 AC4/AC7/AC8: one record per configured backend per split "
+        "attempt, only when DOCLING_SPLIT_ENABLED=1. Capacity numbers and build "
+        "identifiers only (HR3).",
+    ),
+    _p(
+        event="docling_split",
+        phase=Phase.CONVERT,
+        module=_C_SPLIT,
+        function="split_convert",
+        choices=("split", "single_backend", "fallback_active", "failed"),
+        attrs=(
+            "backends",
+            "shard_count",
+            "pages_by_backend",
+            "shards_by_backend",
+            "retries",
+            "reroutes",
+            "split_join_heading_shifts",
+            "elapsed_ms",
+            "error_class",
+        ),
+        always_emits=False,
+        note="RFC-052 P5 R5 AC4/AC6, R6 AC2: the split outcome for one conversion. "
+        "split_join_heading_shifts counts shard joins where the next shard's first "
+        "heading is more than one level deeper than the previous shard's last. "
+        "error_class is an exception CLASS name, never str(exc).",
     ),
 )
 

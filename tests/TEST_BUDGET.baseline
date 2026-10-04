@@ -96,4 +96,11 @@
 #                  real pocketbook layout, per-chunk switches, direct/service
 #                  page-class threading, force_full_page_ocr override, kill
 #                  switch). Measured with `bash scripts/gates/test_budget.sh`.
-1009
+# 2026-10-04  1028 ICR-97 RFC-052 P5 split coordinator: +4 new
+#                  (TestSplitCoordinator: HR3 eligibility table, plan
+#                  partition property, stub-backend stealing / busy /
+#                  re-route / deadline, kill switch + build skew; scenarios
+#                  folded into in-body matrices). The other +15 landed with
+#                  P3/P4 without a baseline bump (1024 collected at 44d5c13).
+#                  Measured with `bash scripts/gates/test_budget.sh`.
+1028

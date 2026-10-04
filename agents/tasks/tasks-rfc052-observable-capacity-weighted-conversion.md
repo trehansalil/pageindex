@@ -83,7 +83,7 @@ Infra manifests live in `/root/hetzner-deployment-service` and ship as a compani
 - [x] 6. Checkpoint P2: `make test`, open the PR, and ask the user.
   - Status 2026-09-27: P0 (#30, #32), P1 (#34) and P2 (#36) merged; `make test` on master + the 5.6 decision: 1000 passed, 9 skipped.
 
-- [ ] 7. P3: Capacity reporting (`ICR-97-rfc52-capacity-split`). Scope cut 2026-09-27: docling-local dropped; the split moves to P5.
+- [x] 7. P3: Capacity reporting (`ICR-97-rfc52-capacity-split`). Scope cut 2026-09-27: docling-local dropped; the split moves to P5.
   - [x] 7.1 docling-service `GET /capacity`: free memory on Linux and macOS, `safe_procs`, slots, the `spp_ewma` tracker, `build_sha`. _R5 AC1_
   - [x] 7.2 The planner clamps its worker count by free-memory `safe_procs`. _R5 AC2_
   - [x] 7.3 Add `page_start`/`page_end` to `PdfConvertRequest`: slice, rebase page classes (pictures are rebased by the P5 merge). _R5 AC3_
@@ -92,7 +92,7 @@ Infra manifests live in `/root/hetzner-deployment-service` and ship as a compani
   - [x] 7.6 Forced-low-memory run on the active remote: the planner clamps, no OOM events. _Test strategy_ **Run 2026-09-28 on the Mac (`4a282de`), with `DOCLING_RESERVE_BYTES` forced in the service launcher:** 120 pocketbook pages at a 21.1 GiB reserve clamped 12 -> 3 processes (196.8 s); 70 pages at a 64 GiB reserve hit `safe_procs=0` and converted with 1 process (185.7 s). OOM events 0 before / 0 after; reserve restored to 768 MiB.
 - [x] 8. Checkpoint P3: `make test`, open the PR, and ask the user.
 
-- [ ] 9. P4 (accepted 2026-09-27; design: Table Capture, Tables in Search, Signal-driven Bypass): Table capture, search and bypass (`ICR-97-rfc52-table-capture`)
+- [x] 9. P4 (accepted 2026-09-27; design: Table Capture, Tables in Search, Signal-driven Bypass): Table capture, search and bypass (`ICR-97-rfc52-table-capture`)
   - [x] 9.1 Process-pool `find_tables()` in the worker: pool sized by cgroup CPU and free memory, per-process memory kill, `capture_failed` pages. Overlap it with remote conversion; it never blocks dispatch. Live: median wall time ≤ 1.05× over 2 runs per arm, and the worker cgroup's `memory.peak`. _R7 AC1-3_ **Measured 2026-09-28: FAIL**, 1.123x (454.7 s -> 510.5 s); memory 1.15/1.19 GB within limit. `TABLES_CAPTURE` stays 0. **Re-measured 2026-09-29 after #43: PASS**, 1.011x (519.7 s -> 525.5 s), memory.peak 1.28 GB; capture still hits its deadline on pages ~165-291 (1 proc).
   - [x] 9.2 Persist `processed/<doc_id>.tables.json` (bbox, cells, markdown, source, coverage, `node_id`, caption). Keep TableFormer tables alongside and link them by bbox. Add it to `_ERASURE_MANIFEST` (no dedicated erasure test, per user). _R7 AC4-6, HR2_
   - [x] 9.3 Serve stored table cells directly to retrieval answers. HR4 legal review deferred by the user (2026-09-27); track it as an open item. _R7 AC7-8_
@@ -101,14 +101,14 @@ Infra manifests live in `/root/hetzner-deployment-service` and ship as a compani
   - [x] 9.6 OCR bypass on clean text-layer table pages; TableFormer skip on pages with no table; `bypass` field in `docling_chunk`; per-bypass kill switches; signals computed per chunk in docling-service; `force_full_page_ocr` overrides the OCR bypass and emits `docling_force_recovery` with the first pass's per-chunk context. _R9 AC1-2, 4-7_
   - [x] 9.7 Benchmark grid replacement (`find_tables` vs TableFormer, changed-cell ratio). Enable `TABLES_TRUST_BYPASS` only at ≤ 2%. _R9 AC3_ **Measured 2026-09-28 (after the #41 AC1/AC3 amendment): FAIL**, Unfall 13.33%, GHV 20.10%. **AC3 dropped 2026-09-28 (user):** grid replacement, the `TABLES_TRUST_*` switches and the bench `grid` subcommand are removed.
   - [x] 9.8 Force-recovery case census: query Loki for `docling_force_recovery`, then tabulate which documents took the path, why, their first-pass OCR/TableFormer bypasses, and whether the recovered garble was on TableFormer pages (via `garbled_pages_known`/`garbled_tableformer_overlap`; `garbled_pages` itself is the worker's mapping of `helpers/garble.py`'s flagged tree nodes to pages through `heading_pages` -- see the design's "`garbled_pages` source" -- omitted, not `[]`, when unanchored). Also join a first-pass force (recorded by the `client/indexer.py` inspector/pre-garble probe with `choice="request"` and no `prior_pass` of its own) to this same document's `docling_force_recovery` record on `job_id`, since the first pass's own force is otherwise invisible to this census. Write `audit/RFC052_FORCE_RECOVERY_CASES_<date>.md`. _R9 AC7_ **Done 2026-09-28: 0 cases** since P4 went live (Loki keeps 3 days).
-- [ ] 10. Checkpoint P4: `make test`, open the PR, and ask the user.
-  - Report: `audit/RFC052_P4_CHECKPOINT_2026-09-28.md`. Awaiting the user's decisions listed there.
+- [x] 10. Checkpoint P4: `make test`, open the PR, and ask the user. PR #42 (report), fixes #43, re-run #44. **Decision 2026-10-04 (user):** keep production as is: `TABLES_CAPTURE=1` (infra #18), `TABLES_DESC_ENABLED=0`; move to P5.
+  - Report: `audit/RFC052_P4_CHECKPOINT_2026-09-28.md`. Decision 1 (9.1/9.5) was answered by #43/#44 and the 2026-10-04 decision above. Decision 2 (HR4 legal review) stays deferred as an open item; it does not block P5.
 
 - [ ] 11. P5 (later): Mac + docling-1 together (`ICR-97-rfc52-mac-docling1-split`)
-  - [ ] 11.1 The node controller keeps docling-1 up alongside the Mac when split is on, and writes the live backend set to a ConfigMap. The coordinator resolves the named Services from it. _R5 AC4_
-  - [ ] 11.2 Coordinator: eligibility (HR3, build SHA), proportional initial allocation, tail stealing, per-shard `/capacity` check, the shared deadline, retry and re-route, merge, and join heading-shift count. _R5 AC4, AC6_
-  - [ ] 11.3 HR3: docling-1 eligible for PII documents, the Mac never. Test the eligibility table. _R5 AC7_
-  - [ ] 11.4 Add a stub-backend integration test for stealing, the deadline, and re-route after a failure. _Test strategy_
+  - [x] 11.1 The node controller keeps docling-1 up alongside the Mac when split is on (`DOCLING_SPLIT_KEEP_NODE`); the coordinator finds live backends by probing the named Services' `/capacity` (amendment A-P5-1, replacing the original ConfigMap plan). _R5 AC4_ **Built 2026-10-04 (infra branch `rfc52-p5-split-keep-node`, 560fbc5):** `DOCLING_SPLIT_KEEP_NODE=1` starts docling-1 beside a healthy Mac when jobs wait (daily cap and idle reaper still apply); routing stays on the Mac. No ConfigMap: see amendment A-P5-1 in the RFC.
+  - [x] 11.2 Coordinator: eligibility (HR3, build SHA), proportional initial allocation, tail stealing, per-shard `/capacity` check, the shared deadline, retry and re-route, merge, and join heading-shift count. _R5 AC4, AC6_ `client/split.py` (97e3794); `_remote_pdf_convert` hands unsliced calls to it when `DOCLING_SPLIT_ENABLED=1`.
+  - [x] 11.3 HR3: docling-1 eligible for PII documents, the Mac never. Test the eligibility table. _R5 AC7_ `TestSplitCoordinator::test_hr3_eligibility_table_and_build_match`.
+  - [x] 11.4 Add a stub-backend integration test for stealing, the deadline, and re-route after a failure. _Test strategy_ `TestSplitCoordinator::test_stub_backends_steal_reroute_and_share_the_deadline` (8a1d13f).
   - [ ] 11.5 Deploy with `DOCLING_SPLIT_ENABLED=0`. Run a parity check on the pocketbook with split off and on. _R5 AC10, R6_
 - [ ] 12. Checkpoint P5: `make test`, open the PR, and get the user's go-ahead before switching on `DOCLING_SPLIT_ENABLED=1`.
 

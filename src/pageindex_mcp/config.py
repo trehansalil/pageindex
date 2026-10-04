@@ -292,6 +292,25 @@ class Settings:
     # Width of the delete request's time window, ending now. Must be >= the
     # Loki retention_period (72h in infra); anything older is already gone.
     loki_erasure_lookback_h: int = 168
+    # RFC-052 P5 (R5 AC4/AC7/AC10): split one document's chunks across the
+    # named Docling backends. Off by default -- the whole document then goes
+    # to ``docling_service_url`` (docling-active), exactly as before.
+    docling_split_enabled: bool = False
+    # ``name=url`` pairs, comma-separated. Names match the controller's
+    # ``docling:backend`` targets (``mac`` / ``node``).
+    docling_split_backends: str = (
+        "mac=http://docling-service-mac:8090,node=http://docling-service:8080"
+    )
+    # Backends allowed to see a PII document (HR3). ``mac`` is never allowed,
+    # whatever this says (see client/split.py ``hr3_eligible``).
+    docling_split_pii_backends: str = "node"
+    # Below this many pages a document is not worth splitting.
+    docling_split_min_pages: int = 20
+    # Share of the pages handed out up front; the rest is the stealing tail.
+    docling_split_initial_frac: float = 0.8
+    # Build every shard must come from. Empty: the build of the backend the
+    # controller routes ``docling-active`` to.
+    docling_expected_build_sha: str = ""
     # Zone-4 Phase 3: registry_verdict_authority removed — Postgres is now the
     # sole verdict authority.  MinIO sidecar is archival-only (best-effort
     # backfill).  See _upsert_registry_row in worker/registry_mirror.py.
@@ -491,6 +510,18 @@ def _load_settings() -> Settings:
         loki_erasure_lookback_h=max(
             1, int(os.environ.get("PAGEINDEX_LOKI_ERASURE_LOOKBACK_H", "168"))
         ),
+        docling_split_enabled=os.environ.get("DOCLING_SPLIT_ENABLED", "0").strip().lower()
+        in ("1", "true", "yes", "on"),
+        docling_split_backends=os.environ.get(
+            "DOCLING_SPLIT_BACKENDS",
+            "mac=http://docling-service-mac:8090,node=http://docling-service:8080",
+        ),
+        docling_split_pii_backends=os.environ.get("DOCLING_SPLIT_PII_BACKENDS", "node"),
+        docling_split_min_pages=int(os.environ.get("DOCLING_SPLIT_MIN_PAGES", "20")),
+        docling_split_initial_frac=min(
+            1.0, max(0.0, float(os.environ.get("DOCLING_SPLIT_INITIAL_FRAC", "0.8")))
+        ),
+        docling_expected_build_sha=os.environ.get("DOCLING_EXPECTED_BUILD_SHA", "").strip(),
     )
 
 

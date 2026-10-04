@@ -205,6 +205,18 @@ tail     = remaining chunks → shared queue; each backend pulls one shard of
 
 **Active-remote resolution.** Read the endpoints of `docling-active` through the in-cluster API (the worker ServiceAccount needs `get` on `endpoints`). Alternatively the controller writes the choice to a ConfigMap key, `docling-active-backend=mac|docling-1`. Prefer the ConfigMap: the RBAC is smaller and it is already the controller's source of truth.
 
+**As built (2026-10-04, RFC amendments A-P5-1..3, pending approval).** `client/split.py`:
+- **Backends:** the coordinator probes `/capacity` on each `DOCLING_SPLIT_BACKENDS` entry (2 s timeout; a refusal marks the backend absent for 60 s). There is no ConfigMap read.
+- **Expected build:** `DOCLING_EXPECTED_BUILD_SHA`, else the `docling:backend` target's build, else the fastest backend's.
+- **Plan:** `plan_split()` is pure.
+  - Each initial block's target is `initial_frac · N · rate / Σrate` pages. The block is snapped by taking whole chunks while `got + size/2 ≤ target`, and gets at least one chunk.
+  - Tail shards hold at most `min(safe_procs)` chunks.
+  - Shards are numbered in plan order (initial blocks first, then the tail) and sent as `X-Shard: i/n:start-end`. The number is not the dispatch order.
+- **Scheduler:** one loop over idle backends. Each takes its initial block, then a retry that failed elsewhere, then a tail shard. A retry that failed on itself is taken only when no other backend is live. A stolen or retried shard first re-reads `/capacity`; when the backend is busy or out of memory, the shard goes back and the backend waits 5 s.
+- **Failure handling:** a `DoclingUnavailable` (deadline) fails at once. Any other error retries once.
+- **Kill switch:** with `DOCLING_SPLIT_ENABLED=0`, `_remote_pdf_convert` never imports the module.
+- **Controller:** `DOCLING_SPLIT_KEEP_NODE=1` starts docling-1 beside a healthy Mac when jobs wait.
+
 ## P4 Decisions (user, 2026-09-27)
 
 | ID | Decision |
