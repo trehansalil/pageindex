@@ -256,6 +256,11 @@ Defects:
 9. *Removed 2026-09-27 (docling-local dropped, NG7).*
 10. Kill switch: `DOCLING_SPLIT_ENABLED=0` (default for the first deploy) sends the whole document to `docling-active`, as today.
 
+> **Proposed amendments (2026-10-04, P5 build; awaiting the user's approval at checkpoint 12).**
+> - **A-P5-1 (AC4, live backend set):** the coordinator does not read a ConfigMap. It probes `/capacity` on every backend in `DOCLING_SPLIT_BACKENDS` (default `mac=http://docling-service-mac:8090,node=http://docling-service:8080`). A backend that refuses the connection is absent for 60 s. With docling-1 down its Service has no endpoints, so the probe fails in milliseconds. The controller's job (task 11.1) is only to keep docling-1 up beside the Mac (`DOCLING_SPLIT_KEEP_NODE=1`). No new cross-repo contract or RBAC is needed.
+> - **A-P5-2 (AC8, expected SHA):** the expected build is `DOCLING_EXPECTED_BUILD_SHA` when set, else the `build_sha` of the backend `docling-active` routes to (Redis `docling:backend` target), else the fastest backend's. The worker's own `BUILD_SHA` cannot serve: the worker image is rebuilt on every merge, docling-service only when its code changes. On 2026-10-04 the worker ran 44d5c13 and the Mac 16b3690, so a worker-SHA rule would exclude every backend. The effect is that all shards of one document come from one build.
+> - **A-P5-3 (allocation edge cases):** with exactly one eligible backend, the whole document goes to it unsliced (no extra joins). Below `DOCLING_SPLIT_MIN_PAGES` (default 20), or when nothing is eligible, the call takes today's `docling-active` path unchanged.
+
 ### Requirement 6: Split quality parity
 
 **User story:** As the owner of the tree quality bar (HR5), I need splitting to never lower quality silently.

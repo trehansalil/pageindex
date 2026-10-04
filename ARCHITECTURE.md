@@ -663,6 +663,21 @@ MinIO, Redis, and server binding variables are documented in `.env.example` and 
 | `REGISTRY_ENABLED` | `true` | Master switch. Set to `false` to disable all registry reads/writes without removing Postgres from the deployment. |
 | `PAGEINDEX_CATALOG_TOPK` | `200` | Stage B BM25 cut-off — top-K docs returned by `ts_rank`/GIN before the LLM prefilter. Tune by measured recall (RFC-006 F8). |
 
+### Split conversion (RFC-052 P5)
+
+Worker (`config.py` → `client/split.py`). Off by default; the whole document then goes to `DOCLING_SERVICE_URL` (docling-active) as before:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DOCLING_SPLIT_ENABLED` | `0` | Master switch for splitting one PDF across the Mac and docling-1 |
+| `DOCLING_SPLIT_BACKENDS` | `mac=http://docling-service-mac:8090,node=http://docling-service:8080` | `name=url` pairs probed through `/capacity`; names match the controller's `docling:backend` targets |
+| `DOCLING_SPLIT_PII_BACKENDS` | `node` | Backends allowed to see a PII document (HR3). `mac` is never allowed, whatever this says |
+| `DOCLING_SPLIT_MIN_PAGES` | `20` | Below this page count the document is not split |
+| `DOCLING_SPLIT_INITIAL_FRAC` | `0.8` | Share of pages handed out up front; the rest is the stealing tail |
+| `DOCLING_EXPECTED_BUILD_SHA` | empty | Build every shard must come from; empty = the build of the backend docling-active routes to |
+
+Controller (infra `docling-node.sh`): `DOCLING_SPLIT_KEEP_NODE` (default `0`) starts docling-1 beside a healthy Mac when jobs wait.
+
 ### Table capture (RFC-052 P4)
 
 Worker (`tables/settings.py capture_settings()` / `describe_settings()`; capture starts only on the

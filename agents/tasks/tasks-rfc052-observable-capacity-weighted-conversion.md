@@ -105,10 +105,10 @@ Infra manifests live in `/root/hetzner-deployment-service` and ship as a compani
   - Report: `audit/RFC052_P4_CHECKPOINT_2026-09-28.md`. Awaiting the user's decisions listed there.
 
 - [ ] 11. P5 (later): Mac + docling-1 together (`ICR-97-rfc52-mac-docling1-split`)
-  - [ ] 11.1 The node controller keeps docling-1 up alongside the Mac when split is on, and writes the live backend set to a ConfigMap. The coordinator resolves the named Services from it. _R5 AC4_
-  - [ ] 11.2 Coordinator: eligibility (HR3, build SHA), proportional initial allocation, tail stealing, per-shard `/capacity` check, the shared deadline, retry and re-route, merge, and join heading-shift count. _R5 AC4, AC6_
-  - [ ] 11.3 HR3: docling-1 eligible for PII documents, the Mac never. Test the eligibility table. _R5 AC7_
-  - [ ] 11.4 Add a stub-backend integration test for stealing, the deadline, and re-route after a failure. _Test strategy_
+  - [x] 11.1 The node controller keeps docling-1 up alongside the Mac when split is on, and writes the live backend set to a ConfigMap. The coordinator resolves the named Services from it. _R5 AC4_ **Built 2026-10-04 (infra branch `rfc52-p5-split-keep-node`, 560fbc5):** `DOCLING_SPLIT_KEEP_NODE=1` starts docling-1 beside a healthy Mac when jobs wait (daily cap and idle reaper still apply); routing stays on the Mac. No ConfigMap: see amendment A-P5-1 in the RFC.
+  - [x] 11.2 Coordinator: eligibility (HR3, build SHA), proportional initial allocation, tail stealing, per-shard `/capacity` check, the shared deadline, retry and re-route, merge, and join heading-shift count. _R5 AC4, AC6_ `client/split.py` (97e3794); `_remote_pdf_convert` hands unsliced calls to it when `DOCLING_SPLIT_ENABLED=1`.
+  - [x] 11.3 HR3: docling-1 eligible for PII documents, the Mac never. Test the eligibility table. _R5 AC7_ `TestSplitCoordinator::test_hr3_eligibility_table_and_build_match`.
+  - [x] 11.4 Add a stub-backend integration test for stealing, the deadline, and re-route after a failure. _Test strategy_ `TestSplitCoordinator::test_stub_backends_steal_reroute_and_share_the_deadline` (8a1d13f).
   - [ ] 11.5 Deploy with `DOCLING_SPLIT_ENABLED=0`. Run a parity check on the pocketbook with split off and on. _R5 AC10, R6_
 - [ ] 12. Checkpoint P5: `make test`, open the PR, and get the user's go-ahead before switching on `DOCLING_SPLIT_ENABLED=1`.
 
