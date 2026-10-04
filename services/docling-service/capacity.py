@@ -28,6 +28,7 @@ from collections.abc import Mapping
 
 from pageindex_mcp.converters.docling_resources import (
     MIN_CHUNK_PAGES,
+    SLICE_MAX_PAGES,
     _read,
     available_memory_bytes,
     compute_safe_procs,
@@ -224,6 +225,12 @@ def capacity_snapshot(  # noqa: PLR0913 -- keyword-only, one per /capacity field
     reserve = reserve_bytes()
     pages = chunk_pages()
     spp, samples = tracker.snapshot()
+    if slice_slots > 0 and free is not None:
+        # A-P5-5: what free memory allows for a full-size slice, plus the
+        # chunks already converting (their memory is out of ``free``), so a
+        # coordinator never admits more slices than fit -- at least one.
+        fit = compute_safe_procs(cpus, free, reserve, SLICE_MAX_PAGES)
+        slice_slots = max(1, min(slice_slots, fit + busy_slice_slots))
     return {
         "backend": backend,
         "build_sha": build_sha,

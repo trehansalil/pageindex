@@ -165,8 +165,8 @@ SLICE_SLOTS = max(
     ),
 )
 _slice_slots = _CountingSemaphore(SLICE_SLOTS)
-#: Chunks converting now. The first one in also holds a _convert_slots slot
-#: for the whole group and the last one out releases it, so a whole-document
+#: Chunks converting now. The first one in also holds every _convert_slots
+#: slot for the whole group and the last one out releases it, so a whole-document
 #: conversion (sized for the whole machine) never runs alongside chunks, and
 #: /capacity reports the backend busy to every other document's split.
 _slice_active = 0
@@ -176,12 +176,20 @@ _slice_group_lock = asyncio.Lock()
 async def _acquire_slice_slot() -> None:
     global _slice_active
     await _slice_slots.acquire()
+    taken = 0
     try:
         async with _slice_group_lock:
             if _slice_active == 0:
-                await _convert_slots.acquire()
+                # Every conversion slot, not one: with DOCLING_MAX_CONCURRENT
+                # above 1 a whole-document conversion must still wait out
+                # the group.
+                for _ in range(MAX_CONCURRENT):
+                    await _convert_slots.acquire()
+                    taken += 1
             _slice_active += 1
     except BaseException:
+        for _ in range(taken):
+            _convert_slots.release()
         _slice_slots.release()
         raise
 
@@ -190,7 +198,8 @@ def _release_slice_slot() -> None:
     global _slice_active
     _slice_active -= 1
     if _slice_active == 0:
-        _convert_slots.release()
+        for _ in range(MAX_CONCURRENT):
+            _convert_slots.release()
     _slice_slots.release()
 
 
@@ -936,7 +945,8 @@ async def capacity_endpoint():
         busy_slots=_busy_slots(),
         max_slots=MAX_CONCURRENT,
         slice_slots=SLICE_SLOTS,
-        busy_slice_slots=_slice_slots.held,
+        # Chunks converting, not those still queued for the group's slots.
+        busy_slice_slots=_slice_active,
         tracker=_spp_tracker,
         backend=capacity.docling_backend_name(),
         build_sha=os.environ.get("BUILD_SHA", "unknown"),

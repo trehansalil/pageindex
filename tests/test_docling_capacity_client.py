@@ -398,7 +398,7 @@ class TestSplitCoordinator:
         assert join_heading_shifts(["# A\n## B", "#### C", "", "## D"]) == 1
         assert join_heading_shifts(["# A", "## B", "# C"]) == 0
 
-    def test_stub_backends_pull_copy_reroute_and_share_the_deadline(self, split_env):
+    def test_stub_backends_pull_copy_reroute_and_share_the_deadline(self, split_env, monkeypatch):
         """A-P5-5 against stub backends: pulling from one queue up to each
         backend's chunk limit, copying the tail, a build roll, retry/re-route,
         the second failure and the shared deadline."""
@@ -488,12 +488,28 @@ class TestSplitCoordinator:
         choice, attrs = _outcome(split_env)
         assert (choice, attrs["error_class"]) == ("failed", "ReadTimeout")
 
-        # 7. Shared deadline: the first wave (0.4 s) leaves < 1.7 s of the
-        #    2 s budget, so no further chunk is dispatched. (The margin before
-        #    the first wave absorbs the probes' client set-up.)
+        # 7. Shared deadline, on a fake clock that only moves when a chunk
+        #    finishes (1 s each): the first wave starts with the full 2 s and
+        #    leaves < 1.7 s, so no further chunk -- nor any tail copy -- is
+        #    dispatched.
+        import types
+
+        from pageindex_mcp.client import split as split_mod
+
+        clock = [0.0]
+        monkeypatch.setattr(split_mod, "time", types.SimpleNamespace(monotonic=lambda: clock[0]))
+        convert = remote_module._remote_pdf_convert
+
+        async def ticking(*args, **kwargs):
+            try:
+                return await convert(*args, **kwargs)
+            finally:
+                clock[0] += 1.0
+
+        monkeypatch.setattr(remote_module, "_remote_pdf_convert", ticking)
         split_env.calls.clear()
         split_env.fail = {}
-        split_env.speed = {"mac": 0.02, "node": 0.02}
+        split_env.speed = {"mac": 0.0001, "node": 0.0001}
         remote_module._effective_read_timeout_s = lambda: 2.0
         remote_module._MIN_USEFUL_CALL_S = 1.7
         with pytest.raises(DoclingUnavailable):

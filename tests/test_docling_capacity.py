@@ -212,7 +212,14 @@ def test_7_1_capacity_endpoint_is_bearer_authed_with_the_design_schema(
     assert body["per_proc_peak_bytes"] == dr.per_proc_peak_bytes(chunk_pages)
     assert body["safe_procs"] == dr.compute_safe_procs(12.0, 41_000_000_000, 4 * _GIB, chunk_pages)
     assert (body["busy_slots"], body["max_slots"]) == (0, app.MAX_CONCURRENT)
-    assert (body["busy_slice_slots"], body["slice_slots"]) == (0, app.SLICE_SLOTS)
+    # Slice slots are clamped to what free memory fits at full slice size.
+    fit = dr.compute_safe_procs(12.0, 41_000_000_000, 4 * _GIB, dr.SLICE_MAX_PAGES)
+    assert body["busy_slice_slots"] == 0
+    assert body["slice_slots"] == max(1, min(app.SLICE_SLOTS, fit))
+    monkeypatch.setattr(app, "SLICE_SLOTS", 64)
+    monkeypatch.setattr(capacity_mod, "free_memory_bytes", lambda: 4 * _GIB + 1)
+    tight = client.get("/capacity", headers={"Authorization": "Bearer sekret"}).json()
+    assert tight["slice_slots"] == 1  # nothing fits beyond the reserve: one, never zero
     assert body["spp_samples"] == 0 and body["spp_ewma"] == capacity_mod.spp_prior()
 
     # A held slot is busy; an unreadable free memory reports 0 procs, never a guess.
@@ -442,7 +449,7 @@ def test_7_3_invalid_page_ranges_are_422(svc):
 def test_a_p5_5_split_chunks_share_a_download_and_a_group_slot(svc, monkeypatch):
     """A-P5-5: chunks carrying one presigned URL download the PDF once and
     each converts as one process on its share of the cores; up to SLICE_SLOTS
-    run at once and, as a group, hold the one whole-conversion slot."""
+    run at once and, as a group, hold every whole-conversion slot."""
     import os
     import time
 
@@ -467,12 +474,15 @@ def test_a_p5_5_split_chunks_share_a_download_and_a_group_slot(svc, monkeypatch)
     assert app._pdf_cache == {}
     assert not any(os.path.exists(p) for p in svc.downloads)
 
+    # Two whole-conversion slots: the group must hold both, not just one.
+    monkeypatch.setattr(app, "MAX_CONCURRENT", 2)
+    monkeypatch.setattr(app, "_convert_slots", app._CountingSemaphore(2))
     monkeypatch.setattr(app, "_slice_slots", app._CountingSemaphore(2))
 
     async def group():
         await app._acquire_slice_slot()
         await app._acquire_slice_slot()
-        assert (app._slice_slots.held, app._convert_slots.held) == (2, 1)
+        assert (app._slice_slots.held, app._convert_slots.held, app._slice_active) == (2, 2, 2)
         third = asyncio.ensure_future(app._acquire_slice_slot())
         whole = asyncio.ensure_future(app._convert_slots.acquire())
         await asyncio.sleep(0.01)

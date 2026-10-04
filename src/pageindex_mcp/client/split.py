@@ -488,6 +488,8 @@ async def split_convert(
         if retry and not any(b != name for b in live):
             idx, failed_on = retry.pop(0)
             return idx, "retry", failed_on
+        if deadline - time.monotonic() < _MIN_USEFUL_CALL_S:
+            return None  # too late for a copy to be useful
         for other, idx, _ in running.values():
             if other != name and idx not in copied and idx not in results:
                 copied.add(idx)
@@ -569,10 +571,10 @@ async def split_convert(
                 if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
                     _mark_absent(eligible[name][0].url)
                     live.discard(name)
-                if isinstance(exc, DoclingUnavailable):
-                    raise exc
                 if any(j == idx for _, j, _ in running.values()):
                     continue  # its other copy may still finish
+                if isinstance(exc, DoclingUnavailable):
+                    raise exc
                 failures[idx] = failures.get(idx, 0) + 1
                 if failures[idx] >= 2:
                     raise exc
