@@ -129,9 +129,13 @@ CLIENT_POLL_S = 2.0
 import capacity  # noqa: E402  (services/docling-service/capacity.py)
 
 from pageindex_mcp.converters.docling_resources import (  # noqa: E402
+    SLICE_MAX_PAGES,
     available_cpus,
     available_memory_bytes,
+    compute_safe_procs,
     plan_docling,
+    plan_slice,
+    reserve_bytes,
 )
 
 # Sized from this container's cgroup limits, not from env: the node type
@@ -147,6 +151,122 @@ logger.info(
     CPUS,
     available_memory_bytes() // (1024 * 1024),
 )
+
+# RFC-052 A-P5-5: a split coordinator sends one page-range request per chunk
+# of <= SLICE_MAX_PAGES pages and keeps up to SLICE_SLOTS of them in flight
+# here; each converts in its own process on CPUS // SLICE_SLOTS threads. Sized
+# from the total memory (the coordinator also caps itself at the live
+# /capacity safe_procs); DOCLING_SLICE_SLOTS overrides.
+SLICE_SLOTS = max(
+    1,
+    int(os.environ.get("DOCLING_SLICE_SLOTS", "0"))
+    or compute_safe_procs(
+        capacity.effective_cpus(), available_memory_bytes(), reserve_bytes(), SLICE_MAX_PAGES
+    ),
+)
+_slice_slots = _CountingSemaphore(SLICE_SLOTS)
+#: Chunks converting now. The first one in also holds a _convert_slots slot
+#: for the whole group and the last one out releases it, so a whole-document
+#: conversion (sized for the whole machine) never runs alongside chunks, and
+#: /capacity reports the backend busy to every other document's split.
+_slice_active = 0
+_slice_group_lock = asyncio.Lock()
+
+
+async def _acquire_slice_slot() -> None:
+    global _slice_active
+    await _slice_slots.acquire()
+    try:
+        async with _slice_group_lock:
+            if _slice_active == 0:
+                await _convert_slots.acquire()
+            _slice_active += 1
+    except BaseException:
+        _slice_slots.release()
+        raise
+
+
+def _release_slice_slot() -> None:
+    global _slice_active
+    _slice_active -= 1
+    if _slice_active == 0:
+        _convert_slots.release()
+    _slice_slots.release()
+
+
+#: Idle seconds before a cached download is deleted. A split's chunks follow
+#: each other within milliseconds; a retry within seconds.
+PDF_CACHE_IDLE_S = 120.0
+
+
+@dataclass
+class _CachedPdf:
+    path: str | None = None
+    ready: asyncio.Event = field(default_factory=asyncio.Event)
+    error: BaseException | None = None
+    users: int = 0
+    last_used: float = 0.0
+
+
+#: Page-range downloads by full presigned URL (A-P5-5): a split's chunks on
+#: this backend share one URL, so the PDF is fetched once per backend. Keyed by
+#: the whole URL, signature included, so a cached file is only ever served to
+#: a request MinIO already authorised.
+_pdf_cache: dict[str, _CachedPdf] = {}
+
+
+def _evict_idle_pdfs(now: float) -> None:
+    for url, entry in list(_pdf_cache.items()):
+        if entry.users == 0 and entry.ready.is_set() and now - entry.last_used > PDF_CACHE_IDLE_S:
+            del _pdf_cache[url]
+            if entry.path is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(entry.path)
+
+
+async def _download_shared(url: str) -> str:
+    """``_download_to_temp`` for a page-range request, shared across the
+    chunks that carry the same presigned URL. Pair with ``_release_shared``."""
+    _evict_idle_pdfs(time.time())
+    entry = _pdf_cache.get(url)
+    if entry is None:
+        entry = _pdf_cache[url] = _CachedPdf()
+        entry.users += 1
+        try:
+            entry.path = await _download_to_temp(url, suffix=".pdf")
+        except BaseException as e:
+            entry.error = e
+            del _pdf_cache[url]
+            entry.users -= 1
+            raise
+        finally:
+            entry.last_used = time.time()
+            entry.ready.set()
+        return entry.path
+    entry.users += 1
+    try:
+        await entry.ready.wait()
+    except BaseException:
+        entry.users -= 1
+        raise
+    if entry.error is not None or entry.path is None:
+        entry.users -= 1
+        raise RuntimeError(f"shared download failed: {entry.error!r}")
+    return entry.path
+
+
+def _release_shared(url: str) -> None:
+    entry = _pdf_cache.get(url)
+    if entry is None:
+        return
+    entry.users -= 1
+    entry.last_used = time.time()
+    if entry.users == 0:
+        # HR2: the copy must not outlive the split. Eviction also runs on the
+        # next shared download; this timer bounds it when none comes.
+        asyncio.get_running_loop().call_later(
+            PDF_CACHE_IDLE_S + 1, lambda: _evict_idle_pdfs(time.time())
+        )
 
 
 def _pdf_page_count(path: str) -> int:
@@ -815,6 +935,8 @@ async def capacity_endpoint():
         capacity.capacity_snapshot,
         busy_slots=_busy_slots(),
         max_slots=MAX_CONCURRENT,
+        slice_slots=SLICE_SLOTS,
+        busy_slice_slots=_slice_slots.held,
         tracker=_spp_tracker,
         backend=capacity.docling_backend_name(),
         build_sha=os.environ.get("BUILD_SHA", "unknown"),
@@ -902,7 +1024,7 @@ def _request_prior_pass(req: PdfConvertRequest) -> list | None:
 
 
 @app.post("/convert/pdf", response_model=PdfConvertResponse, dependencies=[Depends(_verify_token)])
-async def convert_pdf(  # noqa: PLR0915
+async def convert_pdf(  # noqa: PLR0915, C901
     req: PdfConvertRequest,
     request: Request,
     x_deadline: Annotated[str | None, Header()] = None,
@@ -920,8 +1042,19 @@ async def convert_pdf(  # noqa: PLR0915
     watcher = asyncio.create_task(_watch_client(conv))
     tmp_path: str | None = None
     slice_path: str | None = None
+    # A-P5-5: a split chunk shares its download and runs in a slice slot.
+    slice_request = (
+        req.page_start is not None
+        and req.page_end is not None
+        and req.page_end - req.page_start + 1 <= SLICE_MAX_PAGES
+    )
+    shared_url: str | None = None
     try:
-        tmp_path = await _download_to_temp(req.presigned_url, suffix=".pdf")
+        if slice_request:
+            tmp_path = await _download_shared(req.presigned_url)
+            shared_url = req.presigned_url
+        else:
+            tmp_path = await _download_to_temp(req.presigned_url, suffix=".pdf")
         if conv.cancel_event.is_set():
             raise DoclingCancelled("cancelled during download")
 
@@ -970,7 +1103,10 @@ async def convert_pdf(  # noqa: PLR0915
         # X-Deadline, not just disconnect) for as long as this request waits.
         preempt_task = asyncio.create_task(_preempt_while_queued())
         try:
-            await _convert_slots.acquire()
+            if slice_request:
+                await _acquire_slice_slot()
+            else:
+                await _convert_slots.acquire()
         finally:
             preempt_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -983,8 +1119,12 @@ async def convert_pdf(  # noqa: PLR0915
             # free-memory clamp sees the memory the previous conversion's
             # processes gave back, not what they held while this one queued.
             # Off the event loop: it reads free memory, which on macOS is a
-            # vm_stat subprocess with up to a 5 s timeout.
-            plan = await asyncio.to_thread(plan_docling, page_count)
+            # vm_stat subprocess with up to a 5 s timeout. A split chunk gets
+            # its share of the cores instead (A-P5-5).
+            if slice_request:
+                plan = plan_slice(page_count, SLICE_SLOTS, cpus=CPUS)
+            else:
+                plan = await asyncio.to_thread(plan_docling, page_count)
             logger.info("docling plan: %s", plan)
             route = "direct" if page_count <= plan.pages_per_chunk else "chunked"
             # Cheap: pure page-range arithmetic (the same call the converter
@@ -1031,7 +1171,10 @@ async def convert_pdf(  # noqa: PLR0915
                 conv,
             )
         finally:
-            _convert_slots.release()
+            if slice_request:
+                _release_slice_slot()
+            else:
+                _convert_slots.release()
         serialized_pics = [_serialize_picture_result(pr) for pr in pic_results]  # type: ignore[arg-type]
         # RFC-052 P2 finding 3: echo what the converter actually used, not the
         # request it was handed -- a bench arm (or any caller) must be able to
@@ -1077,6 +1220,9 @@ async def convert_pdf(  # noqa: PLR0915
     finally:
         watcher.cancel()
         _conversions.discard(conv)
+        if shared_url is not None:
+            _release_shared(shared_url)
+            tmp_path = None  # the cache owns it
         for path in (tmp_path, slice_path):
             if path is not None:
                 with contextlib.suppress(OSError):

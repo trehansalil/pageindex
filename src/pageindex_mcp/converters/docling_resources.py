@@ -300,3 +300,25 @@ def _plan_from_total(
     target = math.ceil(page_count / (workers * CHUNKS_PER_WORKER))
     pages = max(MIN_CHUNK_PAGES, min(target, fit, MAX_CHUNK_PAGES))
     return DoclingPlan(cpus, memory_bytes, workers, max(1, cpus // workers), int(pages))
+
+
+# RFC-052 A-P5-5: the largest page range a split coordinator sends as one
+# chunk. A slice up to this size converts in one process sized for a share of
+# the machine (``plan_slice``); a larger one is planned like a whole PDF.
+SLICE_MAX_PAGES = 2 * MIN_CHUNK_PAGES
+
+
+def plan_slice(
+    page_count: int, slots: int, cpus: int | None = None, memory_bytes: int | None = None
+) -> DoclingPlan:
+    """One process with ``cpus // slots`` threads for a split chunk.
+
+    The coordinator keeps up to ``slots`` chunks in flight on this backend,
+    so each gets an equal share of the cores. ``_plan_from_total`` would run
+    any PDF of <= ``PARALLEL_MIN_PAGES`` pages as ONE process on every core,
+    and Docling barely scales with threads: the 11.5 parity run converted a
+    55-page slice that way at ~17.7 s/page on 16 cores.
+    """
+    cpus = cpus or available_cpus()
+    memory_bytes = memory_bytes or available_memory_bytes()
+    return DoclingPlan(cpus, memory_bytes, 1, max(1, cpus // max(1, slots)), max(1, page_count))

@@ -725,6 +725,7 @@ async def _remote_pdf_convert(
     read_timeout_s: float | None = None,
     shard: str | None = None,
     hr3_checked: bool = False,
+    presigned_url: str | None = None,
 ) -> RemoteConvertResult:
     """Call the external Docling service to convert a PDF.
 
@@ -798,7 +799,9 @@ async def _remote_pdf_convert(
             HR3_EGRESS_BLOCKED_TOTAL.labels(path="docling_pdf").inc()
             raise
 
-    url = presigned_get_url(staging_key)
+    # A split passes one URL for all its chunks: the service caches the
+    # download by URL (RFC-052 A-P5-5).
+    url = presigned_url or presigned_get_url(staging_key)
     payload: dict = {
         "presigned_url": url,
         "force_full_page_ocr": force_full_page_ocr,

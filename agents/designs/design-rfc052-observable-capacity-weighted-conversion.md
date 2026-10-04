@@ -217,6 +217,13 @@ tail     = remaining chunks → shared queue; each backend pulls one shard of
 - **Kill switch:** with `DOCLING_SPLIT_ENABLED=0`, `_remote_pdf_convert` never imports the module.
 - **Controller:** `DOCLING_SPLIT_KEEP_NODE=1` starts docling-1 beside a healthy Mac when jobs wait.
 
+**Superseded by A-P5-5 (2026-10-04, after the 11.5 parity run).** `plan_split`, the initial blocks, `DOCLING_SPLIT_INITIAL_FRAC` and the busy re-probe are gone:
+- **Chunks:** `split_chunk_pages` = `ceil(N / (2 · Σ chunk_limit))` clamped to [5, 20]; `doc_chunks` cuts page-class (else uniform) chunks of at most that. Sent as `X-Shard: i/n:start-end` in page order.
+- **Limit:** `Capacity.chunk_limit` = `min(safe_procs, slice_slots)`, or 1 for a service without `slice_slots`.
+- **Scheduler:** backends in rate order fill up to their limit from: a retry that failed elsewhere, the queue, a retry that failed on themselves (only when no other backend is live), then a copy of the oldest chunk running on another backend. A retry or copy first re-reads `/capacity`; an unanswered probe or a new build drops the backend. The first result of a copied chunk wins; the other is cancelled (the client disconnect cancels it in the service). A failure while another copy runs is ignored.
+- **Download:** one presigned URL for all chunks, renewed after 10 min; the service caches the download by full URL.
+- **Service:** a range of <= `SLICE_MAX_PAGES` (20) takes a `_slice_slots` slot and `plan_slice` (1 process, `CPUS // SLICE_SLOTS` threads); the first chunk in takes `_convert_slots` for the group, the last out releases it.
+
 ## P4 Decisions (user, 2026-09-27)
 
 | ID | Decision |

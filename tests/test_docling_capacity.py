@@ -174,6 +174,8 @@ _CAPACITY_KEYS = {
     "safe_procs": int,
     "busy_slots": int,
     "max_slots": int,
+    "slice_slots": int,
+    "busy_slice_slots": int,
     "spp_ewma": float,
     "spp_samples": int,
 }
@@ -210,6 +212,7 @@ def test_7_1_capacity_endpoint_is_bearer_authed_with_the_design_schema(
     assert body["per_proc_peak_bytes"] == dr.per_proc_peak_bytes(chunk_pages)
     assert body["safe_procs"] == dr.compute_safe_procs(12.0, 41_000_000_000, 4 * _GIB, chunk_pages)
     assert (body["busy_slots"], body["max_slots"]) == (0, app.MAX_CONCURRENT)
+    assert (body["busy_slice_slots"], body["slice_slots"]) == (0, app.SLICE_SLOTS)
     assert body["spp_samples"] == 0 and body["spp_ewma"] == capacity_mod.spp_prior()
 
     # A held slot is busy; an unreadable free memory reports 0 procs, never a guess.
@@ -341,6 +344,7 @@ def svc(docling_service_app, monkeypatch, tmp_path):
         return "md", [{"page": 1, "ocr_text": "fig"}], {}
 
     monkeypatch.setattr(app, "_download_to_temp", fake_download)
+    monkeypatch.setattr(app, "_pdf_cache", {})  # module-level: one per test
     monkeypatch.setattr(
         app,
         "plan_docling",
@@ -433,6 +437,56 @@ def test_7_3_invalid_page_ranges_are_422(svc):
         asyncio.run(app.convert_pdf(req, _FakeRequest()))
     assert exc.value.status_code == 422
     assert svc.seen == []
+
+
+def test_a_p5_5_split_chunks_share_a_download_and_a_group_slot(svc, monkeypatch):
+    """A-P5-5: chunks carrying one presigned URL download the PDF once and
+    each converts as one process on its share of the cores; up to SLICE_SLOTS
+    run at once and, as a group, hold the one whole-conversion slot."""
+    import os
+    import time
+
+    app = svc.app
+    for start, end in ((0, 3), (4, 7)):
+        req = app.PdfConvertRequest(
+            presigned_url="http://minio/x.pdf?sig=1", page_start=start, page_end=end
+        )
+        asyncio.run(app.convert_pdf(req, _FakeRequest()))
+    assert len(svc.downloads) == 1
+    assert [c["texts"][0] for c in svc.seen] == ["page-marker-0", "page-marker-4"]
+    share = max(1, app.CPUS // app.SLICE_SLOTS)
+    assert {(c["workers"], c["num_threads"], c["max_pages"]) for c in svc.seen} == {(1, share, 4)}
+    # A renewed signature is a new download: the cache never serves a request
+    # MinIO did not authorise.
+    req = app.PdfConvertRequest(presigned_url="http://minio/x.pdf?sig=2", page_start=0, page_end=1)
+    asyncio.run(app.convert_pdf(req, _FakeRequest()))
+    assert len(svc.downloads) == 2
+    # HR2: an idle copy is deleted.
+    monkeypatch.setattr(app, "PDF_CACHE_IDLE_S", 0.0)
+    app._evict_idle_pdfs(time.time() + 1)
+    assert app._pdf_cache == {}
+    assert not any(os.path.exists(p) for p in svc.downloads)
+
+    monkeypatch.setattr(app, "_slice_slots", app._CountingSemaphore(2))
+
+    async def group():
+        await app._acquire_slice_slot()
+        await app._acquire_slice_slot()
+        assert (app._slice_slots.held, app._convert_slots.held) == (2, 1)
+        third = asyncio.ensure_future(app._acquire_slice_slot())
+        whole = asyncio.ensure_future(app._convert_slots.acquire())
+        await asyncio.sleep(0.01)
+        assert not third.done() and not whole.done()
+        app._release_slice_slot()
+        await asyncio.sleep(0.01)
+        assert third.done() and not whole.done()  # the group still holds it
+        app._release_slice_slot()
+        app._release_slice_slot()
+        await asyncio.wait_for(whole, 1)
+        app._convert_slots.release()
+
+    asyncio.run(group())
+    assert (app._slice_slots.held, app._convert_slots.held) == (0, 0)
 
 
 # --------------------------------------------------------------------------- 9.1 table capture

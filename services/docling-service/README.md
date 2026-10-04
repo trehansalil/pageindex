@@ -42,8 +42,14 @@ build only; nothing about any document (HR3).
 {"backend":"mac","build_sha":"…","effective_cpus":12.0,"total_mem_bytes":68719476736,
  "free_mem_bytes":41000000000,"reserve_bytes":4294967296,"chunk_pages":10,
  "per_proc_peak_bytes":1543503872,"safe_procs":12,"busy_slots":0,"max_slots":1,
- "spp_ewma":19.2,"spp_samples":27}
+ "slice_slots":12,"busy_slice_slots":0,"spp_ewma":19.2,"spp_samples":27}
 ```
+
+- `slice_slots` / `busy_slice_slots` (RFC-052 A-P5-5): split chunks (page ranges of
+  <= 20 pages) this service runs at once, each one process on
+  `cpus // slice_slots` threads, and how many it is running. While any chunk
+  runs, the chunks hold one `busy_slots` slot as a group, so a whole-document
+  conversion waits for them and vice versa.
 
 - `effective_cpus`: the cgroup CPU quota (Linux), P-cores + 0.5 × E-cores (macOS).
 - `total_mem_bytes`: the same total the planner sizes from.
@@ -140,6 +146,7 @@ docker run -p 8080:8080 \
 | `DOCLING_MAX_CONCURRENT`      | `1`     | Conversions run at once; others queue (each peaks ~2 GB RSS). `/capacity` `max_slots` |
 | `DOCLING_RESERVE_BYTES`       | `805306368` (768 MiB) | Memory `safe_procs` leaves free, in the planner clamp and `/capacity` |
 | `DOCLING_CHUNK_PAGES`         | `10`    | Chunk size `/capacity` quotes `safe_procs` for (each conversion clamps for its own) |
+| `DOCLING_SLICE_SLOTS`         | (computed) | Split chunks run at once (`/capacity` `slice_slots`); default `min(cpus, (total memory − reserve) / per-process peak for 20 pages)` |
 | `DOCLING_SPP_PRIOR`           | `40`    | `spp_ewma` before any chunk has finished (design: Mac 19, cpx62 40) |
 | `DOCLING_BACKEND_NAME`        | hostname | `/capacity` `backend`, and the `docling_chunk` / Loki `host` label |
 | `DOWNLOAD_TIMEOUT_S`          | `120`   | Timeout for downloading PDFs from presigned URL |

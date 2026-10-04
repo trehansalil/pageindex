@@ -306,8 +306,6 @@ class Settings:
     docling_split_pii_backends: str = "node"
     # Below this many pages a document is not worth splitting.
     docling_split_min_pages: int = 20
-    # Share of the pages handed out up front; the rest is the stealing tail.
-    docling_split_initial_frac: float = 0.8
     # Build every shard must come from. Empty: the build of the backend the
     # controller routes ``docling-active`` to.
     docling_expected_build_sha: str = ""
@@ -518,9 +516,6 @@ def _load_settings() -> Settings:
         ),
         docling_split_pii_backends=os.environ.get("DOCLING_SPLIT_PII_BACKENDS", "node"),
         docling_split_min_pages=int(os.environ.get("DOCLING_SPLIT_MIN_PAGES", "20")),
-        docling_split_initial_frac=min(
-            1.0, max(0.0, float(os.environ.get("DOCLING_SPLIT_INITIAL_FRAC", "0.8")))
-        ),
         docling_expected_build_sha=os.environ.get("DOCLING_EXPECTED_BUILD_SHA", "").strip(),
     )
 
