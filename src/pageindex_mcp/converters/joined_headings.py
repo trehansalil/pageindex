@@ -50,8 +50,12 @@ _BOLD_NAME_RE = re.compile(r"bold|black|heavy|semibold|demi", re.IGNORECASE)
 
 
 def _alnum(text: str) -> str:
-    """Letters and digits only, NFKC and casefolded: the comparison form."""
-    return "".join(c for c in unicodedata.normalize("NFKC", text).casefold() if c.isalnum())
+    """Letters and digits only, NFKD and casefolded: the comparison form.
+
+    NFKD rather than NFKC so the markdown and the page agree whether a PDF
+    stores an accent precomposed or as a combining mark: both decompose,
+    and the mark is dropped as non-alphanumeric."""
+    return "".join(c for c in unicodedata.normalize("NFKD", text).casefold() if c.isalnum())
 
 
 def _page_styles(textpage: Any, keys: dict[int, str]) -> dict[int, tuple[float, bool]]:
@@ -65,7 +69,7 @@ def _page_styles(textpage: Any, keys: dict[int, str]) -> dict[int, tuple[float, 
     index: list[int] = []  # flat position -> char index on the page
     for i in range(pdfium_c.FPDFText_CountChars(raw)):
         char = chr(pdfium_c.FPDFText_GetUnicode(raw, i))
-        for c in unicodedata.normalize("NFKC", char).casefold():
+        for c in unicodedata.normalize("NFKD", char).casefold():
             if c.isalnum():
                 flat.append(c)
                 index.append(i)

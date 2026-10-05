@@ -1036,7 +1036,7 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                                 page_count=state.pdf_page_count,
                                 page_classes=_page_classes,
                             )
-                        md_content = joined_markdown(_conv, file_path)
+                        md_content = await joined_markdown(_conv, file_path)
                         state.pic_results = _conv.pictures
                         # RFC-052 9.2 / R9 AC7: keep the first pass's
                         # per-chunk context and table/heading extras.

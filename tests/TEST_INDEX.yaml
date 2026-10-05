@@ -311,6 +311,10 @@ mappings:
     tests:
       - test_selective_tableformer.py     # RFC-052 R9: decide_bypass, P17-P20, force recovery record
 
+  converters/joined_headings.py:
+    tests:
+      - test_docling_capacity_client.py   # RFC-052 11.7: document-wide heading levels after a join
+
   converters/table_results.py:
     tests:
       - test_converters.py                # RFC-052 9.2: table_results / heading_pages from a DoclingDocument

@@ -398,12 +398,12 @@ class TestSplitCoordinator:
         assert join_heading_shifts(["# A\n## B", "#### C", "", "## D"]) == 1
         assert join_heading_shifts(["# A", "## B", "# C"]) == 0
 
-
     def test_joined_headings_take_document_wide_font_size_levels(self, tmp_path):
         """11.7: two chunkings that levelled the same headings differently join
         to the same levels, ranked by font size over the whole PDF (bold above
         regular at one size). One call, numbered headings and headings the PDF
         does not hold are left alone."""
+        import asyncio
         import re
 
         import fitz
@@ -437,7 +437,7 @@ class TestSplitCoordinator:
             res = RemoteConvertResult(
                 markdown=text, pictures=[], heading_pages=heads, applied_chunks=[{}] * chunks
             )
-            return joined_markdown(res, str(pdf))
+            return asyncio.run(joined_markdown(res, str(pdf)))
 
         service_chunks = joined(md([1, 2, 3, 2]))
         split_shards = joined(md([1, 1, 2, 1]))
@@ -449,6 +449,13 @@ class TestSplitCoordinator:
         assert joined(md([1, 1, 2, 1]), heads=[[t, 0] for t, _ in pages]) == md([1, 1, 2, 1])
         numbered = "# 1 Scope\n\nx\n\n## 1.1 Terms\n\nx\n\n# 2 Claims\n\nx"
         assert joined(numbered, heads=[["1 Scope", 0]]) == numbered
+
+        # The page stream is normalised one PDF character at a time; a heading
+        # must match it whether the PDF stores the accent precomposed or not.
+        from pageindex_mcp.converters.joined_headings import _alnum
+
+        for stored in ("Côte d'Ivoire", "Côte d'Ivoire"):
+            assert "".join(_alnum(c) for c in stored) == _alnum("Côte d'Ivoire")
 
     def test_stub_backends_pull_copy_reroute_and_share_the_deadline(self, split_env, monkeypatch):
         """A-P5-5 against stub backends: pulling from one queue up to each
