@@ -267,11 +267,14 @@ class _Capture:
             for w in workers:
                 if w.proc.is_alive():
                     self._kill(w, w.reason or "deadline")
-                # Reap reliably: a single 1s join can return while the kernel
-                # is still tearing the SIGKILLed process down, leaving a
-                # zombie behind. Keep polling (bounded) until it is actually
-                # gone instead of joining once and moving on.
-                reap_deadline = time.monotonic() + 5.0
+            # Reap reliably: a single 1s join can return while the kernel
+            # is still tearing the SIGKILLed process down, leaving a zombie
+            # behind. Keep polling (bounded) until each is actually gone.
+            # One 5 s budget for the whole pool, not per worker: all were
+            # killed above, so a large pool still finishes well inside
+            # join's 30 s fallback.
+            reap_deadline = time.monotonic() + 5.0
+            for w in workers:
                 with contextlib.suppress(Exception):
                     while w.proc.is_alive() and time.monotonic() < reap_deadline:
                         w.proc.join(0.2)

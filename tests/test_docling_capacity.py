@@ -1009,15 +1009,25 @@ def test_capture_budget_runs_to_deadline_and_grows_pool(tmp_path, monkeypatch):
     full = asyncio.run(handle.join(None))
     assert (full.failed, full.procs) == ([], 2)
 
-    # The old budget (a fixed grace after conversion) cuts the same capture
-    # short; ranges never started fail as "deadline", joined into one run.
+    # The legacy setting still works: a configured TABLES_JOIN_GRACE_S, fed
+    # through collect() as the indexer does, cuts the same capture short;
+    # ranges never started fail as "deadline", joined into one run.
+    from pageindex_mcp.tables.settings import capture_settings
+
+    assert capture_settings().join_grace_s is None
     monkeypatch.setattr(cap, "free_memory_bytes", lambda: 8 * _GIB)
-    short = asyncio.run(
-        cap.start(
-            "/x.pdf", page_count=8, page_classes=None, deadline_monotonic=time.monotonic() + 60
-        ).join(0.0)
-    )
-    assert short.failed == [(0, 7, "deadline")]
+    monkeypatch.setenv("TABLES_JOIN_GRACE_S", "0")
+
+    async def _legacy():
+        pend = ta.start_pending(
+            "/x.pdf", page_count=8, page_class_ranges=None, deadline_monotonic=None
+        )
+        await pend.collect(capture_settings().join_grace_s, describe=False, model="m")
+        await pend.collect_task
+        return pend
+
+    assert asyncio.run(_legacy()).result.failed == [(0, 7, "deadline")]
+    monkeypatch.delenv("TABLES_JOIN_GRACE_S")
 
     # A document that never reaches persist does not wait out the capture.
     async def _abandon():

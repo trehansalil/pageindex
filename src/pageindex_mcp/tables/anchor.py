@@ -772,7 +772,10 @@ def start_pending(
             pdf_path,
             page_count=page_count,
             page_classes=page_classes_from_ranges(page_class_ranges) if page_class_ranges else None,
-            deadline_monotonic=deadline_monotonic - cfg.deadline_margin_s,
+            # At most half the time left, so a short child deadline still
+            # leaves capture a window instead of one already past.
+            deadline_monotonic=deadline_monotonic
+            - min(cfg.deadline_margin_s, max(0.0, deadline_monotonic - time.monotonic()) / 2),
         )
         return PendingTables(
             handle=handle,

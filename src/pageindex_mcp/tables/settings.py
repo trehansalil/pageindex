@@ -12,6 +12,7 @@ A malformed value falls back to its default with a WARNING; it never raises.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -50,6 +51,9 @@ def _num(env: Mapping[str, str], key: str, default, cast, minimum):
         value = cast(float(raw.strip())) if cast is int else cast(raw.strip())
     except ValueError:
         logger.warning("%s=%r is not a number; using %s", key, raw, default)
+        return default
+    if not math.isfinite(value):
+        logger.warning("%s=%r is not finite; using %s", key, raw, default)
         return default
     if value < minimum:
         logger.warning("%s=%r is below %s; using %s", key, raw, minimum, default)
