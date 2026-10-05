@@ -123,6 +123,7 @@ _C_RECOVERY = "pageindex_mcp.client.recovery"
 _X_PICTURES = "pageindex_mcp.converters.pictures"
 _X_PIPELINE = "pageindex_mcp.converters.pipeline"
 _X_DOCLING_CONV = "pageindex_mcp.converters.docling_conv"
+_X_JOINED_HEADINGS = "pageindex_mcp.converters.joined_headings"
 _X_OCRLANGS = "pageindex_mcp.converters.ocr_langs"
 _X_PRECLASSIFY = "pageindex_mcp.converters.preclassify"
 _S_DOCUMENTS = "pageindex_mcp.storage.documents"
@@ -1874,6 +1875,28 @@ _PIPELINE_POINTS: tuple[DecisionPoint, ...] = (
             "_t<k> entries lowest coverage first, then the added type/"
             "description of enriched _seg nodes. Storage is never changed. "
             "counter is tiktoken_o200k_base or chars4. Counts only (HR3)."
+        ),
+    ),
+    _p(
+        event="joined_heading_relevel",
+        phase=Phase.CONVERT,
+        module=_X_JOINED_HEADINGS,
+        function="relevel_joined_headings",
+        choices=(
+            "applied",
+            "skipped_few_headings",
+            "skipped_numbered",
+            "skipped_unplaced",
+            "failed",
+        ),
+        attrs=("headings", "numbered", "placed", "levels", "error_type"),
+        always_emits=False,
+        note=(
+            "RFC-052 11.7: once per markdown joined from several Docling calls "
+            "(the service's chunks, or the worker's split shards), whose headings "
+            "each call levelled on its own. applied = levels re-derived from font "
+            "size ranked across the document. Counts only (HR3); error_type is an "
+            "exception CLASS name."
         ),
     ),
     _p(

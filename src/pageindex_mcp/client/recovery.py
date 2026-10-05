@@ -465,6 +465,7 @@ class RecoveryMixin:
             DoclingUnavailable,
             _remote_pdf_convert,
             child_deadline_monotonic,
+            joined_markdown,
             wait_for_docling_ready,
         )
 
@@ -580,7 +581,8 @@ class RecoveryMixin:
                     ),
                     recovery_trigger=recovery_trigger,
                 )
-                state.md_content, state.pic_results = _conv.markdown, _conv.pictures
+                state.md_content = await joined_markdown(_conv, file_path)
+                state.pic_results = _conv.pictures
                 _recovery_extras = (list(_conv.heading_pages), list(_conv.table_results))
             else:
                 decision(

@@ -508,6 +508,7 @@ from .remote import (  # noqa: E402
     _converter_contract,
     _remote_pdf_convert,
     child_deadline_monotonic,
+    joined_markdown,
     wait_for_docling_ready,
 )
 
@@ -1035,7 +1036,8 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                                 page_count=state.pdf_page_count,
                                 page_classes=_page_classes,
                             )
-                        md_content, state.pic_results = _conv.markdown, _conv.pictures
+                        md_content = await joined_markdown(_conv, file_path)
+                        state.pic_results = _conv.pictures
                         # RFC-052 9.2 / R9 AC7: keep the first pass's
                         # per-chunk context and table/heading extras.
                         state.first_pass_chunks = list(_conv.applied_chunks) or None

@@ -708,6 +708,20 @@ def merge_convert_results(results: list[RemoteConvertResult]) -> RemoteConvertRe
     )
 
 
+async def joined_markdown(res: RemoteConvertResult, pdf_path: str) -> str:
+    """``res.markdown``, with document-wide heading levels when it was joined
+    from several Docling calls -- the service's chunks or the split's shards
+    (RFC-052 11.7, ``converters/joined_headings.py``). One call keeps the
+    add-on's levels. The PDF read runs off the event loop."""
+    if len(res.applied_chunks) < 2:
+        return res.markdown
+    from ..converters.joined_headings import relevel_joined_headings
+
+    return await asyncio.to_thread(
+        relevel_joined_headings, res.markdown, res.heading_pages, pdf_path
+    )
+
+
 async def _remote_pdf_convert(
     staging_key: str,
     *,

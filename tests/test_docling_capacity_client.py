@@ -398,6 +398,65 @@ class TestSplitCoordinator:
         assert join_heading_shifts(["# A\n## B", "#### C", "", "## D"]) == 1
         assert join_heading_shifts(["# A", "## B", "# C"]) == 0
 
+    def test_joined_headings_take_document_wide_font_size_levels(self, tmp_path):
+        """11.7: two chunkings that levelled the same headings differently join
+        to the same levels, ranked by font size over the whole PDF (bold above
+        regular at one size). One call, numbered headings and headings the PDF
+        does not hold are left alone."""
+        import asyncio
+        import re
+
+        import fitz
+
+        from pageindex_mcp.client.remote import RemoteConvertResult, joined_markdown
+
+        pdf = tmp_path / "doc.pdf"
+        doc = fitz.open()
+        for text, size, font in [
+            ("World Pocketbook", 24, "helv"),
+            ("Africa", 14, "helv"),
+            ("Algeria", 14, "helv"),
+            ("Explanatory notes", 14, "hebo"),
+        ]:
+            page = doc.new_page()
+            page.insert_text((72, 72), text, fontsize=size, fontname=font)
+            page.insert_text((72, 120), "Africa and Algeria in body text.", fontsize=10)
+        doc.save(pdf)
+        doc.close()
+        pages = [["World Pocketbook", 0], ["Africa", 1], ["Algeria", 2], ["Explanatory notes", 3]]
+
+        def md(levels):
+            return "\n\n".join(
+                f"{'#' * n} {title}\n\nbody" for n, (title, _) in zip(levels, pages, strict=True)
+            )
+
+        def levels(text):
+            return [len(m.group(1)) for m in re.finditer(r"^(#+) ", text, re.M)]
+
+        def joined(text, chunks=2, heads=pages):
+            res = RemoteConvertResult(
+                markdown=text, pictures=[], heading_pages=heads, applied_chunks=[{}] * chunks
+            )
+            return asyncio.run(joined_markdown(res, str(pdf)))
+
+        service_chunks = joined(md([1, 2, 3, 2]))
+        split_shards = joined(md([1, 1, 2, 1]))
+        assert service_chunks == split_shards
+        assert levels(service_chunks) == [1, 3, 3, 2]
+        assert joined(service_chunks) == service_chunks
+
+        assert joined(md([1, 1, 2, 1]), chunks=1) == md([1, 1, 2, 1])
+        assert joined(md([1, 1, 2, 1]), heads=[[t, 0] for t, _ in pages]) == md([1, 1, 2, 1])
+        numbered = "# 1 Scope\n\nx\n\n## 1.1 Terms\n\nx\n\n# 2 Claims\n\nx"
+        assert joined(numbered, heads=[["1 Scope", 0]]) == numbered
+
+        # The page stream is normalised one PDF character at a time; a heading
+        # must match it whether the PDF stores the accent precomposed or not.
+        from pageindex_mcp.converters.joined_headings import _alnum
+
+        for stored in ("Côte d'Ivoire", "Côte d'Ivoire"):
+            assert "".join(_alnum(c) for c in stored) == _alnum("Côte d'Ivoire")
+
     def test_stub_backends_pull_copy_reroute_and_share_the_deadline(self, split_env, monkeypatch):
         """A-P5-5 against stub backends: pulling from one queue up to each
         backend's chunk limit, copying the tail, a build roll, retry/re-route,
