@@ -105,8 +105,12 @@ def capture_settings(env: Mapping[str, str] | None = None) -> CaptureSettings:
     )
     return CaptureSettings(
         enabled=_bool(e, "TABLES_CAPTURE", True),
-        proc_bytes=_num(e, "TABLES_PROC_BYTES", 256 * _MIB, int, 1),
-        reserve_bytes=_num(e, "TABLES_RESERVE_BYTES", 512 * _MIB, int, 0),
+        # Sized for the 1536 MiB worker pod (11.7 re-run): the converter child
+        # and arq leave ~614 MiB, and these start two processes there. 192 MiB
+        # is 1.5x the highest capture RSS seen (129 MiB, a 292-page tables-heavy
+        # document); two at that cap still leave ~200 MiB of the pod.
+        proc_bytes=_num(e, "TABLES_PROC_BYTES", 192 * _MIB, int, 1),
+        reserve_bytes=_num(e, "TABLES_RESERVE_BYTES", 128 * _MIB, int, 0),
         min_pages_per_proc=_num(e, "TABLES_MIN_PAGES_PER_PROC", 30, int, 1),
         pod_slots=pod_slots or _default_pod_slots(),
         rss_poll_s=_num(e, "TABLES_RSS_POLL_S", 0.25, float, 0.01),
