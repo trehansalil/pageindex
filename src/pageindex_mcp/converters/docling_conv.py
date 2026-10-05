@@ -1542,10 +1542,10 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915, C901
     ``num_threads`` threads (see ``docling_resources.plan_docling``); the
     markdown is still joined in page order.
 
-    Minor heading-level discontinuities at chunk joins are an accepted
-    trade-off (RFC-027 D7 risk acceptance) -- the downstream tree-building
-    ``_relevel_by_containment`` pass normalizes heading depth across the
-    concatenated output.
+    Each chunk levels its own headings, so after the join they are
+    re-levelled by font size across the whole document
+    (``joined_headings.relevel_joined_headings``, RFC-052 11.7); this
+    replaces the RFC-027 D7 acceptance of level discontinuities at joins.
 
     RFC-052 R3: with ``page_classes`` (one per page) and page-class chunking
     on, the boundaries come from ``page_class_chunks`` instead -- needs-uniform
@@ -1736,8 +1736,15 @@ def _pdf_to_markdown_docling_chunked(  # noqa: PLR0913, PLR0915, C901
             if "page" in pic:
                 pic["page"] = pic["page"] + start
         pic_results.extend(chunk_pics)
+    merged: dict = {}
+    _merge_chunk_extras(merged, chunks, chunk_reports)
     if extras is not None:
-        _merge_chunk_extras(extras, chunks, chunk_reports)
+        extras.update(merged)
+    # RFC-052 11.7: each chunk levelled its own headings; level them across
+    # the whole document (the worker does the same after a split's join).
+    from .joined_headings import relevel_joined_headings
+
+    md = relevel_joined_headings("\n\n".join(md_parts), merged["heading_pages"], pdf_path)
     # Per-chunk stage tables are not merged -- out of scope for Zone 4 initial
     # landing. extraction_stages is empty for chunked/oversized PDFs.
-    return "\n\n".join(md_parts), pic_results, {}
+    return md, pic_results, {}
