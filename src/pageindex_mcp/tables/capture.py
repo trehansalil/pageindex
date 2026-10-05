@@ -424,7 +424,7 @@ class CaptureHandle:
         assert c is not None
         if grace_s is None:
             # The supervisor checks its deadline every poll and reaps for up
-            # to 5 s per process after; the 30 s join below covers that tail.
+            # to 5 s for the whole pool after; the 30 s join covers that tail.
             grace_s = c.deadline - time.monotonic()
         try:
             await asyncio.to_thread(c.thread.join, max(0.0, grace_s))

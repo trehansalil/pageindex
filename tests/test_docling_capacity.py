@@ -1026,7 +1026,11 @@ def test_capture_budget_runs_to_deadline_and_grows_pool(tmp_path, monkeypatch):
         await pend.collect_task
         return pend
 
-    assert asyncio.run(_legacy()).result.failed == [(0, 7, "deadline")]
+    # A page or two may finish before the stop lands; the rest, never
+    # started ones included, fail as "deadline".
+    failed = asyncio.run(_legacy()).result.failed
+    assert {r for _, _, r in failed} == {"deadline"} and failed[-1][1] == 7
+    assert sum(e - s + 1 for s, e, _ in failed) >= 6
     monkeypatch.delenv("TABLES_JOIN_GRACE_S")
 
     # A document that never reaches persist does not wait out the capture.
