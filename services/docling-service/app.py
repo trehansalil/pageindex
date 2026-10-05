@@ -787,6 +787,9 @@ class _Conversion:
     #: empty for a direct-route conversion or one that never got far enough
     #: to know its chunk count.
     chunk_progress: dict = field(default_factory=dict)
+    #: Set once the request has returned; ends its ``_watch_client`` loop
+    #: (see ``_preempt_while_queued`` for why that loop is not just cancelled).
+    finished: bool = False
 
 
 #: Every /convert/pdf request past its download. Touched only on the event
@@ -821,8 +824,11 @@ def _cancel(conv: _Conversion, choice: str) -> None:
 
 
 async def _watch_client(conv: _Conversion) -> None:
-    """Cancel ``conv`` once its client disconnects or its X-Deadline passes."""
-    while not conv.cancel_event.is_set():
+    """Cancel ``conv`` once its client disconnects or its X-Deadline passes.
+
+    Ends on ``conv.finished`` too: ``convert_pdf`` also cancels this task, but
+    that cancel can be swallowed (see ``_preempt_while_queued``)."""
+    while not conv.cancel_event.is_set() and not conv.finished:
         if conv.deadline is not None and time.time() >= conv.deadline:
             _cancel(conv, "deadline")
             return
@@ -855,15 +861,24 @@ async def _preempt_stale_orphans() -> None:
             _cancel(conv, "orphan_preempted")
 
 
-async def _preempt_while_queued() -> None:
+async def _preempt_while_queued(stop: asyncio.Event) -> None:
     """Background loop: re-run ``_preempt_stale_orphans`` every
     ``CLIENT_POLL_S`` while this request waits on ``_convert_slots``.
 
-    Cancelled once the slot is acquired (see ``convert_pdf``).
+    Stopped through ``stop`` once the slot is acquired (see ``convert_pdf``),
+    never by cancelling the task: ``_preempt_stale_orphans`` spends most of
+    its time in starlette's ``Request.is_disconnected()``, whose anyio
+    ``CancelScope`` cancels itself and swallows a ``task.cancel()`` that lands
+    inside it. The loop then ran on, the ``await`` on it never returned, and
+    the request hung after admission holding its slot for good -- on the Mac
+    a split chunk's slice slot, so the group never gave the whole-document
+    slot back and every request over ``SLICE_MAX_PAGES`` queued forever
+    (2026-10-05).
     """
-    while True:
+    while not stop.is_set():
         await _preempt_stale_orphans()
-        await asyncio.sleep(CLIENT_POLL_S)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), CLIENT_POLL_S)
 
 
 async def _await_conversion(work, conv: _Conversion):
@@ -1134,16 +1149,16 @@ async def convert_pdf(  # noqa: PLR0915, C901
         # already stale at that instant. _preempt_while_queued keeps
         # re-checking (every CLIENT_POLL_S, including the holder's own
         # X-Deadline, not just disconnect) for as long as this request waits.
-        preempt_task = asyncio.create_task(_preempt_while_queued())
+        stop_preempt = asyncio.Event()
+        preempt_task = asyncio.create_task(_preempt_while_queued(stop_preempt))
         try:
             if slice_request:
                 await _admit_unless_cancelled(_acquire_slice_slot, _release_slice_slot, conv)
             else:
                 await _admit_unless_cancelled(_convert_slots.acquire, _convert_slots.release, conv)
         finally:
-            preempt_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await preempt_task
+            stop_preempt.set()
+            await preempt_task
         try:
             if conv.cancel_event.is_set():
                 raise DoclingCancelled("cancelled while queued for a conversion slot")
@@ -1251,6 +1266,7 @@ async def convert_pdf(  # noqa: PLR0915, C901
         logger.exception("PDF conversion failed: %s", exc)
         raise HTTPException(status_code=500, detail="PDF conversion failed") from exc
     finally:
+        conv.finished = True
         watcher.cancel()
         _conversions.discard(conv)
         if shared_url is not None:

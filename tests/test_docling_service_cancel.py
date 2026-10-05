@@ -9,6 +9,7 @@ Docling model ever loads.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import threading
 import time
@@ -212,4 +213,56 @@ def test_orphan_does_not_block_next_request(svc, monkeypatch, stale_reason):
     assert response.markdown == "md-next"
     assert orphan_exc.status_code == 499
     assert svc.decisions == [(expected_choice, "j-orphan")]
+    assert app._convert_slots._value == app.MAX_CONCURRENT and not app._conversions
+
+
+def test_queued_request_survives_a_swallowed_cancel_in_is_disconnected(svc, monkeypatch):
+    """2026-10-05 Mac slot leak: starlette's ``Request.is_disconnected()``
+    runs in an anyio CancelScope that cancels itself, and a ``task.cancel()``
+    landing inside it is swallowed. convert_pdf used to stop its queued-time
+    preempt loop that way and then await it: the loop ran on, the request
+    hung after admission and kept its slot for good. Stopping the loop (and
+    the holder's watcher) must not depend on a cancel getting through."""
+    import pageindex_mcp.converters as converters
+
+    app = svc.app
+    monkeypatch.setattr(app, "ORPHAN_GRACE_S", 0.0)  # the queued loop polls the holder
+    release = threading.Event()
+    svc_convert = converters.pdf_to_markdown_docling
+
+    def convert(path, **kw):
+        if current_context().get("job_id") == "j-hold":
+            svc.started.setdefault("j-hold", threading.Event()).set()
+            release.wait(5)
+            return "md-hold", [], {}
+        return svc_convert(path, **kw)
+
+    monkeypatch.setattr("pageindex_mcp.converters.pdf_to_markdown_docling", convert)
+
+    class _SwallowingRequest(_FakeRequest):
+        async def is_disconnected(self) -> bool:
+            # What anyio's self-cancelled scope does to a task.cancel().
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.sleep(0.5)
+            return False
+
+    async def scenario():
+        with bind_log_context(job_id="j-hold"):
+            hold = asyncio.create_task(app.convert_pdf(_body(app), _SwallowingRequest()))
+        await _until(lambda: "j-hold" in svc.started)
+        with bind_log_context(job_id="j-next"):
+            nxt = asyncio.create_task(app.convert_pdf(_body(app), _FakeRequest()))
+        await asyncio.sleep(0.1)  # queued; its preempt loop is inside the holder's check
+        release.set()
+        return await asyncio.wait_for(hold, 5), await asyncio.wait_for(nxt, 5)
+
+    # In a daemon thread: with the bug the request never returns, and neither
+    # does asyncio.run (its cleanup cancel is swallowed too) -- fail, not hang.
+    out: list = []
+    runner = threading.Thread(target=lambda: out.append(asyncio.run(scenario())), daemon=True)
+    runner.start()
+    runner.join(15)
+    assert out, "queued request hung after admission (preempt loop outlived its cancel)"
+    held, nxt = out[0]
+    assert (held.markdown, nxt.markdown) == ("md-hold", "md-next")
     assert app._convert_slots._value == app.MAX_CONCURRENT and not app._conversions
