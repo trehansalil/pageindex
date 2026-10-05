@@ -372,8 +372,8 @@ Field rules:
 | Env | Default | Meaning |
 |---|---|---|
 | `TABLES_CAPTURE` | `1` | Master switch; `0` = today's behaviour |
-| `TABLES_PROC_BYTES` | `268435456` | RSS kill limit per process (≈3× the 87 MiB peak) |
-| `TABLES_RESERVE_BYTES` | `536870912` | Cgroup headroom kept for the tree build and a second job |
+| `TABLES_PROC_BYTES` | `201326592` | RSS kill limit per process (1.5× the 129 MiB pocketbook peak; was 256 MiB, amended 2026-10-05) |
+| `TABLES_RESERVE_BYTES` | `134217728` | Cgroup headroom kept for converter-child and arq growth (was 512 MiB, which held capture at one process in the 1536 MiB worker pod; a second job's ~650 MB converter child did not fit under either value) |
 | `TABLES_MIN_PAGES_PER_PROC` | `30` | Range size; ranges are queued, one process each |
 | `TABLES_POD_SLOTS` | `floor(available_cpus())` | Capture processes across concurrent jobs |
 | `TABLES_RSS_POLL_S` | `0.25` | Watchdog period |

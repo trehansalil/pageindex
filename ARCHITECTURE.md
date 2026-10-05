@@ -687,8 +687,8 @@ remote PDF route with `ALLOW_AGPL_FALLBACK` on — HR4):
 | Variable | Default | Purpose |
 |---|---|---|
 | `TABLES_CAPTURE` | `1` (true) | Master switch for PyMuPDF table capture; `0` = today's behaviour, no `.tables.json` |
-| `TABLES_PROC_BYTES` | `268435456` (256 MiB) | RSS kill limit per capture process |
-| `TABLES_RESERVE_BYTES` | `536870912` (512 MiB) | Cgroup headroom reserved ahead of the capture pool's memory sizing |
+| `TABLES_PROC_BYTES` | `201326592` (192 MiB) | RSS kill limit per capture process (1.5× the highest seen, 129 MiB) |
+| `TABLES_RESERVE_BYTES` | `134217728` (128 MiB) | Cgroup headroom reserved ahead of the capture pool's memory sizing; with the 1536 MiB worker pod these defaults run two processes |
 | `TABLES_MIN_PAGES_PER_PROC` | `30` | Pages per capture range; ranges are queued, one process each, and the pool grows as cpu/mem/slots free up |
 | `TABLES_POD_SLOTS` | `floor(available_cpus())` | Pod-wide capture-process slot ceiling across concurrent jobs (`fcntl` lock files) |
 | `TABLES_RSS_POLL_S` | `0.25` | RSS watchdog poll period |

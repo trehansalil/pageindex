@@ -1045,3 +1045,29 @@ def test_capture_budget_runs_to_deadline_and_grows_pool(tmp_path, monkeypatch):
 
     pend, waited = asyncio.run(_abandon())
     assert waited < 10 and pend.result.failed  # not the ~30 s full scan
+
+
+def test_capture_pool_defaults_fit_two_procs_in_worker_pod(tmp_path, monkeypatch):
+    """11.7 re-run: in the 1536 MiB worker pod, the converter child and arq
+    leave ~614 MiB free, and the 512 MiB reserve with 256 MiB per process
+    held capture at 1 process (~620 s, the job's critical path, +27% wall).
+    The defaults must start two there."""
+    from pageindex_mcp.tables import capture as cap
+
+    monkeypatch.setattr(cap, "SLOT_LOCK_TEMPLATE", str(tmp_path / "slot-{i}.lock"))
+    monkeypatch.setattr(cap, "available_cpus", lambda: 2)
+    monkeypatch.setattr(cap, "_child_target", _slow_capture_child)
+    monkeypatch.setattr(cap, "free_memory_bytes", lambda: 614 * _MIB)
+    monkeypatch.setenv("TABLES_POD_SLOTS", "2")
+    monkeypatch.setenv("TABLES_MIN_PAGES_PER_PROC", "2")
+    monkeypatch.setenv("TABLES_RSS_POLL_S", "0.05")
+    for key in ("TABLES_PROC_BYTES", "TABLES_RESERVE_BYTES", "TABLES_JOIN_GRACE_S"):
+        monkeypatch.delenv(key, raising=False)
+
+    import time
+
+    handle = cap.start(
+        "/x.pdf", page_count=8, page_classes=None, deadline_monotonic=time.monotonic() + 60
+    )
+    result = asyncio.run(handle.join(None))
+    assert (result.failed, result.procs) == ([], 2)

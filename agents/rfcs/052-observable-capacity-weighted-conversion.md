@@ -294,7 +294,7 @@ Measured on 2026-09-27:
 
 1. `find_tables()` SHALL run in a process pool, not threads: PyMuPDF documents are not thread-safe, and the work holds the GIL. Each process SHALL open the PDF itself and take a contiguous page range.
 2. Pool size SHALL be `min(cgroup CPU quota, floor((cgroup free − TABLES_RESERVE_BYTES) / TABLES_PROC_BYTES), ceil(pages / TABLES_MIN_PAGES_PER_PROC))`. The size is re-computed per document and is ≥ 1.
-   - `TABLES_PROC_BYTES` defaults to 256 MiB (about 3× the measured peak).
+   - `TABLES_PROC_BYTES` defaults to 256 MiB (about 3× the measured peak). **Amended 2026-10-05 (11.7 re-run):** 192 MiB, with `TABLES_RESERVE_BYTES` 128 MiB (was 512). Once capture ran to its deadline (A-P5-5 follow-up), 256 + 512 held it to one process in the 1536 MiB worker pod (~614 MiB free beside the converter child and arq). That made capture the job's critical path at +27% wall time, against item 3's 5%. 192 MiB is 1.5× the highest capture RSS since seen (129 MiB, pocketbook), and two processes at that cap still leave ~200 MiB of the pod.
    - A process that exceeds it is killed. Its pages are marked `capture_failed`, and the document still converts.
 3. Capture SHALL run **concurrently with remote conversion**, not ahead of it, and SHALL NOT block dispatch. **Amended 2026-09-27 (user):** R9's signals are computed by docling-service per chunk, so the veto set is empty. The job's median wall time SHALL NOT grow by more than 5% on the pocketbook.
 4. Every table SHALL be persisted to `processed/<doc_id>.tables.json` with these fields:
