@@ -83,7 +83,8 @@ class CaptureSettings:
     min_pages_per_proc: int  # TABLES_MIN_PAGES_PER_PROC
     pod_slots: int  # TABLES_POD_SLOTS
     rss_poll_s: float  # TABLES_RSS_POLL_S
-    join_grace_s: float  # TABLES_JOIN_GRACE_S
+    join_grace_s: float | None  # TABLES_JOIN_GRACE_S; None = until the capture deadline
+    deadline_margin_s: float  # TABLES_DEADLINE_MARGIN_S
     strategies: tuple[str, ...]  # TABLES_STRATEGIES
     link_min_overlap: float  # TABLES_LINK_MIN_OVERLAP
 
@@ -105,7 +106,8 @@ def capture_settings(env: Mapping[str, str] | None = None) -> CaptureSettings:
         min_pages_per_proc=_num(e, "TABLES_MIN_PAGES_PER_PROC", 30, int, 1),
         pod_slots=pod_slots or _default_pod_slots(),
         rss_poll_s=_num(e, "TABLES_RSS_POLL_S", 0.25, float, 0.01),
-        join_grace_s=_num(e, "TABLES_JOIN_GRACE_S", 30.0, float, 0.0),
+        join_grace_s=_num(e, "TABLES_JOIN_GRACE_S", None, float, 0.0),
+        deadline_margin_s=_num(e, "TABLES_DEADLINE_MARGIN_S", 60.0, float, 0.0),
         strategies=_strategies(e),
         link_min_overlap=overlap,
     )

@@ -1353,7 +1353,9 @@ class CustomPageIndexClient(RecoveryMixin, PageIndexClient):
                         )
             if state.pending_tables is not None:
                 # RFC-052 R7: join after the conversion returned; descriptions
-                # then run in the background, overlapping the tree build.
+                # then run in the background, overlapping the tree build. By
+                # default the join lets capture finish (to its deadline), so a
+                # faster conversion no longer means fewer captured pages.
                 try:
                     _dcfg = _tables_describe_settings()
                     await state.pending_tables.collect(

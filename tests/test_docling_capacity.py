@@ -782,6 +782,17 @@ def _error_then_ok_capture_child(conn, pdf_path, pages, strategies):
     conn.send(("done", 1024))
 
 
+def _slow_capture_child(conn, pdf_path, pages, strategies):
+    """Stand-in capture process for the capture budget: 0.3 s per page, so a
+    fixed short join would cut it off."""
+    import time as _time
+
+    for p in pages:
+        _time.sleep(0.3)
+        conn.send(("page", p, []))
+    conn.send(("done", 1024))
+
+
 def test_9_1_capture_pool_bound_page_partition_and_rss_kill(tmp_path, monkeypatch):
     """9.1: P7 pool bound (formula and pod-wide fcntl slots), P9 page
     partition, P8 RSS kill of a real spawned process, a real 2-process
@@ -963,3 +974,60 @@ def test_9_1_capture_pool_bound_page_partition_and_rss_kill(tmp_path, monkeypatc
     doc2, elapsed = asyncio.run(_timeout_lifecycle())
     assert elapsed < 5  # promptly bounded, not the 3600s hang
     assert doc2.tables and all(t2.description_source == "fallback" for t2 in doc2.tables)
+
+
+def test_capture_budget_runs_to_deadline_and_grows_pool(tmp_path, monkeypatch):
+    """11.7 follow-up: capture used to get "conversion time + 30 s", so the
+    faster split arm captured 19 fewer pocketbook pages (150 vs 169 of 292)
+    and node_count moved with wall time. A ``None`` join now runs capture to
+    its own deadline; ranges come from a queue and the pool grows as memory
+    frees up; an abandoned document stops its capture at once."""
+    import time
+
+    from pageindex_mcp.tables import anchor as ta
+    from pageindex_mcp.tables import capture as cap
+
+    monkeypatch.setattr(cap, "SLOT_LOCK_TEMPLATE", str(tmp_path / "slot-{i}.lock"))
+    monkeypatch.setattr(cap, "available_cpus", lambda: 2)
+    monkeypatch.setattr(cap, "_child_target", _slow_capture_child)
+    monkeypatch.setenv("TABLES_POD_SLOTS", "2")
+    monkeypatch.setenv("TABLES_MIN_PAGES_PER_PROC", "2")
+    monkeypatch.setenv("TABLES_RSS_POLL_S", "0.05")
+    monkeypatch.setenv("TABLES_PROC_BYTES", str(256 * _MIB))
+    monkeypatch.setenv("TABLES_RESERVE_BYTES", str(512 * _MIB))
+    monkeypatch.delenv("TABLES_JOIN_GRACE_S", raising=False)
+
+    # Room for one process at the start (the converter child holds the rest),
+    # for two once it has gone: the pool grows from 1 to 2 and takes a slot.
+    t0 = time.monotonic()
+    monkeypatch.setattr(
+        cap,
+        "free_memory_bytes",
+        lambda: (512 + 256 + 1) * _MIB if time.monotonic() - t0 < 0.5 else 8 * _GIB,
+    )
+    handle = cap.start("/x.pdf", page_count=8, page_classes=None, deadline_monotonic=t0 + 60)
+    full = asyncio.run(handle.join(None))
+    assert (full.failed, full.procs) == ([], 2)
+
+    # The old budget (a fixed grace after conversion) cuts the same capture
+    # short; ranges never started fail as "deadline", joined into one run.
+    monkeypatch.setattr(cap, "free_memory_bytes", lambda: 8 * _GIB)
+    short = asyncio.run(
+        cap.start(
+            "/x.pdf", page_count=8, page_classes=None, deadline_monotonic=time.monotonic() + 60
+        ).join(0.0)
+    )
+    assert short.failed == [(0, 7, "deadline")]
+
+    # A document that never reaches persist does not wait out the capture.
+    async def _abandon():
+        pend = ta.start_pending(
+            "/x.pdf", page_count=200, page_class_ranges=None, deadline_monotonic=None
+        )
+        await pend.collect(None, describe=False, model="m")
+        t = time.monotonic()
+        await pend.aclose()
+        return pend, time.monotonic() - t
+
+    pend, waited = asyncio.run(_abandon())
+    assert waited < 10 and pend.result.failed  # not the ~30 s full scan

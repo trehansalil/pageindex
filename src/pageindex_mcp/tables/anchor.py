@@ -595,11 +595,12 @@ class PendingTables:
     finalized: bool = False
     started: float = field(default_factory=time.monotonic)
 
-    async def collect(self, grace_s: float, *, describe: bool, model: str) -> None:
+    async def collect(self, grace_s: float | None, *, describe: bool, model: str) -> None:
         """Start joining the capture (after conversion returned), then the
         descriptions, in the background, and return at once: the join's
         *grace_s* overlaps the tree build instead of blocking it (RFC-052
-        9.1). ``finalize`` and ``aclose`` await it. Never raises."""
+        9.1). ``None`` lets capture run to its deadline. ``finalize`` and
+        ``aclose`` await it. Never raises."""
         self.joined = True
         self.collect_task = asyncio.create_task(
             self._collect(grace_s, describe=describe, model=model)
@@ -610,7 +611,7 @@ class PendingTables:
             with contextlib.suppress(Exception):
                 await self.collect_task
 
-    async def _collect(self, grace_s: float, *, describe: bool, model: str) -> None:
+    async def _collect(self, grace_s: float | None, *, describe: bool, model: str) -> None:
         try:
             self.result = await self.handle.join(grace_s)
             self.pymupdf = [r for r in self.result.tables if r.source == SOURCE_PYMUPDF]
@@ -726,7 +727,11 @@ class PendingTables:
     async def aclose(self) -> None:
         """Release everything when the document does not reach
         ``_persist_tree_result`` (reject, flat, raise). Never raises."""
-        await self._await_collect()  # bounded by the join's grace
+        # Nothing will use the tables: stop the capture rather than let the
+        # join run on to the capture deadline.
+        with contextlib.suppress(Exception):
+            self.handle.stop()
+        await self._await_collect()
         if self.describe_task is not None and not self.describe_task.done():
             self.describe_task.cancel()
             with contextlib.suppress(BaseException):
@@ -748,7 +753,9 @@ def start_pending(
     None when ``TABLES_CAPTURE=0`` (nothing is written for the document) or
     on any start error. *page_class_ranges* is the preclassify run-length
     wire form; no *deadline_monotonic* (outside a converter child) means
-    ``DOCLING_SERVICE_TIMEOUT_S`` from now. Never blocks and never raises."""
+    ``DOCLING_SERVICE_TIMEOUT_S`` from now. Capture stops
+    ``TABLES_DEADLINE_MARGIN_S`` before it, leaving the tree build and save
+    their time. Never blocks and never raises."""
     try:
         from ..converters.preclassify import page_classes_from_ranges
         from . import capture
@@ -765,7 +772,7 @@ def start_pending(
             pdf_path,
             page_count=page_count,
             page_classes=page_classes_from_ranges(page_class_ranges) if page_class_ranges else None,
-            deadline_monotonic=deadline_monotonic,
+            deadline_monotonic=deadline_monotonic - cfg.deadline_margin_s,
         )
         return PendingTables(
             handle=handle,
