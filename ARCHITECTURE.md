@@ -689,10 +689,11 @@ remote PDF route with `ALLOW_AGPL_FALLBACK` on — HR4):
 | `TABLES_CAPTURE` | `1` (true) | Master switch for PyMuPDF table capture; `0` = today's behaviour, no `.tables.json` |
 | `TABLES_PROC_BYTES` | `268435456` (256 MiB) | RSS kill limit per capture process |
 | `TABLES_RESERVE_BYTES` | `536870912` (512 MiB) | Cgroup headroom reserved ahead of the capture pool's memory sizing |
-| `TABLES_MIN_PAGES_PER_PROC` | `30` | Minimum pages per capture process (bounds the pool alongside cpu/mem/slots) |
+| `TABLES_MIN_PAGES_PER_PROC` | `30` | Pages per capture range; ranges are queued, one process each, and the pool grows as cpu/mem/slots free up |
 | `TABLES_POD_SLOTS` | `floor(available_cpus())` | Pod-wide capture-process slot ceiling across concurrent jobs (`fcntl` lock files) |
 | `TABLES_RSS_POLL_S` | `0.25` | RSS watchdog poll period |
-| `TABLES_JOIN_GRACE_S` | `30` | Max additional wait for capture to finish after conversion returns |
+| `TABLES_JOIN_GRACE_S` | (unset) | Unset: capture runs to completion or its deadline (plus up to 30 s to stop and reap the pool), removing the fixed post-conversion cap (coverage can still vary with the CPU, memory and slots free while it runs). Set: the old fixed wait after conversion returns, plus up to 30 s to stop and reap the pool (the rest is killed) |
+| `TABLES_DEADLINE_MARGIN_S` | `60` | Capture stops this long before the converter child's deadline, leaving the tree build and save their time; capped at half the time left, so a short deadline still leaves capture a window |
 | `TABLES_STRATEGIES` | `lines,text` | Enabled capture strategies (`text` only fires on column-alignment pages) |
 | `TABLES_LINK_MIN_OVERLAP` | `0.5` | Containment threshold for linking a PyMuPDF record to a TableFormer record |
 | `TABLES_DESC_ENABLED` | `1` (true) | Master switch for LLM table descriptions |

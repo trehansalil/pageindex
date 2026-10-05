@@ -230,60 +230,68 @@ class _Capture:
             logger.warning("table capture: no pod slot before the deadline")
             return self._all_failed("no_slot")
         try:
-            return self._run_pool(len(slots))
+            return self._run_pool(slots)
         finally:
             release_slots(slots)
 
-    def _run_pool(self, procs: int) -> CaptureResult:
+    def _run_pool(self, slots: list[int]) -> CaptureResult:
+        """Scan ranges of ``TABLES_MIN_PAGES_PER_PROC`` pages from a queue, one
+        process per range. The pool starts at the slots held and grows (more
+        slots, re-checked CPU and memory) as room frees up, e.g. once the
+        converter child exits, so coverage depends on the deadline, not on
+        how much memory was free when the document started."""
         ctx = multiprocessing.get_context("spawn")
+        queue = list(split_ranges(self.n, math.ceil(self.n / self.cfg.min_pages_per_proc)))
         workers: list[_Worker] = []
         records: list[TableRecord] = []
         peak = 0
+        procs = 0  # most processes alive at once
         try:
-            for start, end in split_ranges(self.n, procs):
-                pages = scan_order(start, end, self.page_classes)
-                # One one-way pipe per process: with the parent's write end
-                # closed, a message torn by a SIGKILL reads as EOFError, not a hang.
-                reader, writer = ctx.Pipe(duplex=False)
-                proc = ctx.Process(
-                    target=_child_target,
-                    args=(writer, self.pdf_path, pages, tuple(self.cfg.strategies)),
-                    daemon=True,
-                )
-                proc.start()
-                writer.close()
-                workers.append(_Worker(pages=pages, proc=proc, q=reader))
             while True:
                 for w in workers:
                     peak = max(peak, self._check(w, records))
-                if all(w.finished or w.reason is not None for w in workers):
-                    break
+                running = [w for w in workers if not (w.finished or w.reason is not None)]
                 if self.stop.is_set() or time.monotonic() >= self.deadline:
-                    for w in workers:
-                        if not w.finished and w.reason is None:
-                            self._kill(w, "deadline")
+                    for w in running:
+                        self._kill(w, "deadline")
+                    break
+                for _ in range(self._room(running, slots, len(queue)) if queue else 0):
+                    start, end = queue.pop(0)
+                    workers.append(self._spawn(ctx, scan_order(start, end, self.page_classes)))
+                    running.append(workers[-1])
+                procs = max(procs, len(running))
+                if not running and not queue:
                     break
                 time.sleep(self.cfg.rss_poll_s)
         finally:
             for w in workers:
                 if w.proc.is_alive():
                     self._kill(w, w.reason or "deadline")
-                # Reap reliably: a single 1s join can return while the kernel
-                # is still tearing the SIGKILLed process down, leaving a
-                # zombie behind. Keep polling (bounded) until it is actually
-                # gone instead of joining once and moving on.
-                reap_deadline = time.monotonic() + 5.0
+            # Reap reliably: a single 1s join can return while the kernel
+            # is still tearing the SIGKILLed process down, leaving a zombie
+            # behind. Keep polling (bounded) until each is actually gone.
+            # One 5 s budget for the whole pool, not per worker: all were
+            # killed above, so a large pool still finishes well inside
+            # join's 30 s fallback.
+            reap_deadline = time.monotonic() + 5.0
+            for w in workers:
                 with contextlib.suppress(Exception):
                     while w.proc.is_alive() and time.monotonic() < reap_deadline:
                         w.proc.join(0.2)
                 peak = max(peak, self._drain(w, records))  # pages sent before the kill
                 with contextlib.suppress(Exception):
                     w.q.close()
-        failed: list[FailedRange] = []
+        # Pages per reason first, so adjacent ranges join into one run.
+        lost: dict[str, list[int]] = {}
         for w in workers:
             if not w.finished:
                 todo = [p for p in w.pages if p not in w.done]
-                failed.extend(failed_runs(todo, w.reason or "crash"))
+                lost.setdefault(w.reason or "crash", []).extend(todo)
+        for start, end in queue:  # never started: the deadline came first
+            lost.setdefault("deadline", []).extend(range(start, end + 1))
+        failed: list[FailedRange] = [
+            run for reason, pages in lost.items() for run in failed_runs(pages, reason)
+        ]
         return CaptureResult(
             tables=sorted(records, key=lambda r: (r.page, r.table_id)),
             failed=sorted(failed),
@@ -291,6 +299,39 @@ class _Capture:
             duration_s=time.monotonic() - self.t0,
             peak_rss_bytes=peak,
         )
+
+    def _spawn(self, ctx: Any, pages: list[int]) -> _Worker:
+        # One one-way pipe per process: with the parent's write end
+        # closed, a message torn by a SIGKILL reads as EOFError, not a hang.
+        reader, writer = ctx.Pipe(duplex=False)
+        proc = ctx.Process(
+            target=_child_target,
+            args=(writer, self.pdf_path, pages, tuple(self.cfg.strategies)),
+            daemon=True,
+        )
+        proc.start()
+        writer.close()
+        return _Worker(pages=pages, proc=proc, q=reader)
+
+    def _room(self, running: list[_Worker], slots: list[int], pending: int) -> int:
+        """How many more processes may start now. Each running process is
+        counted at ``TABLES_PROC_BYTES`` (the most it may grow to before its
+        kill), not its current RSS, so a just-spawned child is never
+        double-booked. Takes extra pod slots when free; always lets one run."""
+        cfg = self.cfg
+        free = free_memory_bytes()
+        if free is None:
+            mem = 0
+        else:
+            grown = sum(max(0, cfg.proc_bytes - (rss_bytes(w.proc.pid) or 0)) for w in running)
+            mem = (free - grown - cfg.reserve_bytes) // max(1, cfg.proc_bytes)
+        room = min(int(available_cpus()) - len(running), int(mem))
+        if not running:
+            room = max(1, room)
+        room = min(room, cfg.pod_slots, pending)
+        if len(running) + room > len(slots):
+            slots.extend(acquire_slots(len(running) + room - len(slots), cfg.pod_slots, deadline=0))
+        return max(0, min(room, len(slots) - len(running)))
 
     def _check(self, w: _Worker, records: list[TableRecord]) -> int:
         """One watchdog tick for *w*: drain its pages, SIGKILL it over
@@ -366,13 +407,25 @@ class CaptureHandle:
         self._c = capture
         self._immediate = immediate_result
 
-    async def join(self, grace_s: float) -> CaptureResult:
+    def stop(self) -> None:
+        """Ask the capture to wind down now (its unfinished pages become
+        ``deadline``); ``join`` still collects what it found. Never raises."""
+        if self._c is not None:
+            self._c.stop.set()
+
+    async def join(self, grace_s: float | None) -> CaptureResult:
         """Wait up to *grace_s* for capture, then kill stragglers (their
-        unfinished pages become ``deadline``). Never raises."""
+        unfinished pages become ``deadline``). ``None`` waits for the capture
+        to finish or reach its own deadline, so how many pages it covers does
+        not depend on how fast the conversion was. Never raises."""
         if self._immediate is not None:
             return self._immediate
         c = self._c
         assert c is not None
+        if grace_s is None:
+            # The supervisor checks its deadline every poll and reaps for up
+            # to 5 s for the whole pool after; the 30 s join covers that tail.
+            grace_s = c.deadline - time.monotonic()
         try:
             await asyncio.to_thread(c.thread.join, max(0.0, grace_s))
             if c.thread.is_alive():

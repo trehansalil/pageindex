@@ -250,7 +250,7 @@ converter child
  ├─ _remote_pdf_convert(...)                ──► docling-active (never waits on cap)
  │      cap done (~125 s) ⟶ tables.describe.run(cap.tables)   (LLM, overlapped)
  ├─ md → tree → validate_tree → finalize_gate_and_route        (HR5, unchanged)
- ├─ cap.join(grace=TABLES_JOIN_GRACE_S)
+ ├─ cap.join(grace=TABLES_JOIN_GRACE_S)   # None (default): to the capture deadline
  └─ _persist_tree_result: anchor(tree, tables, table_results)
                           → insert table nodes (post-gate) → save_doc → save_tables → save_doc_meta
 ```
@@ -262,7 +262,7 @@ converter child
 def start(pdf_path: str, *, page_count: int, page_classes: list[PageClass] | None,
           deadline_monotonic: float) -> CaptureHandle
 class CaptureHandle:
-    async def join(self, grace_s: float) -> CaptureResult   # never raises; kills stragglers
+    async def join(self, grace_s: float | None) -> CaptureResult   # never raises; kills stragglers
 @dataclass(frozen=True)
 class CaptureResult:
     tables: list[TableRecord]; failed: list[tuple[int, int, str]]  # [start, end, reason]
@@ -303,7 +303,8 @@ procs = max(1, min(cpu, mem, pages, slots_free))
 
 **Wall-time bound (R7 AC3).** Capture (~125 s at 2 processes) and the descriptions finish inside the ~742–788 s pocketbook conversion.
 - **Bound:** median arq job wall time (`process_document_job` phase entry to DONE) with `TABLES_CAPTURE=1` ≤ 1.05 × the median with `0`, over 2 runs per arm on the same remote. Add a third pair if the spread exceeds 5%.
-- **Tail:** `TABLES_JOIN_GRACE_S` bounds it.
+- **Tail:** the capture deadline (child deadline minus `TABLES_DEADLINE_MARGIN_S`, at most half the time left) bounds it by default; a set `TABLES_JOIN_GRACE_S` bounds it instead. Either way, add up to 30 s for the supervisor to stop and reap the pool after the bound passes.
+- **Amended 2026-10-05 (11.7):** a fixed grace after conversion made coverage track conversion speed: the split arm finished conversion sooner and captured 19 fewer pocketbook pages (150 vs 169 of 292, both with 1 process), moving `node_count` by +4.7%. The join now waits for capture to finish (bounded by the child deadline minus `TABLES_DEADLINE_MARGIN_S`). Pages are a queue of `TABLES_MIN_PAGES_PER_PROC` ranges and the pool is re-sized every poll, so it grows once the converter child frees its memory; `aclose` stops the capture for a document that will not be persisted. The cost is wall time whenever capture outlasts the tree build.
 
 **`processed/<doc_id>.tables.json`** (schema v1):
 - `page` is 0-based, as in `docling_chunk`.
@@ -373,10 +374,11 @@ Field rules:
 | `TABLES_CAPTURE` | `1` | Master switch; `0` = today's behaviour |
 | `TABLES_PROC_BYTES` | `268435456` | RSS kill limit per process (≈3× the 87 MiB peak) |
 | `TABLES_RESERVE_BYTES` | `536870912` | Cgroup headroom kept for the tree build and a second job |
-| `TABLES_MIN_PAGES_PER_PROC` | `30` | Page bound on the pool |
+| `TABLES_MIN_PAGES_PER_PROC` | `30` | Range size; ranges are queued, one process each |
 | `TABLES_POD_SLOTS` | `floor(available_cpus())` | Capture processes across concurrent jobs |
 | `TABLES_RSS_POLL_S` | `0.25` | Watchdog period |
-| `TABLES_JOIN_GRACE_S` | `30` | Max wait for capture after conversion |
+| `TABLES_JOIN_GRACE_S` | (unset) | Unset: run to completion or the deadline (amended 2026-10-05); set: fixed wait after conversion, plus up to 30 s to stop and reap the pool |
+| `TABLES_DEADLINE_MARGIN_S` | `60` | Capture deadline = converter child deadline minus this (at most half the time left) |
 | `TABLES_STRATEGIES` | `lines,text` | `text` only on column-alignment pages |
 | `TABLES_LINK_MIN_OVERLAP` | `0.5` | Containment threshold |
 
