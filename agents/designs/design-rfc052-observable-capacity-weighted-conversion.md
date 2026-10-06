@@ -243,7 +243,7 @@ tail     = remaining chunks → shared queue; each backend pulls one shard of
 - A conversion is *running* when `started_at` is set and `finished` is false. Today a conversion holds its slot before `started_at` is set, so a running request that hung in that window is invisible.
 - So admission SHALL set `conv.admitted_at` the moment `_admit_unless_cancelled` returns. Accounting uses `admitted_at`, not `started_at`.
 - The expected holds are:
-  - `_convert_slots.held` should equal `#admitted whole-document conversions + (MAX_CONCURRENT if _slice_active > 0 else 0)`;
+  - `_convert_slots.held` should equal `#admitted whole-document conversions + _image_active + _slice_group_taken + (MAX_CONCURRENT if _slice_active > 0 else 0)`;
   - `_slice_active` should equal `#admitted slice conversions`.
 - `leaked_slots` is the positive excess of either. A slice whose request coroutine hung after admission counts here. In the 2026-10-05 incident `leaked_slots` would have read 1 from 11:20 on.
 - `overdue_s` is `now - deadline` for the oldest admitted conversion with an `X-Deadline`. The watcher cancels at the deadline, and a conversion still admitted after that has not unwound.
