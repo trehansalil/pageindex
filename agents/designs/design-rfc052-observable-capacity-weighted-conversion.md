@@ -224,6 +224,63 @@ tail     = remaining chunks → shared queue; each backend pulls one shard of
 - **Download:** one presigned URL for all chunks, renewed after 10 min; the service caches the download by full URL.
 - **Service:** a range of <= `SLICE_MAX_PAGES` (20) takes a `_slice_slots` slot and `plan_slice` (1 process, `CPUS // SLICE_SLOTS` threads); the first chunk in takes `_convert_slots` for the group, the last out releases it.
 
+### Shard recovery and backend liveness (A-P5-6, proposed 2026-10-06)
+
+**Why.** On 2026-10-05 one Mac shard hung after admission. The cause was a `task.cancel()` swallowed inside starlette's `is_disconnected()`; it is fixed in PR #50. The shard kept `_slice_active` at 1, so the slice group never released `_convert_slots`, and every request over 20 pages queued for hours. `/health` still said 200. The worker side behaved as designed and kept timing out and retrying, but nothing noticed or repaired the backend. The changes below close that gap.
+
+**Recovery ladder (as built today, then A-P5-6).** Each level handles what the one below it could not.
+
+| Level | Trigger | Action today | A-P5-6 adds |
+|---|---|---|---|
+| Shard | error or timeout | Retry once, on another live backend if any. A refused connection drops the backend for the document. | A per-shard time limit (below). Two failed shards on one backend drop it for the document. |
+| Shard | slow or stuck, another backend idle | Tail copy on the other backend; the first result wins. | -- |
+| Split | the same shard fails twice, or the deadline passes | The whole split raises. | -- |
+| Conversion | transient failure (5xx, timeout) | `_convert_to_tree` retries the whole conversion, up to 3 times within 300 s. | Finished shards are reused; only the missing ones are re-dispatched. |
+| Job | retries exhausted, or `DoclingUnavailable` | Requeued after 120 s (`DOCLING_UNAVAILABLE_POLICY=requeue`). | -- |
+| Backend | wedged (leaked slot, overdue conversion) | Nothing: `/health` 200. | `/health` 503 `wedged`, so the controller routes away. Self-restart after 300 s. |
+
+**Service: slot conservation (docling-service `app.py`).**
+- A conversion is *running* when `started_at` is set and `finished` is false. Today a conversion holds its slot before `started_at` is set, so a running request that hung in that window is invisible.
+- So admission SHALL set `conv.admitted_at` the moment `_admit_unless_cancelled` returns. Accounting uses `admitted_at`, not `started_at`.
+- The expected holds are:
+  - `_convert_slots.held` should equal `#admitted whole-document conversions + (MAX_CONCURRENT if _slice_active > 0 else 0)`;
+  - `_slice_active` should equal `#admitted slice conversions`.
+- `leaked_slots` is the positive excess of either. A slice whose request coroutine hung after admission counts here. In the 2026-10-05 incident `leaked_slots` would have read 1 from 11:20 on.
+- `overdue_s` is `now - deadline` for the oldest admitted conversion with an `X-Deadline`. The watcher cancels at the deadline, and a conversion still admitted after that has not unwound.
+- `/capacity` gains `leaked_slots` and `overdue_s`. Old coordinators ignore unknown keys.
+
+**Service: wedge state.**
+- `wedged_since` is set when `leaked_slots > 0 or overdue_s > 0` is first seen, and cleared when both are 0. A background task re-checks every `CLIENT_POLL_S`, so the state does not depend on someone calling `/health`.
+- `/health` answers 503 `{"status": "wedged", "leaked_slots", "overdue_s", "wedged_s"}` once `now - wedged_since >= DOCLING_WEDGE_GRACE_S` (60).
+  - The grace covers the legitimate window between admission and planning, and a watcher's last poll.
+  - The node controller's `mac_ok` (`curl -f /health`) then reports the Mac down, and `docling-active` fails over to docling-1 as for an unreachable Mac.
+  - The split coordinator's `/capacity` probe still answers. A wedged backend is excluded there too: `leaked_slots > 0` makes `chunk_limit` 0.
+- After `DOCLING_WEDGE_RESTART_S` (300 s; `0` = report only) continuously wedged, the service emits `docling_service_wedged` (choice `restart`), flushes logs, and calls `os._exit(3)`.
+  - On the Mac, launchd `KeepAlive` restarts it after its 30 s throttle.
+  - On docling-1, the container restarts.
+  - The restarted service warms up behind `/health` 503 `warming`, as it already does.
+  - Shards still in flight fail at their coordinators and take the shard-level retry.
+
+**Coordinator: per-shard time limit (`client/split.py` `_run`).**
+- `read_timeout_s = min(remaining, max(SHARD_MIN_S, SHARD_FACTOR × pages × spp_b))`, where `spp_b` is the backend's `spp_ewma`, or its `DOCLING_SPP_PRIOR` when there are no samples.
+- Defaults: `DOCLING_SPLIT_SHARD_MIN_S=120`, `DOCLING_SPLIT_SHARD_FACTOR=4`. A 6-page shard at the Mac's measured 2.2 s/page gets 120 s; at the 40 s/page cpx62 prior it gets 960 s.
+- A shard that hits the limit is a `ReadTimeout`. It takes the existing retry-once path, re-routed when another backend is live. The client disconnect makes the service cancel its copy, which PR #50 now honours.
+
+**Coordinator: backend demotion.** `failures_by_backend[name]` counts failed shards per document, other than lost copy races. At 2 the backend leaves `live` for this document, as a `ConnectError` already does today. It is not marked absent process-wide: the next document probes it afresh.
+
+**Coordinator: finished shards survive conversion retries.**
+- A module-level `_shard_results` dict in the converter child, keyed by `(staging_key, expected_build_sha, start, end, options_digest)`. `options_digest` hashes the sorted `convert_kwargs`.
+- `split_convert` fills it as shards finish, and consults it before queuing: a cached shard is counted done and never dispatched.
+- It is cleared when the converter child exits (one job per child), so a requeue starts afresh.
+- It lives in memory only and holds the same data the child already holds for the merge. It is not a new store under HR2.
+
+**Service: download errors.** `_download_to_temp` and `_download_shared` raise `_DownloadError(status)`. `convert_pdf` maps it to 502 `download failed (<status>)`. The worker's `_classify_transient_failure` already counts 5xx as transient.
+
+**Observability.**
+- `docling_service_wedged`: `leaked_slots`, `overdue_s`, `wedged_s`, choice `unhealthy|restart`.
+- `docling_split` gains `shard_timeouts`, `backends_dropped` and `shards_reused`.
+- A Grafana alert fires on any `docling_service_wedged`.
+
 ## P4 Decisions (user, 2026-09-27)
 
 | ID | Decision |
@@ -555,3 +612,7 @@ The recovery request also carries a top-level `recovery_trigger` so the service 
 - **P18 (force precedence):** `force_full_page_ocr` ⇒ `do_ocr=True`, `bypass ∉ {ocr, both}`, and a `docling_force_recovery` record is emitted with the first pass's per-chunk context.
 - **P19 (kill switches):** with every P4 switch off, each chunk's `(do_ocr, do_table_structure)` equals the P3 decision.
 - **P20 (logging):** every `docling_chunk` record carries `bypass ∈ {none, ocr, tableformer, both}`.
+- **P21 (slot conservation, A-P5-6):** outside the admission grace, `_convert_slots.held` equals the admitted whole-document conversions plus `MAX_CONCURRENT` when `_slice_active > 0`, and `_slice_active` equals the admitted slice conversions. Any excess is `leaked_slots > 0`, and within `DOCLING_WEDGE_GRACE_S` it makes `/health` answer 503.
+- **P22 (bounded stall):** no shard waits longer than `max(SHARD_MIN_S, SHARD_FACTOR × pages × spp_b)` before it is retried, and a wedged backend serves no new chunk once `/health` is 503 or `leaked_slots > 0`.
+- **P23 (no rework within a job):** across the conversion retries of one job, each `(start, end)` shard converts successfully at most once.
+- **P24 (cancellation does not hang):** every background loop `convert_pdf` starts (preempt, watcher) ends without relying on `task.cancel()` reaching it.
