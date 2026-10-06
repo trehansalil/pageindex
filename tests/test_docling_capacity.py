@@ -178,6 +178,8 @@ _CAPACITY_KEYS = {
     "busy_slice_slots": int,
     "spp_ewma": float,
     "spp_samples": int,
+    "leaked_slots": int,
+    "overdue_s": float,
 }
 
 

@@ -176,10 +176,10 @@ class TestLogCapacitySnapshot:
 # ── RFC-052 P5: split coordinator (client/split.py) ───────────────────────────
 
 
-def _cap(safe=4, spp=20.0, busy=0, max_slots=1, sha="abcdef123456", chunk=10, slices=0):
+def _cap(safe=4, spp=20.0, busy=0, max_slots=1, sha="abcdef123456", chunk=10, slices=0, leaked=0):
     from pageindex_mcp.client.split import Capacity
 
-    return Capacity(sha, safe, busy, max_slots, spp, chunk, slice_slots=slices)
+    return Capacity(sha, safe, busy, max_slots, spp, chunk, slice_slots=slices, leaked_slots=leaked)
 
 
 @pytest.fixture
@@ -194,6 +194,8 @@ def split_env(monkeypatch):
     import asyncio
     import dataclasses
     import types
+
+    import httpx
 
     from pageindex_mcp.client import split as split_module
 
@@ -230,7 +232,13 @@ def split_env(monkeypatch):
         peak={},
         cancelled=[],
         presigns=0,
+        # A-P5-6: (name, page_start) chunks that hang once until their read
+        # timeout; per-chunk sleep overrides; (name, calls so far) per failure.
+        stuck=set(),
+        slow={},
+        failed=[],
     )
+    split_module._shard_results.clear()
     probes: dict[int, int] = {}
 
     async def fake_capacity(client, backend):
@@ -255,15 +263,23 @@ def split_env(monkeypatch):
         lo, hi = (0, kw["page_count"] - 1) if start is None else (start, end)
         env.inflight[name] = env.inflight.get(name, 0) + 1
         env.peak[name] = max(env.peak.get(name, 0), env.inflight[name])
+        delay = env.slow.get((name, lo), env.speed.get(name, 0.0) * (hi - lo + 1))
+        stuck = (name, lo) in env.stuck
+        if stuck:  # hangs until the caller's read timeout, once
+            env.stuck.discard((name, lo))
+            delay = kw["read_timeout_s"]
         try:
-            await asyncio.sleep(env.speed.get(name, 0.0) * (hi - lo + 1))
+            await asyncio.sleep(delay)
         except asyncio.CancelledError:
             env.cancelled.append((name, lo))
             raise
         finally:
             env.inflight[name] -= 1
+        if stuck:
+            raise httpx.ReadTimeout("stuck")
         pending = env.fail.get((name, lo))
         if pending:
+            env.failed.append((name, len(env.calls)))
             raise pending.pop(0)
         return remote_module.RemoteConvertResult(
             markdown=f"# p{lo}-{hi}", pictures=[{"page": lo + 1}], page_start=lo
@@ -290,11 +306,14 @@ def split_env(monkeypatch):
     return env
 
 
-def _run_split(env, page_count=300):
+def _run_split(env, page_count=300, *, fresh=True):
     import asyncio
 
+    from pageindex_mcp.client import split as split_module
     from pageindex_mcp.client.split import split_convert
 
+    if fresh:  # a new job: nothing to reuse from the previous run (A-P5-6)
+        split_module._shard_results.clear()
     return asyncio.run(
         split_convert(
             "key",
@@ -624,3 +643,104 @@ class TestSplitCoordinator:
         split_env.calls.clear()
         assert _run_split(split_env) is None
         assert split_env.calls == []
+
+    def test_shard_time_limit_demotion_wedged_backend_and_reuse(self, split_env, monkeypatch):
+        """A-P5-6 AC4-6 against stub backends: a stuck chunk is timed out at
+        its own limit and retried (on the other backend, else on the same
+        one), a backend that fails two chunks leaves the document, a backend
+        reporting leaked slots gets nothing, and a conversion retry
+        re-dispatches only the chunk that failed."""
+        import dataclasses
+        import time
+
+        import httpx
+
+        from pageindex_mcp.client import split as split_mod
+
+        # Limit = max(0.2 s, 0 x pages x spp): far below the 30 s deadline.
+        settings = dataclasses.replace(
+            split_env.settings, docling_split_shard_min_s=0.2, docling_split_shard_factor=0.0
+        )
+        monkeypatch.setattr(split_mod, "settings", settings)
+        monkeypatch.setattr(split_mod, "_LIMIT_SLACK_S", 0.05)
+        assert split_mod.shard_time_limit_s(6, 2.2) == 0.2
+
+        # 1. A stuck docling-1 chunk times out at 0.2 s, not at the shared
+        #    30 s deadline, and the Mac converts it.
+        split_env.speed = {"mac": 0.02, "node": 0.0001}
+        split_env.stuck = {("node", 80)}
+        t0 = time.monotonic()
+        res = _run_split(split_env)
+        assert time.monotonic() - t0 < 5.0
+        assert "# p80-99" in res.markdown
+        at_80 = [
+            (c["backend"], c["read_timeout_s"]) for c in split_env.calls if c["page_start"] == 80
+        ]
+        assert at_80[0] == ("node", 0.2) and at_80[1][0] == "mac"
+        choice, attrs = _outcome(split_env)
+        # Re-routed or tail-copied, depending on which the Mac got to first.
+        assert (choice, attrs["shard_timeouts"]) == ("split", 1)
+
+        # 2. With the Mac gone (refused), docling-1's stuck chunk is retried
+        #    on docling-1 itself after the limit.
+        split_env.calls.clear()
+        split_mod._absent_until.clear()
+        split_env.speed = {"mac": 0.0001, "node": 0.0001}
+        split_env.fail = {("mac", 0): [httpx.ConnectError("refused")]}
+        split_env.stuck = {("node", 80)}
+        t0 = time.monotonic()
+        res = _run_split(split_env)
+        assert time.monotonic() - t0 < 5.0
+        assert [c["backend"] for c in split_env.calls if c["page_start"] == 80] == ["node", "node"]
+        choice, attrs = _outcome(split_env)
+        assert (choice, attrs["shard_timeouts"]) == ("split", 1)
+        split_mod._absent_until.clear()
+
+        # 3. Demotion: docling-1 fails two chunks and gets no further one.
+        split_env.calls.clear()
+        split_env.failed.clear()
+        split_env.fail = {
+            ("node", 80): [httpx.RemoteProtocolError("boom")],
+            ("node", 100): [httpx.RemoteProtocolError("boom")],
+        }
+        res = _run_split(split_env)
+        assert "# p80-99" in res.markdown and "# p100-119" in res.markdown
+        second_failure_at = [n for b, n in split_env.failed if b == "node"][1]
+        assert all(c["backend"] == "mac" for c in split_env.calls[second_failure_at:])
+        choice, attrs = _outcome(split_env)
+        assert (choice, attrs["backends_dropped"]) == ("split", 1)
+
+        # 4. A backend reporting a leaked slot is not eligible: the document
+        #    goes to the Mac alone.
+        split_env.calls.clear()
+        split_env.decisions.clear()
+        split_env.fail = {}
+        split_env.caps["node"] = _cap(safe=4, spp=40.0, slices=2, leaked=1)
+        assert split_env.caps["node"].chunk_limit == 0
+        _run_split(split_env)
+        backend_choices = {
+            a["backend"]: c for e, c, a in split_env.decisions if e == "docling_split_backend"
+        }
+        assert backend_choices == {"mac": "eligible", "node": "wedged"}
+        assert _outcome(split_env)[0] == "single_backend"
+        split_env.caps["node"] = _cap(safe=4, spp=40.0, slices=2)
+
+        # 5. Reuse: chunk 80 fails everywhere (and last), so the conversion
+        #    fails; its retry in the same child converts only chunk 80.
+        split_env.calls.clear()
+        split_env.slow = {("node", 80): 0.2, ("mac", 80): 0.2}
+        split_env.fail = {
+            ("node", 80): [httpx.RemoteProtocolError("boom")] * 5,
+            ("mac", 80): [httpx.RemoteProtocolError("boom")] * 5,
+        }
+        with pytest.raises(httpx.RemoteProtocolError):
+            _run_split(split_env)
+        split_env.calls.clear()
+        split_env.slow = {}
+        split_env.fail = {}
+        res = _run_split(split_env, fresh=False)
+        # Chunk 80 only (the idle backend may also tail-copy it).
+        assert {c["page_start"] for c in split_env.calls} == {80}
+        assert res.markdown == "\n\n".join(f"# p{s}-{s + 19}" for s in range(0, 300, 20))
+        choice, attrs = _outcome(split_env)
+        assert (choice, attrs["shards_reused"]) == ("split", 14)

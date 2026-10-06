@@ -213,6 +213,8 @@ def capacity_snapshot(  # noqa: PLR0913 -- keyword-only, one per /capacity field
     build_sha: str,
     slice_slots: int = 0,
     busy_slice_slots: int = 0,
+    leaked_slots: int = 0,
+    overdue_s: float = 0.0,
 ) -> dict:
     """The ``GET /capacity`` body, field for field the design's example.
 
@@ -249,4 +251,9 @@ def capacity_snapshot(  # noqa: PLR0913 -- keyword-only, one per /capacity field
         "busy_slice_slots": int(busy_slice_slots),
         "spp_ewma": float(spp),
         "spp_samples": int(samples),
+        # RFC-052 A-P5-6: slots nothing accounts for, and seconds the oldest
+        # slot holder is past its X-Deadline. A coordinator sends no chunk to
+        # a backend with leaked_slots > 0.
+        "leaked_slots": int(leaked_slots),
+        "overdue_s": float(overdue_s),
     }

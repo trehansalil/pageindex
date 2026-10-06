@@ -148,6 +148,9 @@ docker run -p 8080:8080 \
 | `DOCLING_CHUNK_PAGES`         | `10`    | Chunk size `/capacity` quotes `safe_procs` for (each conversion clamps for its own) |
 | `DOCLING_SLICE_SLOTS`         | (computed) | Split chunks run at once (`/capacity` `slice_slots`); default `max(1, min(cpus, floor((total memory − reserve) / per-process peak for 20 pages)))`; `/capacity` further clamps it to what free memory fits, never below 1 (when free memory is unreadable it reports the configured value unclamped, with `safe_procs` 0, so the coordinator sends this backend no split work until it can read it again) |
 | `DOCLING_SPP_PRIOR`           | `40`    | `spp_ewma` before any chunk has finished (design: Mac 19, cpx62 40) |
+| `DOCLING_WEDGE_GRACE_S`       | `60`    | A leaked slot (`/capacity` `leaked_slots`) or a slot holder past its X-Deadline (`overdue_s`) this long turns `/health` 503 `status: wedged` (RFC-052 A-P5-6) |
+| `DOCLING_WEDGE_RESTART_S`     | `300`   | Wedged this long without a break: log `docling_service_wedged` (choice `restart`) and exit 3 for launchd / the container runtime to restart; `0` = report only |
+| `DOCLING_DEBUG_FAULTS`        | (empty) | `1` enables `POST /debug/leak-slot` (takes a slice slot nothing gives back) for the RFC-052 11.13 live fault test. Never in production |
 | `DOCLING_BACKEND_NAME`        | hostname | `/capacity` `backend`, and the `docling_chunk` / Loki `host` label |
 | `DOWNLOAD_TIMEOUT_S`          | `120`   | Timeout for downloading PDFs from presigned URL |
 | `DOCLING_ARTIFACTS_PATH`      | (baked) | Path to pre-downloaded Docling model weights   |

@@ -125,6 +125,22 @@ _convert_slots = _CountingSemaphore(MAX_CONCURRENT)
 ORPHAN_GRACE_S = float(os.environ.get("DOCLING_ORPHAN_GRACE_S", "30"))
 #: How often a /convert/pdf request checks its client and its X-Deadline.
 CLIENT_POLL_S = 2.0
+# RFC-052 A-P5-6: a leaked slot or an overdue conversion this long, without a
+# break, turns /health 503 "wedged" so the controller routes away from here.
+WEDGE_GRACE_S = float(os.environ.get("DOCLING_WEDGE_GRACE_S", "60"))
+#: Wedged this long without a break: exit and let launchd / the container
+#: runtime restart the service. 0 = report only.
+WEDGE_RESTART_S = float(os.environ.get("DOCLING_WEDGE_RESTART_S", "300"))
+#: A conversion that holds its slot but has not got past admission after this
+#: long counts as a leaked slot. Admission itself only stops the queued-time
+#: preempt loop, which takes at most one ``CLIENT_POLL_S`` round.
+ADMIT_STALL_S = 10.0
+#: /convert/image requests holding a ``_convert_slots`` slot.
+_image_active = 0
+#: When ``leaked_slots > 0 or overdue_s > 0`` was first seen; None while clean.
+_wedged_since: float | None = None
+#: The restart hook; tests replace it.
+_exit = os._exit
 
 import capacity  # noqa: E402  (services/docling-service/capacity.py)
 
@@ -216,6 +232,7 @@ async def _admit_unless_cancelled(acquire, release, conv) -> None:
             if acq in done:
                 acq.result()
                 admitted = True
+                conv.slot_at = time.time()
                 return
     finally:
         if not admitted:
@@ -283,7 +300,9 @@ async def _download_shared(url: str) -> str:
         raise
     if entry.error is not None or entry.path is None:
         entry.users -= 1
-        raise RuntimeError(f"shared download failed: {entry.error!r}")
+        if isinstance(entry.error, _DownloadError):
+            raise _DownloadError(entry.error.status)
+        raise RuntimeError(f"shared download failed: {type(entry.error).__name__}")
     return entry.path
 
 
@@ -576,9 +595,13 @@ async def lifespan(app: FastAPI):
     warmup_stop = threading.Event()
     warmup_task = asyncio.create_task(_run_warmup(warmup_stop))
     spp_filter = capacity.install_spp_filter(_spp_tracker)
+    wedge_stop = asyncio.Event()
+    wedge_task = asyncio.create_task(_wedge_monitor(wedge_stop))
     try:
         yield
     finally:
+        wedge_stop.set()
+        await wedge_task
         capacity.uninstall_spp_filter(spp_filter)
         warmup_stop.set()
         warmup_task.cancel()
@@ -695,20 +718,41 @@ def _refuse_private_url(url: str) -> None:
         )
 
 
+class _DownloadError(Exception):
+    """The presigned URL did not deliver the file: an HTTP status, or the
+    httpx error class for a network failure. Never the URL (it is a bearer
+    credential)."""
+
+    def __init__(self, status: str) -> None:
+        super().__init__(status)
+        self.status = status
+
+
 async def _download_to_temp(url: str, suffix: str = ".pdf") -> str:
-    """Download a file from a presigned URL to a temporary path."""
+    """Download a file from a presigned URL to a temporary path.
+
+    A non-2xx answer or a network failure raises ``_DownloadError``, which the
+    endpoints answer 502 (RFC-052 A-P5-6 AC7): an expired presigned URL is
+    the caller's to renew, not a conversion failure."""
     if BLOCK_PRIVATE_URLS:
         await asyncio.to_thread(_refuse_private_url, url)
-    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)  # noqa: SIM115
     try:
-        async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT_S) as client:
-            async with client.stream("GET", url) as resp:
-                resp.raise_for_status()
-                async for chunk in resp.aiter_bytes(chunk_size=65536):
-                    tmp.write(chunk)
+        async with (
+            httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT_S) as client,
+            client.stream("GET", url) as resp,
+        ):
+            if resp.status_code >= 300:
+                raise _DownloadError(str(resp.status_code))
+            async for chunk in resp.aiter_bytes(chunk_size=65536):
+                tmp.write(chunk)
         tmp.close()
         return tmp.name
-    except Exception:
+    except httpx.TransportError as exc:
+        tmp.close()
+        os.unlink(tmp.name)
+        raise _DownloadError(type(exc).__name__) from exc
+    except BaseException:
         tmp.close()
         os.unlink(tmp.name)
         raise
@@ -781,6 +825,14 @@ class _Conversion:
     cancel_event: threading.Event = field(default_factory=threading.Event)
     #: Epoch seconds the conversion slot was acquired; None while queued.
     started_at: float | None = None
+    #: A split chunk, holding a slice slot rather than a conversion slot.
+    is_slice: bool = False
+    #: Epoch seconds ``_admit_unless_cancelled`` won a slot; None while
+    #: queued and again once the slot is released (A-P5-6 slot accounting).
+    slot_at: float | None = None
+    #: Epoch seconds the request got past admission (the preempt loop has
+    #: stopped). A holder still without it after ``ADMIT_STALL_S`` hung there.
+    admitted_at: float | None = None
     cancel_reason: str | None = None
     #: Filled in by pipeline.pdf_to_markdown_docling's chunked route as
     #: {"total": <chunk count>, "done": <chunks completed>} (QA finding 5);
@@ -918,6 +970,84 @@ def _parse_deadline(raw: str | None) -> float | None:
 # ---------------------------------------------------------------------------
 
 
+def _slot_accounting(now: float) -> tuple[int, float]:
+    """``(leaked_slots, overdue_s)``: slots nothing accounts for, and how far
+    past its X-Deadline the oldest slot holder is (RFC-052 A-P5-6, design P21).
+
+    A slot is leaked when ``_convert_slots`` or ``_slice_active`` holds more
+    than the conversions that own a slot explain (a request that died
+    holding one), or when a holder has not got past admission within
+    ``ADMIT_STALL_S`` (the 2026-10-05 hang: alive, holding, never planned).
+    """
+    holders = [c for c in _conversions if c.slot_at is not None]
+    slices = sum(1 for c in holders if c.is_slice)
+    expected_held = (
+        len(holders) - slices + _image_active + (MAX_CONCURRENT if _slice_active > 0 else 0)
+    )
+    leaked = max(0, _convert_slots.held - expected_held) + max(0, _slice_active - slices)
+    leaked += sum(
+        1 for c in holders if c.admitted_at is None and now - (c.slot_at or now) >= ADMIT_STALL_S
+    )
+    past = [c.deadline for c in holders if c.deadline is not None and now > c.deadline]
+    overdue_s = round(now - min(past), 1) if past else 0.0
+    return leaked, overdue_s
+
+
+def _update_wedge(now: float) -> tuple[int, float, float]:
+    """Re-check the slot accounting and track since when it has been off.
+    Returns ``(leaked_slots, overdue_s, wedged_s)``."""
+    global _wedged_since
+    leaked, overdue_s = _slot_accounting(now)
+    if leaked or overdue_s:
+        if _wedged_since is None:
+            _wedged_since = now
+    else:
+        _wedged_since = None
+    wedged_s = 0.0 if _wedged_since is None else round(now - _wedged_since, 1)
+    return leaked, overdue_s, wedged_s
+
+
+def _wedge_step(now: float, reported: bool) -> bool:
+    """One ``_wedge_monitor`` round. Logs ``docling_service_wedged`` once per
+    episode when it outlasts the grace, and exits once it outlasts
+    ``WEDGE_RESTART_S``. Returns whether this episode has been reported."""
+    leaked, overdue_s, wedged_s = _update_wedge(now)
+    if _wedged_since is None:
+        return False
+    attrs = {"leaked_slots": leaked, "overdue_s": overdue_s, "wedged_s": wedged_s}
+    if WEDGE_RESTART_S > 0 and wedged_s >= WEDGE_RESTART_S:
+        decision(
+            event="docling_service_wedged",
+            choice="restart",
+            reason=f"wedged {wedged_s:.0f}s: exiting for a restart",
+            attrs=attrs,
+        )
+        for handler in logging.getLogger().handlers:
+            with contextlib.suppress(Exception):
+                handler.flush()
+        _exit(3)
+        return True
+    if wedged_s >= WEDGE_GRACE_S and not reported:
+        decision(
+            event="docling_service_wedged",
+            choice="unhealthy",
+            reason=f"wedged {wedged_s:.0f}s: /health answers 503",
+            attrs=attrs,
+        )
+        return True
+    return reported
+
+
+async def _wedge_monitor(stop: asyncio.Event) -> None:
+    """Keeps the wedge state current whether or not anyone calls /health.
+    Stopped through ``stop``, not ``task.cancel()`` (design P24)."""
+    reported = False
+    while not stop.is_set():
+        reported = _wedge_step(time.time(), reported)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), CLIENT_POLL_S)
+
+
 @app.get("/health")
 async def health():
     """Liveness plus what holds the conversion slot, for the reaper.
@@ -932,17 +1062,27 @@ async def health():
     once warm. A *failed* warm-up still ends in 200: each conversion's child
     loads the models itself, so a flaky warm-up must not leave the service
     unready for good. ``ready`` says whether the warm-up succeeded.
+
+    Also 503, ``status: wedged``, once a leaked slot or an overdue conversion
+    has lasted ``DOCLING_WEDGE_GRACE_S`` (RFC-052 A-P5-6): the backend still
+    answers but can no longer take a whole document, so ``mac_ok`` must see
+    it down and the controller route to the other backend.
     """
     running = [c for c in _conversions if c.started_at is not None]
     oldest = min(running, key=lambda c: c.started_at or 0.0, default=None)
+    leaked, overdue_s, wedged_s = _update_wedge(time.time())
+    wedged = _wedged_since is not None and wedged_s >= WEDGE_GRACE_S
     body = {
-        "status": "ok" if _warmup_done else "warming",
+        "status": "warming" if not _warmup_done else "wedged" if wedged else "ok",
         "in_flight": _in_flight,
         "current_job_id": oldest.job_id if oldest else None,
         "started_at": oldest.started_at if oldest else None,
         "ready": _warmup_done and _warmup_ok,
+        "leaked_slots": leaked,
+        "overdue_s": overdue_s,
+        "wedged_s": wedged_s,
     }
-    if not _warmup_done:
+    if not _warmup_done or wedged:
         return JSONResponse(status_code=503, content=body)
     return body
 
@@ -978,8 +1118,11 @@ async def capacity_endpoint():
     ``build_sha`` is the same ``BUILD_SHA`` as ``/version``'s ``commit_sha``.
     No document data (HR3). Readers shell out on macOS, so off the loop.
     """
+    leaked, overdue_s, _ = _update_wedge(time.time())
     return await asyncio.to_thread(
         capacity.capacity_snapshot,
+        leaked_slots=leaked,
+        overdue_s=overdue_s,
         busy_slots=_busy_slots(),
         max_slots=MAX_CONCURRENT,
         slice_slots=SLICE_SLOTS,
@@ -989,6 +1132,24 @@ async def capacity_endpoint():
         backend=capacity.docling_backend_name(),
         build_sha=os.environ.get("BUILD_SHA", "unknown"),
     )
+
+
+#: RFC-052 11.13: enables POST /debug/leak-slot for the live fault test.
+#: Never set in production.
+DEBUG_FAULTS = os.environ.get("DOCLING_DEBUG_FAULTS", "").strip() == "1"
+
+
+@app.post("/debug/leak-slot", dependencies=[Depends(_verify_token)])
+async def debug_leak_slot():
+    """Take a slice slot that no request will ever give back, the state the
+    2026-10-05 hang left behind, so the wedge detection, the controller's
+    failover and the self-restart can be exercised live. 404 unless
+    ``DOCLING_DEBUG_FAULTS=1``; the leak lasts until the process restarts."""
+    if not DEBUG_FAULTS:
+        raise HTTPException(status_code=404, detail="Not Found")
+    await _acquire_slice_slot()
+    logger.warning("debug fault: leaked one slice slot on purpose")
+    return {"leaked": True}
 
 
 @app.get("/version")
@@ -1096,6 +1257,7 @@ async def convert_pdf(  # noqa: PLR0915, C901
         and req.page_end is not None
         and req.page_end - req.page_start + 1 <= SLICE_MAX_PAGES
     )
+    conv.is_slice = slice_request
     shared_url: str | None = None
     try:
         if slice_request:
@@ -1159,6 +1321,7 @@ async def convert_pdf(  # noqa: PLR0915, C901
         finally:
             stop_preempt.set()
             await preempt_task
+        conv.admitted_at = time.time()
         try:
             if conv.cancel_event.is_set():
                 raise DoclingCancelled("cancelled while queued for a conversion slot")
@@ -1223,6 +1386,7 @@ async def convert_pdf(  # noqa: PLR0915, C901
                 _release_slice_slot()
             else:
                 _convert_slots.release()
+            conv.slot_at = conv.admitted_at = None
         serialized_pics = [_serialize_picture_result(pr) for pr in pic_results]  # type: ignore[arg-type]
         # RFC-052 P2 finding 3: echo what the converter actually used, not the
         # request it was handed -- a bench arm (or any caller) must be able to
@@ -1256,6 +1420,9 @@ async def convert_pdf(  # noqa: PLR0915, C901
     except _PageRangeError as exc:
         logger.warning("refusing page range: %s", exc)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except _DownloadError as exc:
+        logger.warning("PDF download failed: %s", exc.status)
+        raise HTTPException(status_code=502, detail=f"download failed ({exc.status})") from exc
     except DoclingCancelled as exc:
         logger.info("PDF conversion cancelled (%s): %s", conv.cancel_reason, exc)
         # 499 (client closed request): usually nobody is left to read it.
@@ -1282,17 +1449,26 @@ async def convert_pdf(  # noqa: PLR0915, C901
     "/convert/image", response_model=ImageConvertResponse, dependencies=[Depends(_verify_token)]
 )
 async def convert_image(req: ImageConvertRequest):
+    global _image_active
     suffix = ".png"
-    tmp_path = await _download_to_temp(req.presigned_url, suffix=suffix)
+    try:
+        tmp_path = await _download_to_temp(req.presigned_url, suffix=suffix)
+    except _DownloadError as exc:
+        logger.warning("image download failed: %s", exc.status)
+        raise HTTPException(status_code=502, detail=f"download failed ({exc.status})") from exc
     try:
         from pageindex_mcp.converters import image_to_markdown
 
         async with _convert_slots:
-            md = await asyncio.to_thread(
-                image_to_markdown,
-                tmp_path,
-                ocr_lang_override=req.ocr_lang_override,
-            )
+            _image_active += 1
+            try:
+                md = await asyncio.to_thread(
+                    image_to_markdown,
+                    tmp_path,
+                    ocr_lang_override=req.ocr_lang_override,
+                )
+            finally:
+                _image_active -= 1
         return ImageConvertResponse(markdown=md)
     except Exception as exc:
         logger.exception("Image conversion failed: %s", exc)

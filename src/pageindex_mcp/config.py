@@ -306,6 +306,11 @@ class Settings:
     docling_split_pii_backends: str = "node"
     # Below this many pages a document is not worth splitting.
     docling_split_min_pages: int = 20
+    # RFC-052 A-P5-6: a shard gets max(MIN_S, FACTOR x pages x the backend's
+    # seconds per page) before it is timed out and retried, capped by what
+    # is left of the shared deadline.
+    docling_split_shard_min_s: float = 120.0
+    docling_split_shard_factor: float = 4.0
     # Build every shard must come from. Empty: the build of the backend the
     # controller routes ``docling-active`` to.
     docling_expected_build_sha: str = ""
@@ -516,6 +521,8 @@ def _load_settings() -> Settings:
         ),
         docling_split_pii_backends=os.environ.get("DOCLING_SPLIT_PII_BACKENDS", "node"),
         docling_split_min_pages=int(os.environ.get("DOCLING_SPLIT_MIN_PAGES", "20")),
+        docling_split_shard_min_s=float(os.environ.get("DOCLING_SPLIT_SHARD_MIN_S", "120")),
+        docling_split_shard_factor=float(os.environ.get("DOCLING_SPLIT_SHARD_FACTOR", "4")),
         docling_expected_build_sha=os.environ.get("DOCLING_EXPECTED_BUILD_SHA", "").strip(),
     )
 

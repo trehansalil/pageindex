@@ -82,6 +82,9 @@ class Capacity:
     # A-P5-5: split chunks the service runs at once; 0 for a build that runs
     # one request at a time.
     slice_slots: int = 0
+    # A-P5-6: slots the service cannot account for; > 0 means it is wedged
+    # and takes no chunk. 0 for a build that does not report it.
+    leaked_slots: int = 0
 
     @classmethod
     def from_snapshot(cls, snap: dict) -> Capacity:
@@ -101,12 +104,16 @@ class Capacity:
             chunk_pages=max(1, _num("chunk_pages", 10, int)),
             backend=str(snap.get("backend") or ""),
             slice_slots=max(0, _num("slice_slots", 0, int)),
+            leaked_slots=max(0, _num("leaked_slots", 0, int)),
         )
 
     @property
     def chunk_limit(self) -> int:
         """Chunks to keep in flight on this backend: its slice slots, capped by
-        the processes its free memory allows; 1 for an older build."""
+        the processes its free memory allows; 1 for an older build, 0 for a
+        wedged one."""
+        if self.leaked_slots > 0:
+            return 0
         if self.slice_slots < 1:
             return 1
         return max(1, min(self.safe_procs, self.slice_slots))
@@ -332,6 +339,8 @@ async def _eligible_backends(client) -> tuple[dict[str, tuple[SplitBackend, Capa
                 cap.build_sha,
                 expected,
             )
+        elif cap.leaked_slots > 0:
+            choice = "wedged"
         elif cap.safe_procs < 1:
             choice = "no_capacity"
         elif not cap.has_free_slot:
@@ -358,6 +367,41 @@ async def _eligible_backends(client) -> tuple[dict[str, tuple[SplitBackend, Capa
 
 def _fmt_counts(counts: dict[str, int]) -> str:
     return ",".join(f"{k}:{v}" for k, v in sorted(counts.items()))
+
+
+#: A-P5-6: a backend leaves a document's split after this many failed chunks.
+_BACKEND_MAX_FAILURES = 2
+#: How much sooner than its time limit a failed chunk still counts as timed
+#: out: the service answers 499 at its X-Deadline (5 s before the read
+#: timeout) and notices it on a 2 s poll.
+_LIMIT_SLACK_S = 10.0
+#: A-P5-6 (design P23): chunks this converter child already converted, keyed
+#: by ``(staging_key, expected build, start, end, options digest)``, so a
+#: conversion retry re-dispatches only the chunks that failed. In memory
+#: only, gone with the child (one job per child); not a store under HR2.
+_shard_results: dict[tuple, object] = {}
+
+
+def shard_time_limit_s(pages: int, spp: float) -> float:
+    """How long one chunk may take before it is timed out and retried:
+    ``max(DOCLING_SPLIT_SHARD_MIN_S, DOCLING_SPLIT_SHARD_FACTOR x pages x spp)``,
+    ``spp`` being the backend's seconds per page (its prior before samples)."""
+    return max(
+        settings.docling_split_shard_min_s,
+        settings.docling_split_shard_factor * pages * spp,
+    )
+
+
+def _options_digest(page_classes: list | None, convert_kwargs: dict) -> str:
+    """Identifies the conversion options a cached chunk was converted with."""
+    import hashlib
+
+    def _norm(v):
+        return sorted(v) if isinstance(v, (set, frozenset)) else v
+
+    items = sorted((k, _norm(v)) for k, v in convert_kwargs.items())
+    blob = repr((page_classes, items))
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
 async def split_convert(
@@ -433,16 +477,39 @@ async def split_convert(
     shards = [Shard(i, s, e) for i, (s, e) in enumerate(doc_chunks(page_count, page_classes, size))]
     n_shards = len(shards)
 
-    queue: list[int] = list(range(n_shards))  # chunk indexes not started yet
+    # A-P5-6: shards a failed earlier attempt of this conversion finished.
+    digest = _options_digest(page_classes, convert_kwargs)
+    if any(k[0] != staging_key for k in _shard_results):
+        _shard_results.clear()  # one document per converter child
+
+    def _cache_key(idx: int) -> tuple:
+        return (staging_key, expected_sha, shards[idx].start, shards[idx].end, digest)
+
+    results: dict[int, object] = {}
+    for i in range(n_shards):
+        cached = _shard_results.get(_cache_key(i))
+        if cached is not None:
+            results[i] = cached
+    queue: list[int] = [i for i in range(n_shards) if i not in results]
     retry: list[tuple[int, str]] = []  # (chunk index, backend it failed on)
     failures: dict[int, int] = {}
-    results: dict[int, object] = {}
+    # Failed chunks per backend; at _BACKEND_MAX_FAILURES it leaves the split.
+    backend_failures: dict[str, int] = {}
+    timed_out: set[int] = set()  # chunks whose own time limit ran out
     # Insertion order is dispatch order: the first entry is the oldest chunk.
     running: dict[asyncio.Future, tuple[str, int, str]] = {}  # (backend, index, kind)
     copied: set[int] = set()
     pages_by: dict[str, int] = {}
     shards_by: dict[str, int] = {}
-    counts = {"retries": 0, "reroutes": 0, "copies": 0, "copy_wins": 0}
+    counts = {
+        "retries": 0,
+        "reroutes": 0,
+        "copies": 0,
+        "copy_wins": 0,
+        "shard_timeouts": 0,
+        "backends_dropped": 0,
+        "shards_reused": len(results),
+    }
     live = set(eligible)
     # One presigned URL for every chunk, so each backend downloads the PDF
     # once (the service caches by URL); renewed before it can expire.
@@ -460,19 +527,30 @@ async def split_convert(
             raise DoclingUnavailable(
                 f"split deadline: {remaining:.0f}s left for chunk {idx + 1}/{n_shards}"
             )
-        return await _remote_pdf_convert(
-            staging_key,
-            page_count=page_count,
-            page_classes=page_classes,
-            page_start=shard.start,
-            page_end=shard.end,
-            base_url=eligible[name][0].url,
-            read_timeout_s=remaining,
-            shard=f"{idx + 1}/{n_shards}:{shard.start}-{shard.end}",
-            hr3_checked=True,
-            presigned_url=_url(),
-            **convert_kwargs,
-        )
+        # A-P5-6: a stuck chunk is timed out and retried long before the
+        # shared deadline, whatever wedged the backend.
+        limit_s = shard_time_limit_s(shard.pages, caps[name].spp_ewma)
+        t_start = time.monotonic()
+        try:
+            return await _remote_pdf_convert(
+                staging_key,
+                page_count=page_count,
+                page_classes=page_classes,
+                page_start=shard.start,
+                page_end=shard.end,
+                base_url=eligible[name][0].url,
+                read_timeout_s=min(remaining, limit_s),
+                shard=f"{idx + 1}/{n_shards}:{shard.start}-{shard.end}",
+                hr3_checked=True,
+                presigned_url=_url(),
+                **convert_kwargs,
+            )
+        except Exception:
+            # The limit, not the shared deadline, ended it (the service's
+            # X-Deadline 499 can beat the read timeout by a few seconds).
+            if limit_s < remaining and time.monotonic() - t_start >= limit_s - _LIMIT_SLACK_S:
+                timed_out.add(idx)
+            raise
 
     def _pick(name: str) -> tuple[int, str, str] | None:
         """``name``'s next chunk as ``(index, kind, failed_on)``: a retry that
@@ -504,9 +582,15 @@ async def split_convert(
         checked here."""
         async with httpx.AsyncClient(timeout=_CAPACITY_TIMEOUT_S) as client:
             cap = await _fetch_capacity(client, eligible[name][0])
-        if cap is not None and build_matches(expected_sha, cap.build_sha):
+        if cap is not None and build_matches(expected_sha, cap.build_sha) and not cap.leaked_slots:
             return True
-        if cap is not None:
+        if cap is not None and cap.leaked_slots:
+            logger.warning(
+                "split: dropping backend %s mid-document: %d leaked slot(s)",
+                name,
+                cap.leaked_slots,
+            )
+        elif cap is not None:
             logger.warning(
                 "split: dropping backend %s mid-document: build_sha %s != expected %s",
                 name,
@@ -558,7 +642,7 @@ async def split_convert(
                     continue  # the other copy already won
                 exc = fut.exception()
                 if exc is None:
-                    results[idx] = fut.result()
+                    results[idx] = _shard_results[_cache_key(idx)] = fut.result()
                     pages_by[name] = pages_by.get(name, 0) + shards[idx].pages
                     shards_by[name] = shards_by.get(name, 0) + 1
                     if kind == "copy":
@@ -568,9 +652,23 @@ async def split_convert(
                             other_fut.cancel()  # the client disconnect cancels it remotely
                     continue
                 last_error = exc
+                if idx in timed_out:
+                    timed_out.discard(idx)
+                    counts["shard_timeouts"] += 1
                 if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
                     _mark_absent(eligible[name][0].url)
                     live.discard(name)
+                elif not isinstance(exc, DoclingUnavailable) and name in live:
+                    backend_failures[name] = backend_failures.get(name, 0) + 1
+                    if backend_failures[name] >= _BACKEND_MAX_FAILURES:
+                        # For this document only; the next one probes it afresh.
+                        live.discard(name)
+                        counts["backends_dropped"] += 1
+                        logger.warning(
+                            "split: dropping backend %s for this document after %d failed chunks",
+                            name,
+                            backend_failures[name],
+                        )
                 if any(j == idx for _, j, _ in running.values()):
                     continue  # its other copy may still finish
                 if isinstance(exc, DoclingUnavailable):
