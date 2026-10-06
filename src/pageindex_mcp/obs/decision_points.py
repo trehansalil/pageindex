@@ -2130,7 +2130,9 @@ _REMOTE_POINTS: tuple[DecisionPoint, ...] = (
         "split_join_heading_shifts counts shard joins where the next shard's first "
         "heading is more than one level deeper than the previous shard's last. "
         "error_class is an exception CLASS name, never str(exc). A-P5-6: "
-        "shard_timeouts counts chunks ended by their own time limit, "
+        "shard_timeouts counts chunks that failed within _LIMIT_SLACK_S of their own "
+        "binding time limit (near-limit failures: the service's X-Deadline 499 lands "
+        "a few seconds before the read timeout, so the cause is not checked), "
         "backends_dropped backends that failed 2 chunks, shards_reused chunks "
         "an earlier attempt of the same conversion had already converted.",
     ),

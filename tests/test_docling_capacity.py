@@ -180,6 +180,7 @@ _CAPACITY_KEYS = {
     "spp_samples": int,
     "leaked_slots": int,
     "overdue_s": float,
+    "wedged": bool,
 }
 
 

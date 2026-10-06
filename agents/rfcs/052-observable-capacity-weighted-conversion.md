@@ -287,7 +287,7 @@ Defects:
 >   5. **Download errors are opaque.** A failed presigned-URL download (e.g. an expired URL, a MinIO 403) comes back as a generic 500 "PDF conversion failed".
 >
 > **Proposed acceptance criteria (extend R5 AC6).**
-> 1. **Slot conservation is checked.** docling-service SHALL compute `leaked_slots`: slots held (`_convert_slots.held`, plus `_slice_active` counted as slice slots) that no running conversion accounts for. A slice group counts once against `_convert_slots`. It SHALL also compute `overdue_s`: how far the oldest running conversion is past its `X-Deadline`. Both SHALL be reported in `/capacity`.
+> 1. **Slot conservation is checked.** docling-service SHALL compute `leaked_slots`: slots held (`_convert_slots.held`, plus `_slice_active` counted as slice slots) that no running conversion accounts for. A slice group counts once against `_convert_slots`. It SHALL also compute `overdue_s`: how far the oldest running conversion is past its `X-Deadline`. Both SHALL be reported in `/capacity`. A request without `X-Deadline` never becomes overdue; the worker always sends one (`_deadline_header`, every remote call), and the converter's own per-chunk timeouts bound a conversion that has none.
 > 2. **A wedged backend is unhealthy.** `/health` SHALL answer 503 with `status: "wedged"` while `leaked_slots > 0` or `overdue_s > 0` has held for `DOCLING_WEDGE_GRACE_S` (default 60). The controller's `mac_ok` already treats any non-2xx as down and routes `docling-active` to docling-1, so no infra change is needed. It SHALL emit a `docling_service_wedged` decision with the counts. The split coordinator SHALL give no chunks to a backend reporting `leaked_slots > 0`.
 > 3. **A wedged backend restarts itself.** After `DOCLING_WEDGE_RESTART_S` (default 300; 0 = report only) continuously wedged, the service SHALL exit non-zero. launchd (`KeepAlive`, 30 s throttle) restarts it on the Mac, and kubelet restarts it on docling-1. Conversions still in flight fail and are retried by their coordinators (AC6).
 > 4. **A shard has its own time limit.** Each shard's read timeout SHALL be `min(remaining shared deadline, max(DOCLING_SPLIT_SHARD_MIN_S = 120, DOCLING_SPLIT_SHARD_FACTOR = 4 × pages × spp_b))`, where `spp_b` is the backend's `spp_ewma` or its prior. Exceeding it is a shard failure and goes through the existing retry-once, on another backend where one is live.
@@ -296,7 +296,7 @@ Defects:
 > 7. **Download failures are named.** A download failure SHALL return 502 with `download failed (<upstream status>)`, not 500, and the worker SHALL classify it as transient.
 >
 > **Considered and rejected.**
-> - **Falling back to an unsplit conversion when the split fails.** The time left rarely fits a whole document on one backend (pocketbook: 556 s on the Mac alone). In the wedge case `docling-active` is the same broken backend. The requeue path already covers it.
+> - **Falling back to an unsplit conversion when the split fails.** The time left rarely fits a whole document on one backend (pocketbook: 556 s arq job wall time with the split off, run 1 of 11.7; the A-P5-5 ~400 s is conversion time alone). In the wedge case `docling-active` is the same broken backend. The requeue path already covers it.
 > - **Tail copies on the same backend.** They do not help a wedged backend, and they double the load on a merely slow one.
 
 ### Requirement 6: Split quality parity

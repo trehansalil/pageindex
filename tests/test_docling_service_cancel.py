@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -230,7 +231,11 @@ def test_queued_request_survives_a_swallowed_cancel_in_is_disconnected(svc, monk
 
     app = svc.app
     monkeypatch.setattr(app, "ORPHAN_GRACE_S", 0.0)  # the queued loop polls the holder
+    # One slot whatever DOCLING_MAX_CONCURRENT says, so j-next really queues.
+    monkeypatch.setattr(app, "MAX_CONCURRENT", 1)
+    monkeypatch.setattr(app, "_convert_slots", app._CountingSemaphore(1))
     release = threading.Event()
+    in_sweep = threading.Event()  # j-next's preempt loop is inside the swallow
     svc_convert = converters.pdf_to_markdown_docling
 
     def convert(path, **kw):
@@ -244,6 +249,13 @@ def test_queued_request_survives_a_swallowed_cancel_in_is_disconnected(svc, monk
 
     class _SwallowingRequest(_FakeRequest):
         async def is_disconnected(self) -> bool:
+            # Called from the queued request's preempt sweep (not the
+            # holder's own watcher): the window the old cancel landed in.
+            frame = sys._getframe(1)
+            while frame is not None and frame.f_code.co_name != "_preempt_stale_orphans":
+                frame = frame.f_back
+            if frame is not None:
+                in_sweep.set()
             # What anyio's self-cancelled scope does to a task.cancel().
             with contextlib.suppress(asyncio.CancelledError):
                 await asyncio.sleep(0.5)
@@ -255,7 +267,7 @@ def test_queued_request_survives_a_swallowed_cancel_in_is_disconnected(svc, monk
         await _until(lambda: "j-hold" in svc.started)
         with bind_log_context(job_id="j-next"):
             nxt = asyncio.create_task(app.convert_pdf(_body(app), _FakeRequest()))
-        await asyncio.sleep(0.1)  # queued; its preempt loop is inside the holder's check
+        await _until(in_sweep.is_set)  # queued, its preempt loop inside the holder's check
         release.set()
         return await asyncio.wait_for(hold, 5), await asyncio.wait_for(nxt, 5)
 
@@ -282,6 +294,9 @@ def test_leaked_or_overdue_slots_turn_health_wedged_and_restart(svc, monkeypatch
     exits: list[int] = []
     monkeypatch.setattr(app, "_warmup_done", True)
     monkeypatch.setattr(app, "_wedged_since", None)
+    # The defaults, whatever DOCLING_WEDGE_* the environment sets.
+    monkeypatch.setattr(app, "WEDGE_GRACE_S", 60.0)
+    monkeypatch.setattr(app, "WEDGE_RESTART_S", 300.0)
     monkeypatch.setattr(app, "_exit", exits.append)
     monkeypatch.setattr(
         app,
@@ -328,6 +343,10 @@ def test_leaked_or_overdue_slots_turn_health_wedged_and_restart(svc, monkeypatch
         #    before admission past ADMIT_STALL_S, overdue once past the deadline.
         await app._convert_slots.acquire()
         try:
+            # A slice group still acquiring its slots owns the ones it has.
+            monkeypatch.setattr(app, "_slice_group_taken", 1)
+            assert app._slot_accounting(now) == (0, 0.0)
+            monkeypatch.setattr(app, "_slice_group_taken", 0)
             for holder, expected in (
                 (conv(slot_at=now - 1), (0, 0.0)),
                 (conv(slot_at=now - app.ADMIT_STALL_S), (1, 0.0)),

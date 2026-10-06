@@ -251,10 +251,10 @@ tail     = remaining chunks → shared queue; each backend pulls one shard of
 
 **Service: wedge state.**
 - `wedged_since` is set when `leaked_slots > 0 or overdue_s > 0` is first seen, and cleared when both are 0. A background task re-checks every `CLIENT_POLL_S`, so the state does not depend on someone calling `/health`.
-- `/health` answers 503 `{"status": "wedged", "leaked_slots", "overdue_s", "wedged_s"}` once `now - wedged_since >= DOCLING_WEDGE_GRACE_S` (60).
+- `/health` answers 503 `{"status": "wedged", "leaked_slots": 1, "overdue_s": 0.0, "wedged_s": 60.0, ...}` once `now - wedged_since >= DOCLING_WEDGE_GRACE_S` (60).
   - The grace covers the legitimate window between admission and planning, and a watcher's last poll.
   - The node controller's `mac_ok` (`curl -f /health`) then reports the Mac down, and `docling-active` fails over to docling-1 as for an unreachable Mac.
-  - The split coordinator's `/capacity` probe still answers. A wedged backend is excluded there too: `leaked_slots > 0` makes `chunk_limit` 0.
+  - The split coordinator's `/capacity` probe still answers. A wedged backend is excluded there too: `leaked_slots > 0`, or `wedged: true` (a leak or an overdue conversion that has outlasted the grace, the same condition as the 503), makes `chunk_limit` 0.
 - After `DOCLING_WEDGE_RESTART_S` (300 s; `0` = report only) continuously wedged, the service emits `docling_service_wedged` (choice `restart`), flushes logs, and calls `os._exit(3)`.
   - On the Mac, launchd `KeepAlive` restarts it after its 30 s throttle.
   - On docling-1, the container restarts.
@@ -612,7 +612,7 @@ The recovery request also carries a top-level `recovery_trigger` so the service 
 - **P18 (force precedence):** `force_full_page_ocr` ⇒ `do_ocr=True`, `bypass ∉ {ocr, both}`, and a `docling_force_recovery` record is emitted with the first pass's per-chunk context.
 - **P19 (kill switches):** with every P4 switch off, each chunk's `(do_ocr, do_table_structure)` equals the P3 decision.
 - **P20 (logging):** every `docling_chunk` record carries `bypass ∈ {none, ocr, tableformer, both}`.
-- **P21 (slot conservation, A-P5-6):** outside the admission grace, `_convert_slots.held` equals the admitted whole-document conversions plus `MAX_CONCURRENT` when `_slice_active > 0`, and `_slice_active` equals the admitted slice conversions. Any excess is `leaked_slots > 0`, and within `DOCLING_WEDGE_GRACE_S` it makes `/health` answer 503.
+- **P21 (slot conservation, A-P5-6):** outside the admission grace, `_convert_slots.held` equals the admitted whole-document conversions plus `MAX_CONCURRENT` when `_slice_active > 0`, and `_slice_active` equals the admitted slice conversions. Any excess is `leaked_slots > 0`, and once that has lasted `DOCLING_WEDGE_GRACE_S` `/health` answers 503. As built, a holder that won its slot (`slot_at`) but has not got past admission (`admitted_at`) within `ADMIT_STALL_S` (10 s) also counts, and slots a slice group holds while it still acquires the rest (`_slice_group_taken`) do not.
 - **P22 (bounded stall):** no shard waits longer than `max(SHARD_MIN_S, SHARD_FACTOR × pages × spp_b)` before it is retried, and a wedged backend serves no new chunk once `/health` is 503 or `leaked_slots > 0`.
 - **P23 (no rework within a job):** across the conversion retries of one job, each `(start, end)` shard converts successfully at most once.
 - **P24 (cancellation does not hang):** every background loop `convert_pdf` starts (preempt, watcher) ends without relying on `task.cancel()` reaching it.

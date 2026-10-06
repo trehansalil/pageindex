@@ -186,11 +186,15 @@ _slice_slots = _CountingSemaphore(SLICE_SLOTS)
 #: conversion (sized for the whole machine) never runs alongside chunks, and
 #: /capacity reports the backend busy to every other document's split.
 _slice_active = 0
+#: Conversion slots a slice group holds while it still waits for the rest
+#: (DOCLING_MAX_CONCURRENT > 1): owned, not leaked. One group at a time
+#: acquires (``_slice_group_lock``), so one counter is enough.
+_slice_group_taken = 0
 _slice_group_lock = asyncio.Lock()
 
 
 async def _acquire_slice_slot() -> None:
-    global _slice_active
+    global _slice_active, _slice_group_taken
     await _slice_slots.acquire()
     taken = 0
     try:
@@ -202,8 +206,11 @@ async def _acquire_slice_slot() -> None:
                 for _ in range(MAX_CONCURRENT):
                     await _convert_slots.acquire()
                     taken += 1
+                    _slice_group_taken = taken
             _slice_active += 1
+            _slice_group_taken = 0
     except BaseException:
+        _slice_group_taken = 0
         for _ in range(taken):
             _convert_slots.release()
         _slice_slots.release()
@@ -857,7 +864,7 @@ def _cancel(conv: _Conversion, choice: str) -> None:
     running chunk processes; the conversion slot is released only when the
     conversion thread has actually returned.
     """
-    if conv.cancel_event.is_set():
+    if conv.cancel_event.is_set() or conv.finished:
         return
     conv.cancel_reason = choice
     conv.cancel_event.set()
@@ -884,7 +891,9 @@ async def _watch_client(conv: _Conversion) -> None:
         if conv.deadline is not None and time.time() >= conv.deadline:
             _cancel(conv, "deadline")
             return
-        if await conv.request.is_disconnected():
+        # Re-check ``finished`` after the await: the request may have returned
+        # while this poll ran, and a finished request must not log a cancel.
+        if await conv.request.is_disconnected() and not conv.finished:
             _cancel(conv, "client_disconnect")
             return
         await asyncio.sleep(CLIENT_POLL_S)
@@ -911,6 +920,23 @@ async def _preempt_stale_orphans() -> None:
             _cancel(conv, "deadline_preempted")
         elif now - conv.started_at >= ORPHAN_GRACE_S and await conv.request.is_disconnected():
             _cancel(conv, "orphan_preempted")
+
+
+#: How long ``convert_pdf`` waits for a stopped background loop to end.
+REAP_TIMEOUT_S = 5.0
+
+
+async def _reap(task: asyncio.Task, what: str) -> None:
+    """Wait for a background loop that was told to stop, at most
+    ``REAP_TIMEOUT_S``. Never raises its error into the request, and never
+    holds an admitted request for longer than that: a loop still inside a
+    slow ``is_disconnected()`` sweep ends at its next ``stop`` check anyway."""
+    done, _ = await asyncio.wait({task}, timeout=REAP_TIMEOUT_S)
+    if not done:
+        logger.warning("%s still running %.0fs after its stop; not waiting", what, REAP_TIMEOUT_S)
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())
+    elif not task.cancelled() and task.exception() is not None:
+        logger.warning("%s failed: %s", what, type(task.exception()).__name__)
 
 
 async def _preempt_while_queued(stop: asyncio.Event) -> None:
@@ -982,7 +1008,11 @@ def _slot_accounting(now: float) -> tuple[int, float]:
     holders = [c for c in _conversions if c.slot_at is not None]
     slices = sum(1 for c in holders if c.is_slice)
     expected_held = (
-        len(holders) - slices + _image_active + (MAX_CONCURRENT if _slice_active > 0 else 0)
+        len(holders)
+        - slices
+        + _image_active
+        + _slice_group_taken
+        + (MAX_CONCURRENT if _slice_active > 0 else 0)
     )
     leaked = max(0, _convert_slots.held - expected_held) + max(0, _slice_active - slices)
     leaked += sum(
@@ -1118,11 +1148,12 @@ async def capacity_endpoint():
     ``build_sha`` is the same ``BUILD_SHA`` as ``/version``'s ``commit_sha``.
     No document data (HR3). Readers shell out on macOS, so off the loop.
     """
-    leaked, overdue_s, _ = _update_wedge(time.time())
+    leaked, overdue_s, wedged_s = _update_wedge(time.time())
     return await asyncio.to_thread(
         capacity.capacity_snapshot,
         leaked_slots=leaked,
         overdue_s=overdue_s,
+        wedged=_wedged_since is not None and wedged_s >= WEDGE_GRACE_S,
         busy_slots=_busy_slots(),
         max_slots=MAX_CONCURRENT,
         slice_slots=SLICE_SLOTS,
@@ -1314,15 +1345,17 @@ async def convert_pdf(  # noqa: PLR0915, C901
         stop_preempt = asyncio.Event()
         preempt_task = asyncio.create_task(_preempt_while_queued(stop_preempt))
         try:
-            if slice_request:
-                await _admit_unless_cancelled(_acquire_slice_slot, _release_slice_slot, conv)
-            else:
-                await _admit_unless_cancelled(_convert_slots.acquire, _convert_slots.release, conv)
-        finally:
-            stop_preempt.set()
-            await preempt_task
-        conv.admitted_at = time.time()
-        try:
+            try:
+                if slice_request:
+                    await _admit_unless_cancelled(_acquire_slice_slot, _release_slice_slot, conv)
+                else:
+                    await _admit_unless_cancelled(
+                        _convert_slots.acquire, _convert_slots.release, conv
+                    )
+            finally:
+                stop_preempt.set()
+                await _reap(preempt_task, "preempt loop")
+            conv.admitted_at = time.time()
             if conv.cancel_event.is_set():
                 raise DoclingCancelled("cancelled while queued for a conversion slot")
             conv.started_at = time.time()
@@ -1382,11 +1415,15 @@ async def convert_pdf(  # noqa: PLR0915, C901
                 conv,
             )
         finally:
-            if slice_request:
-                _release_slice_slot()
-            else:
-                _convert_slots.release()
-            conv.slot_at = conv.admitted_at = None
+            # Keyed on ``slot_at``, which admission sets the moment it wins a
+            # slot: a cancel landing while the preempt loop is reaped still
+            # gives the slot back.
+            if conv.slot_at is not None:
+                if slice_request:
+                    _release_slice_slot()
+                else:
+                    _convert_slots.release()
+                conv.slot_at = conv.admitted_at = None
         serialized_pics = [_serialize_picture_result(pr) for pr in pic_results]  # type: ignore[arg-type]
         # RFC-052 P2 finding 3: echo what the converter actually used, not the
         # request it was handed -- a bench arm (or any caller) must be able to

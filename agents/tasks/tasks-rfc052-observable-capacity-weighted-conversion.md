@@ -149,7 +149,7 @@ Infra manifests live in `/root/hetzner-deployment-service` and ship as a compani
     - `conv.admitted_at`, plus `leaked_slots` and `overdue_s` in `/capacity`;
     - a background `wedged_since` check;
     - `/health` 503 `wedged` after `DOCLING_WEDGE_GRACE_S`;
-    - `docling_service_wedged` decision registered in `obs/decision_points.py`;
+    - `docling_service_wedged` decision logged (amended 2026-10-06: not registered in `obs/decision_points.py`, which indexes `pageindex_mcp` modules only; no docling-service event is registered there; the 11.13 alert keys on the Loki `event` label, which does not need the registry);
     - self-exit after `DOCLING_WEDGE_RESTART_S` (0 = report only).
     - Tests: a leaked slice slot (admitted, never started) reads `leaked_slots` 1 and turns `/health` 503 after the grace; an overdue conversion does the same; a normal admission inside the grace stays 200; the restart path calls the exit hook once.
     - _A-P5-6 AC1-3, design P21_

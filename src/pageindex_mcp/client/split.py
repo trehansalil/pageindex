@@ -82,9 +82,11 @@ class Capacity:
     # A-P5-5: split chunks the service runs at once; 0 for a build that runs
     # one request at a time.
     slice_slots: int = 0
-    # A-P5-6: slots the service cannot account for; > 0 means it is wedged
-    # and takes no chunk. 0 for a build that does not report it.
+    # A-P5-6: slots the service cannot account for, and whether a leak or an
+    # overdue conversion has outlasted its grace. Either way it takes no
+    # chunk. 0 / False for a build that does not report them.
     leaked_slots: int = 0
+    wedged: bool = False
 
     @classmethod
     def from_snapshot(cls, snap: dict) -> Capacity:
@@ -105,14 +107,19 @@ class Capacity:
             backend=str(snap.get("backend") or ""),
             slice_slots=max(0, _num("slice_slots", 0, int)),
             leaked_slots=max(0, _num("leaked_slots", 0, int)),
+            wedged=snap.get("wedged") is True,
         )
+
+    @property
+    def is_wedged(self) -> bool:
+        return self.leaked_slots > 0 or self.wedged
 
     @property
     def chunk_limit(self) -> int:
         """Chunks to keep in flight on this backend: its slice slots, capped by
         the processes its free memory allows; 1 for an older build, 0 for a
         wedged one."""
-        if self.leaked_slots > 0:
+        if self.is_wedged:
             return 0
         if self.slice_slots < 1:
             return 1
@@ -339,7 +346,7 @@ async def _eligible_backends(client) -> tuple[dict[str, tuple[SplitBackend, Capa
                 cap.build_sha,
                 expected,
             )
-        elif cap.leaked_slots > 0:
+        elif cap.is_wedged:
             choice = "wedged"
         elif cap.safe_procs < 1:
             choice = "no_capacity"
@@ -380,6 +387,9 @@ _LIMIT_SLACK_S = 10.0
 #: conversion retry re-dispatches only the chunks that failed. In memory
 #: only, gone with the child (one job per child); not a store under HR2.
 _shard_results: dict[tuple, object] = {}
+#: The chunk size the first split attempt of ``(staging_key, options
+#: digest)`` used, so a retry cuts the same chunks and finds them above.
+_chunk_sizes: dict[tuple, int] = {}
 
 
 def shard_time_limit_s(pages: int, spp: float) -> float:
@@ -456,7 +466,15 @@ async def split_convert(
     if not eligible:
         _emit("fallback_active")
         return None
-    if len(eligible) == 1:
+    # A-P5-6: a conversion retry reuses the chunks an earlier attempt in this
+    # child finished, cut the same way even if the backends' capacity (and
+    # so the chunk size) has changed since.
+    digest = _options_digest(page_classes, convert_kwargs)
+    if any(k[0] != staging_key for k in _chunk_sizes):
+        _shard_results.clear()  # one document per converter child
+        _chunk_sizes.clear()
+    pinned_size = _chunk_sizes.get((staging_key, digest))
+    if len(eligible) == 1 and pinned_size is None:
         backend = next(iter(eligible.values()))[0]
         res = await _remote_pdf_convert(
             staging_key,
@@ -473,15 +491,12 @@ async def split_convert(
 
     caps = {n: c for n, (_, c) in eligible.items()}
     limit = {n: c.chunk_limit for n, c in caps.items()}
-    size = split_chunk_pages(page_count, sum(limit.values()))
+    size = pinned_size or split_chunk_pages(page_count, sum(limit.values()))
+    _chunk_sizes[(staging_key, digest)] = size
     shards = [Shard(i, s, e) for i, (s, e) in enumerate(doc_chunks(page_count, page_classes, size))]
     n_shards = len(shards)
 
     # A-P5-6: shards a failed earlier attempt of this conversion finished.
-    digest = _options_digest(page_classes, convert_kwargs)
-    if any(k[0] != staging_key for k in _shard_results):
-        _shard_results.clear()  # one document per converter child
-
     def _cache_key(idx: int) -> tuple:
         return (staging_key, expected_sha, shards[idx].start, shards[idx].end, digest)
 
@@ -582,11 +597,11 @@ async def split_convert(
         checked here."""
         async with httpx.AsyncClient(timeout=_CAPACITY_TIMEOUT_S) as client:
             cap = await _fetch_capacity(client, eligible[name][0])
-        if cap is not None and build_matches(expected_sha, cap.build_sha) and not cap.leaked_slots:
+        if cap is not None and build_matches(expected_sha, cap.build_sha) and not cap.is_wedged:
             return True
-        if cap is not None and cap.leaked_slots:
+        if cap is not None and cap.is_wedged:
             logger.warning(
-                "split: dropping backend %s mid-document: %d leaked slot(s)",
+                "split: dropping backend %s mid-document: wedged (%d leaked slot(s))",
                 name,
                 cap.leaked_slots,
             )
