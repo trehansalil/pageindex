@@ -143,7 +143,44 @@ Infra manifests live in `/root/hetzner-deployment-service` and ship as a compani
     - Cleanup done: both switches unset, docling-1 deleted, hash entry unchanged (`0a172475…`), kept doc `a3779d3d` untouched.
     - **Root cause of the heading gap (2026-10-05): each Docling call levels its own headings.** The style path of docling-hierarchical-pdf (used when the PDF has no outline, as here) clusters `first_cell.rect.height`, which is glyph-ink height: "Angola" (descender) ranks above "Albania" although both are 14 pt. `headings._relevel_headings` then lifts each call's shallowest heading to H1. Different chunking gives different levels, and that affects the unsplit arm too, since the service runs it as ~30-page chunks. On the Mac, pages 24-53 as one call vs five 6-page shards gave the same 27 headings on the same pages, with only the levels differing (shard 30-35 all H1, the same headings H2 in the single call).
     - **Fix (`ICR-97-rfc52-split-heading-levels`, `converters/joined_headings.py`):** after any join of two or more Docling calls (the worker after a split or a service chunked result, and the service's own chunked join), heading levels are re-derived document-wide from the PDF's font size and bold (pypdfium2, HR4), with headings placed by `heading_pages`. It skips documents where more than 30% of headings are numbered (containment levels win there), documents where fewer than 80% of headings can be placed, and documents with fewer than two headings. Decision event `joined_heading_relevel`. Verified offline: pages 24-53 give identical levels for the one-call and shard joins. The full 49-shard join has 255 headings, raw 171 at H1 / 81 at H2 / 3 at H3; after the relevel all 225 region/country headings are H2, and the other 30 (cover, contents, explanatory notes, indicator legends) take levels 1 and 3-6 by font. The unsplit full-document side could not be reproduced on the Mac: requests of ≥29 pages hang there (`busy_slots` stuck at 1, `spp_samples` 152→153 in an hour) while 6-page requests succeed. That is a separate Mac service fault. 11.7 stays open until the parity rerun on the merged build.
-- [ ] 12. Checkpoint P5: `make test`, open the PR, and get the user's go-ahead before switching on `DOCLING_SPLIT_ENABLED=1`.
+    - **Mac hang root cause (2026-10-05, `ICR-97-rfc52-docling-preempt-cancel-leak`): a leaked slice slot, not slow conversion.** `convert_pdf` stopped its queued-time `_preempt_while_queued` loop with `task.cancel()` and then awaited it. That loop spends most of its time in starlette's `Request.is_disconnected()`, whose self-cancelling anyio `CancelScope` swallows a cancel that lands inside it (anyio 4.13 / starlette 1.0; reproduced 8-9 lost cancels in 20 trials). One of the 49 concurrent shards hung after admission: 48 of 49 got a plan, and its 11:40 cancel logged no exit. `_slice_active` stayed at 1, so the slice group never gave the whole-document slot back (`busy_slots` 1 = `_convert_slots.held`, `busy_slice_slots` 1 = `_slice_active`), and every request over `SLICE_MAX_PAGES` queued until its client gave up. The 500s were MinIO 403s on the experiment's expired presigned URL. Fix: stop the loop through an `asyncio.Event`, and end `_watch_client` on `conv.finished`. The regression test fails (rather than hangs) on the old code.
+  - [ ] 11.8 Merge PR #50 (preempt loop stopped by an event, watcher ends on `conv.finished`). Redeploy docling-service on the Mac (`macos/update.sh`) and re-bake the docling-1 snapshot. _A-P5-6, design P24_
+  - [x] 11.9 Slot conservation and wedge state in docling-service:
+    - `conv.admitted_at`, plus `leaked_slots` and `overdue_s` in `/capacity`;
+    - a background `wedged_since` check;
+    - `/health` 503 `wedged` after `DOCLING_WEDGE_GRACE_S`;
+    - `docling_service_wedged` decision logged (amended 2026-10-06: not registered in `obs/decision_points.py`, which indexes `pageindex_mcp` modules only; no docling-service event is registered there; the 11.13 alert keys on the Loki `event` label, which does not need the registry);
+    - self-exit after `DOCLING_WEDGE_RESTART_S` (0 = report only).
+    - Tests: a leaked slice slot (admitted, never started) reads `leaked_slots` 1 and turns `/health` 503 after the grace; an overdue conversion does the same; a normal admission inside the grace stays 200; the restart path calls the exit hook once.
+    - _A-P5-6 AC1-3, design P21_
+    - **As built (2026-10-06, PR #50):**
+      - Admission is tracked in two steps: `conv.slot_at` when `_admit_unless_cancelled` wins a slot, and `conv.admitted_at` once the preempt loop has stopped. Both are cleared on release.
+      - `leaked_slots` = held slots beyond what the holders explain (whole-document holders + `/convert/image` holders + `MAX_CONCURRENT` while a slice group runs), plus `_slice_active` beyond the slice holders, plus holders still without `admitted_at` after `ADMIT_STALL_S` (10 s).
+      - That last term is what catches the 2026-10-05 hang: the request held its slot alive and never got past admission. Counting it from `slot_at` alone would have read 0.
+      - `_wedge_monitor` is stopped by an event (P24).
+      - `/health` also reports `leaked_slots`, `overdue_s` and `wedged_s` when healthy.
+      - The restart path goes through a replaceable `_exit` hook.
+      - **Deviation:** `docling_service_wedged` is not in `obs/decision_points.py`. No docling-service event is registered there (`docling_request_cancelled` neither), since the registry indexes `pageindex_mcp` modules only.
+      - Also added for 11.13: `POST /debug/leak-slot`, which is 404 unless `DOCLING_DEBUG_FAULTS=1`.
+  - [x] 11.10 Coordinator per-shard time limit (`DOCLING_SPLIT_SHARD_MIN_S`, `DOCLING_SPLIT_SHARD_FACTOR`), backend demotion after 2 failed shards, and no chunks to a backend with `leaked_slots > 0`. Stub-backend tests:
+    - a stuck shard is retried on the other backend within the limit;
+    - with one backend live, a stuck shard is retried on the same backend after the limit, not at the shared deadline;
+    - a backend with two 5xx shards gets no further chunks.
+    - _A-P5-6 AC4-5, design P22_
+    - **As built:**
+      - The time limit is applied as `read_timeout_s = min(remaining, limit)`.
+      - A chunk failing within `_LIMIT_SLACK_S` (10 s) of a binding limit counts as `shard_timeouts`. The service's X-Deadline 499 lands about 5 s before the read timeout.
+      - Demotion counts every non-`DoclingUnavailable` failure, including a copy that lost while the other copy still ran.
+      - A backend reporting `leaked_slots > 0` is excluded at probe time (`docling_split_backend` choice `wedged`) and by `_still_accepts` before a retry or copy.
+      - Test: `test_shard_time_limit_demotion_wedged_backend_and_reuse`, which also covers 11.11.
+  - [x] 11.11 Keep finished shards across conversion retries: `_shard_results` in the converter child, keyed by staging key, build, range and options digest. Test: a split whose first attempt fails on one shard re-dispatches only that shard on the retry (`shards_reused` = n-1). _A-P5-6 AC6, design P23_
+  - [x] 11.12 Download errors return 502 `download failed (<status>)`, not 500. Test with an expired-URL 403 stub. _A-P5-6 AC7_
+  - [ ] 11.13 Grafana alert on `docling_service_wedged` (infra companion). Live fault test on the Mac and docling-1:
+    - force a leaked slot with a debug-only fault switch, never on in production;
+    - check that `/health` turns 503 within the grace, that the controller routes `docling-active` to docling-1, and that the service restarts after `DOCLING_WEDGE_RESTART_S`;
+    - in a split run, kill one backend mid-document and record the reroutes, demotion and wall time.
+    - _A-P5-6_
+- [ ] 12. Checkpoint P5: `make test`, open the PR, and get the user's go-ahead before switching on `DOCLING_SPLIT_ENABLED=1`. The go-ahead covers A-P5-1..6; 11.7 (parity) and 11.13 (fault test) must pass first.
 
 ## Notes
 

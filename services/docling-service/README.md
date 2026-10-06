@@ -42,7 +42,8 @@ build only; nothing about any document (HR3).
 {"backend":"mac","build_sha":"…","effective_cpus":12.0,"total_mem_bytes":68719476736,
  "free_mem_bytes":41000000000,"reserve_bytes":4294967296,"chunk_pages":10,
  "per_proc_peak_bytes":1543503872,"safe_procs":12,"busy_slots":0,"max_slots":1,
- "slice_slots":12,"busy_slice_slots":0,"spp_ewma":19.2,"spp_samples":27}
+ "slice_slots":12,"busy_slice_slots":0,"spp_ewma":19.2,"spp_samples":27,
+ "leaked_slots":0,"overdue_s":0.0,"wedged":false}
 ```
 
 - `slice_slots` / `busy_slice_slots` (RFC-052 A-P5-5): split chunks (page ranges of
@@ -62,6 +63,9 @@ build only; nothing about any document (HR3).
   `docling_chunk` records, so it stays at the prior with `PAGEINDEX_LOG_DECISIONS=off`);
   `DOCLING_SPP_PRIOR` while `spp_samples` is `0`.
 - `build_sha`: `BUILD_SHA`, the same value as `/version`'s `commit_sha`.
+- `leaked_slots` (RFC-052 A-P5-6): conversion or slice slots that no request accounts for, plus requests that won a slot but have not got past admission after 10 s. Above 0 the split coordinator sends this backend no chunk.
+- `overdue_s`: seconds the oldest slot holder is past its `X-Deadline` (0 when none is).
+- `wedged`: either of the two above has lasted `DOCLING_WEDGE_GRACE_S`. `/health` then answers 503 `status: wedged`, and after `DOCLING_WEDGE_RESTART_S` the service exits for a restart.
 
 Each conversion also clamps its own process count by `safe_procs` for its real
 chunk size, planned once it holds its conversion slot (RFC-052 R5 AC2).
@@ -148,6 +152,9 @@ docker run -p 8080:8080 \
 | `DOCLING_CHUNK_PAGES`         | `10`    | Chunk size `/capacity` quotes `safe_procs` for (each conversion clamps for its own) |
 | `DOCLING_SLICE_SLOTS`         | (computed) | Split chunks run at once (`/capacity` `slice_slots`); default `max(1, min(cpus, floor((total memory − reserve) / per-process peak for 20 pages)))`; `/capacity` further clamps it to what free memory fits, never below 1 (when free memory is unreadable it reports the configured value unclamped, with `safe_procs` 0, so the coordinator sends this backend no split work until it can read it again) |
 | `DOCLING_SPP_PRIOR`           | `40`    | `spp_ewma` before any chunk has finished (design: Mac 19, cpx62 40) |
+| `DOCLING_WEDGE_GRACE_S`       | `60`    | A leaked slot (`/capacity` `leaked_slots`) or a slot holder past its X-Deadline (`overdue_s`) this long turns `/health` 503 `status: wedged` (RFC-052 A-P5-6) |
+| `DOCLING_WEDGE_RESTART_S`     | `300`   | Wedged this long without a break: log `docling_service_wedged` (choice `restart`) and exit 3 for launchd / the container runtime to restart; `0` = report only |
+| `DOCLING_DEBUG_FAULTS`        | (empty) | `1` enables `POST /debug/leak-slot` (takes a slice slot nothing gives back) for the RFC-052 11.13 live fault test. Never in production |
 | `DOCLING_BACKEND_NAME`        | hostname | `/capacity` `backend`, and the `docling_chunk` / Loki `host` label |
 | `DOWNLOAD_TIMEOUT_S`          | `120`   | Timeout for downloading PDFs from presigned URL |
 | `DOCLING_ARTIFACTS_PATH`      | (baked) | Path to pre-downloaded Docling model weights   |

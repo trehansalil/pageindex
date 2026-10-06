@@ -882,6 +882,9 @@ def test_docling_service_binds_correlation_headers_and_logs_json(docling_service
         "current_job_id": None,
         "started_at": None,
         "ready": False,  # warm-up done but never succeeded (no subprocess ran)
+        "leaked_slots": 0,
+        "overdue_s": 0.0,
+        "wedged_s": 0.0,
     }
     assert any(
         m.cls is docling_service_app.InFlightMiddleware

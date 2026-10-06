@@ -270,6 +270,35 @@ Defects:
 >
 >   Parity (R6) is unchanged: verdict equal, node_count within ±3%, join heading shifts logged. Expected (not measured): ~270 s of conversion for the pocketbook against ~400 s for the Mac alone.
 
+> **Proposed amendment A-P5-6 (2026-10-06): shard failure recovery and backend liveness. Awaiting the user's approval at checkpoint 12.**
+>
+> **Findings (Mac incident, 2026-10-05).**
+> - **What happened.** 49 shards were sent to the Mac at once. One was admitted (`_slice_active` 0 → 1) and then hung before planning.
+>   - `convert_pdf` stopped its queued-time `_preempt_while_queued` loop with `task.cancel()`. That loop sits mostly in starlette's `Request.is_disconnected()`, whose self-cancelling anyio `CancelScope` swallows a cancel that lands inside it (anyio 4.13 / starlette 1.0; 8-9 of 20 cancels lost in a standalone repro).
+>   - The `await` on the loop never returned. Its `suppress(CancelledError)` also ate the request's own cancel.
+>   - The slice group therefore never gave back the whole-document slot. For hours `/capacity` showed `busy_slots` 1 and `busy_slice_slots` 1 with no conversion running.
+>   - Every request over `SLICE_MAX_PAGES` queued until its client gave up, while 6-page shards still converted.
+>   - Root cause fixed in PR #50 (`ICR-97-rfc52-docling-preempt-cancel-leak`).
+> - **The recovery path had gaps that would have turned any future hang into the same outage:**
+>   1. **A wedged backend looks healthy.** `/health` kept answering 200, so the node controller kept routing to the Mac. Nothing in `/capacity` distinguishes "busy" from "stuck".
+>   2. **A stuck shard has no rescue without a second backend.** A tail copy only goes to another backend. With one backend live, a stuck shard waits out the whole shared deadline (`DOCLING_SERVICE_TIMEOUT_S`).
+>   3. **A failing backend keeps getting work.** Only a refused connection drops a backend for the document. A backend that times out or returns 5xx keeps receiving new shards.
+>   4. **Retries redo finished work.** A split failure goes up as a transient converter failure. `_convert_to_tree` retries the whole conversion up to 3 times within 300 s, and then `DoclingUnavailable` requeues the job after 120 s. Each attempt re-converts every shard, including those that already succeeded.
+>   5. **Download errors are opaque.** A failed presigned-URL download (e.g. an expired URL, a MinIO 403) comes back as a generic 500 "PDF conversion failed".
+>
+> **Proposed acceptance criteria (extend R5 AC6).**
+> 1. **Slot conservation is checked.** docling-service SHALL compute `leaked_slots`: slots held (`_convert_slots.held`, plus `_slice_active` counted as slice slots) that no running conversion accounts for. A slice group counts once against `_convert_slots`. It SHALL also compute `overdue_s`: how far the oldest running conversion is past its `X-Deadline`. Both SHALL be reported in `/capacity`. A request without `X-Deadline` never becomes overdue; the worker always sends one (`_deadline_header`, every remote call), and the converter's own per-chunk timeouts bound a conversion that has none.
+> 2. **A wedged backend is unhealthy.** `/health` SHALL answer 503 with `status: "wedged"` while `leaked_slots > 0` or `overdue_s > 0` has held for `DOCLING_WEDGE_GRACE_S` (default 60). The controller's `mac_ok` already treats any non-2xx as down and routes `docling-active` to docling-1, so no infra change is needed. It SHALL emit a `docling_service_wedged` decision with the counts. The split coordinator SHALL give no chunks to a backend reporting `leaked_slots > 0`.
+> 3. **A wedged backend restarts itself.** After `DOCLING_WEDGE_RESTART_S` (default 300; 0 = report only) continuously wedged, the service SHALL exit non-zero. launchd (`KeepAlive`, 30 s throttle) restarts it on the Mac, and kubelet restarts it on docling-1. Conversions still in flight fail and are retried by their coordinators (AC6).
+> 4. **A shard has its own time limit.** Each shard's read timeout SHALL be `min(remaining shared deadline, max(DOCLING_SPLIT_SHARD_MIN_S = 120, DOCLING_SPLIT_SHARD_FACTOR = 4 × pages × spp_b))`, where `spp_b` is the backend's `spp_ewma` or its prior. Exceeding it is a shard failure and goes through the existing retry-once, on another backend where one is live.
+> 5. **A backend that fails twice is dropped.** A backend with two failed shards (timeout or 5xx) in one document SHALL be dropped for the rest of that document, as a refused connection already is.
+> 6. **Finished shards survive retries.** Shard results SHALL be kept in the converter child for the life of the job, keyed by staging key, expected build, page range and conversion options. A transient retry of the whole conversion re-dispatches only the missing shards. They are not persisted: a requeue starts afresh, so no new derived store is created and the HR2 erasure manifest is unchanged.
+> 7. **Download failures are named.** A download failure SHALL return 502 with `download failed (<upstream status>)`, not 500, and the worker SHALL classify it as transient.
+>
+> **Considered and rejected.**
+> - **Falling back to an unsplit conversion when the split fails.** The time left rarely fits a whole document on one backend (pocketbook: 556 s arq job wall time with the split off, run 1 of 11.7; the A-P5-5 ~400 s is conversion time alone). In the wedge case `docling-active` is the same broken backend. The requeue path already covers it.
+> - **Tail copies on the same backend.** They do not help a wedged backend, and they double the load on a merely slow one.
+
 ### Requirement 6: Split quality parity
 
 **User story:** As the owner of the tree quality bar (HR5), I need splitting to never lower quality silently.
@@ -362,6 +391,7 @@ Measured on 2026-09-27:
 | D13 (accepted 2026-09-27) | Keep every `find_tables()` result as searchable data; run it in a memory-sized process pool in the worker, overlapped with remote conversion | User, 2026-09-27: extracted table data must not be discarded. Processes because PyMuPDF is not thread-safe; overlap because conversion (about 800 s) dwarfs capture (about 125 s with 2 processes). |
 | D14 (accepted 2026-09-27) | Tables become child nodes of the search tree, with short descriptions and a token budget | Reuses the one-call tree search and adds no second index; the budget protects search latency (about 96k tokens today). |
 | D15 (accepted 2026-09-27; grid replacement dropped 2026-09-28) | OCR and TableFormer bypass from `find_tables()` signals; grid replacement off until benchmarked, then dropped when it failed the 2% gate | TableFormer is about 93% of conversion time (28.7 of 28.9 s/page, 1 thread); the `lines` strategy missed the unruled pocketbook tables, so replacing TableFormer needs evidence. |
+| D16 (proposed 2026-10-06, A-P5-6) | A backend detects its own wedge (leaked slot or overdue conversion), reports it through `/health`, and restarts itself. The coordinator bounds each shard, drops a backend that fails twice, and keeps finished shards across in-job retries. | On 2026-10-05 a leaked slot left the Mac answering `/health` 200 while refusing all large work for hours, until someone noticed. Detection on the backend reuses the controller's existing `mac_ok` failover, and a self-restart needs no operator. |
 
 ## Implementation Plan
 
@@ -413,6 +443,7 @@ P0 ships first because every later acceptance criterion is verified through its 
 | Loki exposed beyond the tailnet, or its query/delete API exposed on it | Gateway listens only on the Tailscale address and forwards only push and ready (403 otherwise); Tailscale ACLs |
 | Loki keeps doc identifiers after a DSR delete (HR2) | `delete_doc` step 8 `loki_logs` files in-cluster `/loki/api/v1/delete` requests for `doc_id`, `doc_sha8` and `doc_name_sha8` (`PAGEINDEX_LOKI_URL`); 72 h retention is the backstop; unset URL → `partial_purge` |
 | Loki disk: host at 83% | 72 h retention kept; drop noise (R1 AC3); alert at 90% |
+| A request hangs holding a conversion slot, so a backend stays "healthy" but refuses all large work (2026-10-05) | Root cause fixed (PR #50: the preempt loop is stopped by an event, not a cancel). The general case is covered by A-P5-6: slot-conservation check, `/health` 503 `wedged`, self-restart, and per-shard time limits in the coordinator. |
 | The Mac's `BLOCK_PRIVATE_URLS=1` needs public presigned URLs | Unchanged from today's path; the coordinator presigns per shard with the same client |
 
 ## Consequences
@@ -427,6 +458,8 @@ P0 ships first because every later acceptance criterion is verified through its 
 - All six pocketbook runs on 2026-09-25 failed with `RemoteProtocolError`, `ReadTimeout` or a converter timeout, then fell through to a pymupdf4llm fallback that is not installed.
 - One Mac request failed with `unexpected keyword argument 'do_table_structure'`. The build-skew check covers only one URL; R5 AC8 widens it.
 - `memory_admission` fails open after 120 s.
+- Under 49 concurrent shards the Mac logged `free_memory_bytes=None` in every slice plan (2026-10-05). The macOS free-memory read failed under load, so neither `/capacity` nor `plan_slice` was clamped by free memory then.
+- `_preempt_stale_orphans` logs `orphan_preempted` for a conversion that has already returned: its request reads as disconnected once the response is sent. Harmless, but it inflates the cancel counts.
 
 ## Traceability
 

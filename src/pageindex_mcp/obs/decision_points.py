@@ -2082,7 +2082,15 @@ _REMOTE_POINTS: tuple[DecisionPoint, ...] = (
         phase=Phase.CONVERT,
         module=_C_SPLIT,
         function="_eligible_backends",
-        choices=("eligible", "unreachable", "hr3_blocked", "build_skew", "no_capacity", "busy"),
+        choices=(
+            "eligible",
+            "unreachable",
+            "hr3_blocked",
+            "build_skew",
+            "wedged",
+            "no_capacity",
+            "busy",
+        ),
         attrs=(
             "backend",
             "build_sha",
@@ -2095,7 +2103,7 @@ _REMOTE_POINTS: tuple[DecisionPoint, ...] = (
         always_emits=False,
         note="RFC-052 P5 R5 AC4/AC7/AC8: one record per configured backend per split "
         "attempt, only when DOCLING_SPLIT_ENABLED=1. Capacity numbers and build "
-        "identifiers only (HR3).",
+        "identifiers only (HR3). wedged (A-P5-6): /capacity reported leaked_slots > 0.",
     ),
     _p(
         event="docling_split",
@@ -2110,6 +2118,9 @@ _REMOTE_POINTS: tuple[DecisionPoint, ...] = (
             "shards_by_backend",
             "retries",
             "reroutes",
+            "shard_timeouts",
+            "backends_dropped",
+            "shards_reused",
             "split_join_heading_shifts",
             "elapsed_ms",
             "error_class",
@@ -2118,7 +2129,12 @@ _REMOTE_POINTS: tuple[DecisionPoint, ...] = (
         note="RFC-052 P5 R5 AC4/AC6, R6 AC2: the split outcome for one conversion. "
         "split_join_heading_shifts counts shard joins where the next shard's first "
         "heading is more than one level deeper than the previous shard's last. "
-        "error_class is an exception CLASS name, never str(exc).",
+        "error_class is an exception CLASS name, never str(exc). A-P5-6: "
+        "shard_timeouts counts chunks that failed within _LIMIT_SLACK_S of their own "
+        "binding time limit (near-limit failures: the service's X-Deadline 499 lands "
+        "a few seconds before the read timeout, so the cause is not checked), "
+        "backends_dropped backends that failed 2 chunks, shards_reused chunks "
+        "an earlier attempt of the same conversion had already converted.",
     ),
 )
 

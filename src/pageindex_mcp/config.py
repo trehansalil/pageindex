@@ -306,6 +306,11 @@ class Settings:
     docling_split_pii_backends: str = "node"
     # Below this many pages a document is not worth splitting.
     docling_split_min_pages: int = 20
+    # RFC-052 A-P5-6: a shard gets max(MIN_S, FACTOR x pages x the backend's
+    # seconds per page) before it is timed out and retried, capped by what
+    # is left of the shared deadline.
+    docling_split_shard_min_s: float = 120.0
+    docling_split_shard_factor: float = 4.0
     # Build every shard must come from. Empty: the build of the backend the
     # controller routes ``docling-active`` to.
     docling_expected_build_sha: str = ""
@@ -414,6 +419,25 @@ def validate_hr3_compliance(settings_obj: "Settings | None" = None) -> None:
         _check(docling_service_url, "PII_CORPUS=true boot gate: docling_service_url")
 
 
+def _finite_env(name: str, default: float, *, minimum: float) -> float:
+    """A float env var that must be finite and >= ``minimum``; anything else
+    (``inf``, ``nan``, garbage, too small) falls back to ``default`` with a
+    warning, so a typo cannot switch a time limit off."""
+    import math
+
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        value = math.nan
+    if math.isfinite(value) and value >= minimum:
+        return value
+    logging.getLogger(__name__).warning("ignoring %s=%r; using %s", name, raw, default)
+    return default
+
+
 def _load_settings() -> Settings:
     return Settings(
         minio_endpoint=os.environ.get("MINIO_ENDPOINT", "localhost:9000"),
@@ -516,6 +540,8 @@ def _load_settings() -> Settings:
         ),
         docling_split_pii_backends=os.environ.get("DOCLING_SPLIT_PII_BACKENDS", "node"),
         docling_split_min_pages=int(os.environ.get("DOCLING_SPLIT_MIN_PAGES", "20")),
+        docling_split_shard_min_s=_finite_env("DOCLING_SPLIT_SHARD_MIN_S", 120.0, minimum=1.0),
+        docling_split_shard_factor=_finite_env("DOCLING_SPLIT_SHARD_FACTOR", 4.0, minimum=0.0),
         docling_expected_build_sha=os.environ.get("DOCLING_EXPECTED_BUILD_SHA", "").strip(),
     )
 
